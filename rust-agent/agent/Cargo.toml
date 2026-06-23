@@ -1,0 +1,14 @@
+[package]
+name = "sentinel-agent"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aya = { workspace = true }
+tokio = { workspace = true }
+tonic = { workspace = true }
+prost = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }

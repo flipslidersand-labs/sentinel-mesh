@@ -1,0 +1,11 @@
+[package]
+name = "sentinel-agent-ebpf"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aya-bpf = { workspace = true }
+
+[[bin]]
+name = "sentinel-agent-ebpf"
+path = "src/main.rs"
