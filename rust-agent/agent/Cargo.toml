@@ -3,12 +3,28 @@ name = "sentinel-agent"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+# Enable real eBPF loading. Requires:
+#   1. sudo apt install llvm-18-dev
+#   2. cargo install bpf-linker --no-default-features
+#   3. cargo +nightly build -p sentinel-agent-ebpf \
+#          --target bpfel-unknown-none -Z build-std=core \
+#          --manifest-path ../agent-ebpf/Cargo.toml
+#   4. Run as root or with CAP_BPF
+ebpf = ["dep:aya"]
+
 [dependencies]
-aya = { workspace = true }
-tokio = { workspace = true }
-tonic = { workspace = true }
-prost = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-anyhow = { workspace = true }
-clap = { workspace = true }
+aya          = { version = "0.12", features = ["async_tokio"], optional = true }
+tokio        = { workspace = true }
+tonic        = { workspace = true }
+prost        = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+anyhow       = { workspace = true }
+clap         = { workspace = true }
+hostname     = { workspace = true }
+uuid         = { workspace = true }
+async-stream = { workspace = true }
+
+[build-dependencies]
+tonic-build = "0.11"
