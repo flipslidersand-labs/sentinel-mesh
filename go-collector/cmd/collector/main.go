@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
@@ -32,6 +33,8 @@ func serveCmd() *cobra.Command {
 			grpcAddr, _ := cmd.Flags().GetString("grpc-addr")
 			httpAddr, _ := cmd.Flags().GetString("http-addr")
 			dataDir, _ := cmd.Flags().GetString("data-dir")
+			hbTimeout, _ := cmd.Flags().GetDuration("heartbeat-timeout")
+			reapInterval, _ := cmd.Flags().GetDuration("reap-interval")
 
 			logger, err := zap.NewProduction()
 			if err != nil {
@@ -56,6 +59,18 @@ func serveCmd() *cobra.Command {
 				}
 			}()
 
+			// Heartbeat reaper: mark agents inactive once their last event is
+			// older than heartbeat-timeout.
+			go func() {
+				ticker := time.NewTicker(reapInterval)
+				defer ticker.Stop()
+				for range ticker.C {
+					for _, id := range reg.ReapInactive(hbTimeout) {
+						logger.Info("agent marked inactive", zap.String("node_id", id))
+					}
+				}
+			}()
+
 			// gRPC server (blocking)
 			return receiver.Serve(grpcAddr, st, reg, logger)
 		},
@@ -63,5 +78,7 @@ func serveCmd() *cobra.Command {
 	cmd.Flags().String("grpc-addr", ":50051", "gRPC listen address")
 	cmd.Flags().String("http-addr", ":8081", "REST API listen address")
 	cmd.Flags().String("data-dir", "/tmp/sentinel-data", "BadgerDB data directory")
+	cmd.Flags().Duration("heartbeat-timeout", 90*time.Second, "mark an agent inactive if no event within this duration")
+	cmd.Flags().Duration("reap-interval", 30*time.Second, "how often to scan for inactive agents")
 	return cmd
 }

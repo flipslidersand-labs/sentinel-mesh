@@ -68,6 +68,23 @@ func (r *Registry) SetInactive(nodeID string) {
 	}
 }
 
+// ReapInactive marks any active node whose LastSeen is older than timeout as
+// inactive. It returns the node IDs that were transitioned, so the caller can
+// log them. Intended to be called periodically from a background ticker.
+func (r *Registry) ReapInactive(timeout time.Duration) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cutoff := time.Now().UTC().Add(-timeout)
+	var reaped []string
+	for id, n := range r.nodes {
+		if n.Status == "active" && n.LastSeen.Before(cutoff) {
+			n.Status = "inactive"
+			reaped = append(reaped, id)
+		}
+	}
+	return reaped
+}
+
 func (r *Registry) List() []AgentNode {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
