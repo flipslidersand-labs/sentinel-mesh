@@ -1,14 +1,17 @@
 [workspace]
-members = ["agent", "agent-ebpf", "xtask"]
+# agent-ebpf is built separately with nightly + bpfel-unknown-none target.
+# See docs/implementation-guide.md Phase 1 for build instructions.
+members = ["agent"]
 resolver = "2"
 
 [workspace.dependencies]
-aya = { version = "0.12", features = ["async_tokio"] }
-aya-bpf = "0.12"
-tokio = { version = "1", features = ["full"] }
-tonic = "0.11"
-prost = "0.12"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-anyhow = "1"
-clap = { version = "4", features = ["derive"] }
+tokio        = { version = "1", features = ["full"] }
+tonic        = { version = "0.11", features = ["tls-roots"] }
+prost        = "0.12"
+serde        = { version = "1", features = ["derive"] }
+serde_json   = "1"
+anyhow       = "1"
+clap         = { version = "4", features = ["derive"] }
+hostname     = "0.4"
+uuid         = { version = "1", features = ["v4"] }
+async-stream = "0.3"

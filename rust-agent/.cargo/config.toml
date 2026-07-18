@@ -1,0 +1,7 @@
+# Build agent-ebpf with nightly for the bpfel-unknown-none target.
+# To build the eBPF kernel program:
+#   cargo +nightly build -p sentinel-agent-ebpf \
+#       --target bpfel-unknown-none -Z build-std=core
+[build]
+# Stable target for the userspace agent (default).
+target = "x86_64-unknown-linux-gnu"
