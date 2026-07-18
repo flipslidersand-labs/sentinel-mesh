@@ -22,7 +22,7 @@ func Router(st *store.Store, reg *registry.Registry) *gin.Engine {
 
 	api := r.Group("/api")
 	{
-		// GET /api/events?limit=N
+		// GET /api/events?node=xxx&limit=N
 		api.GET("/events", func(c *gin.Context) {
 			limit := 100
 			if l := c.Query("limit"); l != "" {
@@ -30,7 +30,8 @@ func Router(st *store.Store, reg *registry.Registry) *gin.Engine {
 					limit = n
 				}
 			}
-			events, err := st.ListEvents(limit)
+			node := c.Query("node")
+			events, err := st.ListEvents(node, limit)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
