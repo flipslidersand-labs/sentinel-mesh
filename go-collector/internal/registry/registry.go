@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -80,4 +81,33 @@ func (r *Registry) List() []AgentNode {
 
 func (r *Registry) MarshalJSON() ([]byte, error) {
 	return json.Marshal(r.List())
+}
+
+// StartHeartbeatChecker runs a background goroutine that marks agents inactive
+// when their LastSeen is older than timeout. It ticks every interval.
+// The goroutine stops when ctx is cancelled.
+func (r *Registry) StartHeartbeatChecker(ctx context.Context, timeout, interval time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				r.markStaleInactive(timeout)
+			}
+		}
+	}()
+}
+
+func (r *Registry) markStaleInactive(timeout time.Duration) {
+	deadline := time.Now().UTC().Add(-timeout)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, n := range r.nodes {
+		if n.Status == "active" && n.LastSeen.Before(deadline) {
+			n.Status = "inactive"
+		}
+	}
 }
