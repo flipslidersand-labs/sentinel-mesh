@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
@@ -47,6 +51,14 @@ func serveCmd() *cobra.Command {
 
 			reg := registry.New()
 
+			ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+			defer cancel()
+
+			// Phase 4: mark agents inactive after 60s of silence, check every 30s
+			heartbeatTimeout, _ := cmd.Flags().GetDuration("heartbeat-timeout")
+			reg.StartHeartbeatChecker(ctx, heartbeatTimeout, heartbeatTimeout/2)
+			logger.Info("heartbeat checker started", zap.Duration("timeout", heartbeatTimeout))
+
 			// REST API in background
 			router := exporter.Router(st, reg)
 			go func() {
@@ -63,5 +75,6 @@ func serveCmd() *cobra.Command {
 	cmd.Flags().String("grpc-addr", ":50051", "gRPC listen address")
 	cmd.Flags().String("http-addr", ":8081", "REST API listen address")
 	cmd.Flags().String("data-dir", "/tmp/sentinel-data", "BadgerDB data directory")
+	cmd.Flags().Duration("heartbeat-timeout", 60*time.Second, "inactivity duration before agent is marked inactive")
 	return cmd
 }
