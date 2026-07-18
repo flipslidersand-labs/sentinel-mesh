@@ -1,26 +1,64 @@
 use anyhow::Result;
 use clap::Parser;
+use uuid::Uuid;
+
+pub mod pb {
+    tonic::include_proto!("sentinel.v1");
+}
+
+mod events;
+mod grpc;
 
 #[derive(Parser)]
 #[command(name = "sentinel-agent", about = "SentinelMesh eBPF agent")]
 struct Args {
-    /// Go Collector の gRPC エンドポイント
+    /// Go Collector gRPC endpoint
     #[arg(long, default_value = "http://127.0.0.1:50051")]
     collector: String,
 
-    /// このノードの識別子 (未指定時はホスト名)
+    /// Node identifier (defaults to hostname)
     #[arg(long)]
     node_id: Option<String>,
+
+    /// Generate mock events instead of loading real eBPF (for testing)
+    #[arg(long, default_value_t = false)]
+    mock: bool,
+
+    /// Events per second in mock mode
+    #[arg(long, default_value_t = 2)]
+    mock_rate: u64,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let node_id = args
-        .node_id
-        .unwrap_or_else(|| hostname::get().unwrap_or_default().to_string_lossy().into());
+    let node_id = args.node_id.unwrap_or_else(|| {
+        hostname::get()
+            .map(|h| h.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| Uuid::new_v4().to_string())
+    });
 
     println!("sentinel-agent starting: node={node_id} collector={}", args.collector);
-    // Phase 1: eBPF ロード + ring_buf ループをここに実装
-    Ok(())
+
+    let (tx, rx) = tokio::sync::mpsc::channel(256);
+
+    // Start event source
+    if args.mock {
+        println!("mode: mock ({} events/sec)", args.mock_rate);
+        tokio::spawn(events::mock_source(tx, args.mock_rate));
+    } else {
+        #[cfg(feature = "ebpf")]
+        {
+            println!("mode: eBPF (requires CAP_BPF)");
+            tokio::spawn(events::ebpf_source(tx));
+        }
+        #[cfg(not(feature = "ebpf"))]
+        {
+            eprintln!("error: compiled without --features ebpf; use --mock for testing");
+            std::process::exit(1);
+        }
+    }
+
+    // Connect and stream to collector
+    grpc::stream_to_collector(args.collector, node_id, rx).await
 }

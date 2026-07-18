@@ -1,0 +1,82 @@
+syntax = "proto3";
+
+package sentinel.v1;
+
+option go_package = "github.com/flipslidersand/sentinel-mesh/internal/pb";
+
+// ─── Event types ──────────────────────────────────────────────
+
+enum EventType {
+  EXEC = 0;
+  TCP  = 1;
+  FILE = 2;
+}
+
+message ExecEvent {
+  uint32 pid     = 1;
+  uint32 ppid    = 2;
+  string comm    = 3;
+  string cmdline = 4;
+  string cwd     = 5;
+  uint32 uid     = 6;
+}
+
+message TcpEvent {
+  uint32 pid       = 1;
+  string comm      = 2;
+  string src_ip    = 3;
+  uint32 src_port  = 4;
+  string dst_ip    = 5;
+  uint32 dst_port  = 6;
+  string direction = 7;
+}
+
+message FileEvent {
+  uint32 pid  = 1;
+  string comm = 2;
+  string path = 3;
+  string op   = 4;
+  int32  ret  = 5;
+}
+
+message KernelEvent {
+  string    event_id  = 1;
+  string    node_id   = 2;
+  int64     timestamp = 3;
+  EventType type      = 4;
+  oneof payload {
+    ExecEvent exec = 10;
+    TcpEvent  tcp  = 11;
+    FileEvent file = 12;
+  }
+}
+
+// ─── Agent registration ───────────────────────────────────────
+
+message RegisterRequest {
+  string node_id  = 1;
+  string hostname = 2;
+  string ip       = 3;
+  string version  = 4;
+}
+
+message RegisterResponse {
+  bool   ok      = 1;
+  string message = 2;
+}
+
+// ─── Event stream ─────────────────────────────────────────────
+
+message EventAck {
+  bool ok = 1;
+}
+
+// ─── Service ──────────────────────────────────────────────────
+
+service SentinelCollector {
+  // Agent registration (unary)
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+
+  // Bidirectional event stream: Agent sends KernelEvent, Collector acks
+  rpc StreamEvents(stream KernelEvent) returns (stream EventAck);
+}
