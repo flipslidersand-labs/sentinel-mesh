@@ -41,8 +41,9 @@ func (s *Store) SaveEvent(e Event) error {
 	})
 }
 
-// ListEvents returns up to limit events, newest first.
-func (s *Store) ListEvents(limit int) ([]Event, error) {
+// ListEvents returns up to limit events, newest first. When node is non-empty,
+// only events from that node_id are returned (filtered after decode).
+func (s *Store) ListEvents(limit int, node string) ([]Event, error) {
 	var events []Event
 	err := s.db.View(func(tx *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions
@@ -58,6 +59,9 @@ func (s *Store) ListEvents(limit int) ([]Event, error) {
 				return json.Unmarshal(v, &e)
 			}); err != nil {
 				return err
+			}
+			if node != "" && e.NodeID != node {
+				continue
 			}
 			events = append(events, e)
 		}
