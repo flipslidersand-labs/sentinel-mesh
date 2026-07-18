@@ -1,41 +1,153 @@
 # sentinel-mesh
 
-> 🟡 **Scaffold Phase** — 基本設計と MVP 実装準備中
+[![CI](https://github.com/flipslidersand/sentinel-mesh/actions/workflows/ci.yml/badge.svg)](https://github.com/flipslidersand/sentinel-mesh/actions/workflows/ci.yml)
 
-eBPF-based distributed observability platform for kernel-level system monitoring
+eBPF-based distributed observability platform for kernel-level system monitoring.
 
-## ステータス
+A **Rust Agent** collects kernel events via eBPF and streams them over gRPC to a **Go Collector**, which persists events in BadgerDB and exposes a REST API. Heartbeat tracking automatically marks unresponsive agents as inactive.
 
-| 項目 | 状態 |
-|------|------|
-| **フェーズ** | Scaffold |
-| **実装予定** | 2026-Q3 MVP開始 |
-| **テスト** | 未実装 |
-| **ドキュメント** | 企画中 |
+## Architecture
 
-## 技術スタック
+```text
+┌─────────────────────────────────┐       ┌────────────────────────────────────┐
+│  Rust Agent (sentinel-agent)    │       │  Go Collector (sentinel-collector) │
+│                                 │       │                                    │
+│  eBPF kernel program            │ gRPC  │  Receiver (gRPC server)            │
+│  → event stream (tokio/tonic)  │──────▶│  → Store (BadgerDB)                │
+│                                 │       │  → Registry (heartbeat tracking)   │
+│  mock mode available (--mock)   │       │  → REST API (Gin, :8081)           │
+└─────────────────────────────────┘       └────────────────────────────────────┘
+```
 
-- **言語:** TBD
-- **ビルドツール:** TBD
-- **最終更新:** 2026-07-01
+## Requirements
 
-## 実装ロードマップ
+- Rust 1.82+ (`cargo`)
+- Go 1.22+ (`go`)
+- `CAP_BPF` capability for real eBPF mode; mock mode works without it
 
-1. **Phase 1 (Q3 2026):** 基本設計 + MVP スケルトン
-2. **Phase 2 (Q4 2026):** コア機能実装 + テスト
-3. **Phase 3 (Q1 2027):** パフォーマンス最適化 + ドキュメント完成
-4. **Phase 4 (Q2 2027):** 本番デプロイ
+## Build
 
-## 参考資料
+```bash
+# Rust Agent (mock mode — no kernel privileges required)
+cd rust-agent/agent
+cargo build --release
 
-- [dev-nodee-infrastructure CLAUDE.md](https://github.com/flipslidersand/dev-nodee-infrastructure/blob/master/CLAUDE.md) — 詳細な実装方針
-- [GitHub Issues](https://github.com/flipslidersand/dev-nodee-infrastructure/issues) — 実装計画・進捗
+# Rust Agent (real eBPF mode — requires CAP_BPF)
+cargo build --release --features ebpf
 
-## 注意事項
+# Go Collector
+cd go-collector
+go build ./cmd/collector
+```
 
-- **開発中**: API/設計は予告なく変更される可能性があります
-- **テスト未実装**: 本格実装まで品質保証していません
+## Quick Start
 
----
+```bash
+# Terminal 1: Start the Go Collector
+cd go-collector
+./collector serve --grpc-addr :50051 --http-addr :8081 --data-dir /tmp/sentinel-data
 
-詳細な実装計画は [GitHub Issues](https://github.com/flipslidersand/dev-nodee-infrastructure/issues) を参照してください。
+# Terminal 2: Start the Rust Agent (mock mode)
+cd rust-agent/agent
+./sentinel-agent --mock --mock-rate 5
+# → streams 5 mock kernel events/sec to localhost:50051
+
+# Query the REST API
+curl http://localhost:8081/api/events                        # list events (default limit 100)
+curl "http://localhost:8081/api/events?node=web-01&limit=20"
+curl http://localhost:8081/api/nodes                         # list registered agents + status
+curl http://localhost:8081/api/stats                         # event counts by type
+curl http://localhost:8081/healthz                           # health check
+```
+
+## Agent CLI
+
+```text
+sentinel-agent [OPTIONS]
+
+Options:
+  --collector <URL>     gRPC endpoint of the Go Collector [default: http://127.0.0.1:50051]
+  --node-id <ID>        Node identifier [default: hostname]
+  --mock                Generate mock events instead of loading eBPF
+  --mock-rate <N>       Events per second in mock mode [default: 2]
+```
+
+## Collector CLI
+
+```text
+sentinel-collector serve [OPTIONS]
+
+Options:
+  --grpc-addr <ADDR>         gRPC listen address [default: :50051]
+  --http-addr <ADDR>         REST API listen address [default: :8081]
+  --data-dir <PATH>          BadgerDB data directory [default: /tmp/sentinel-data]
+  --heartbeat-timeout <DUR>  Inactivity before agent is marked inactive [default: 60s]
+```
+
+## REST API
+
+| Endpoint          | Description                                              |
+| ----------------- | -------------------------------------------------------- |
+| `GET /healthz`    | Health check                                             |
+| `GET /api/events` | List events. Query params: `node=<id>`, `limit=<N>`      |
+| `GET /api/nodes`  | List registered agents with `active` / `inactive` status |
+| `GET /api/stats`  | Event counts per event type                              |
+
+## Heartbeat Tracking
+
+The collector runs a background goroutine that checks agent liveness every `heartbeat-timeout / 2`. An agent is marked `inactive` when its last gRPC message is older than `heartbeat-timeout`. Status is visible in `GET /api/nodes`.
+
+## Directory Structure
+
+```text
+sentinel-mesh/
+├── rust-agent/
+│   ├── agent/               # Rust userspace agent (tokio + tonic gRPC client)
+│   │   └── src/
+│   │       ├── main.rs      # CLI entry, event routing
+│   │       ├── events.rs    # mock_source / ebpf_source
+│   │       └── grpc.rs      # tonic streaming to collector
+│   └── agent-ebpf/          # eBPF kernel program (aya)
+│       └── src/main.rs
+├── go-collector/
+│   ├── cmd/collector/       # CLI (cobra) — serve subcommand
+│   └── internal/
+│       ├── receiver/        # gRPC server (registers nodes, stores events)
+│       ├── registry/        # Agent registry + heartbeat checker
+│       ├── store/           # BadgerDB wrapper (events)
+│       ├── exporter/        # Gin REST API router
+│       └── pb/              # Generated protobuf/gRPC stubs
+├── proto/
+│   └── sentinel.v1.proto    # Event + AgentService proto definition
+└── docs/
+    ├── spec.md
+    ├── tech-stack.md
+    └── adr/
+```
+
+## Tech Stack
+
+| Layer                       | Technology                            |
+| --------------------------- | ------------------------------------- |
+| Agent runtime               | Rust / tokio                          |
+| eBPF                        | aya                                   |
+| Agent → Collector transport | gRPC (tonic / google.golang.org/grpc) |
+| Collector HTTP              | Gin                                   |
+| Persistence                 | BadgerDB                              |
+| Logging                     | go.uber.org/zap                       |
+| CLI                         | clap (Rust) / cobra (Go)              |
+| CI                          | GitHub Actions                        |
+
+## Status
+
+| Phase | Description                                    | Status  |
+| ----- | ---------------------------------------------- | ------- |
+| 1     | Rust Agent — eBPF kernel program + mock source | ✅ Done |
+| 2     | Proto definition + Go Collector gRPC server    | ✅ Done |
+| 3     | BadgerDB store + Gin REST API                  | ✅ Done |
+| 4     | Heartbeat timeout — stale agent detection      | ✅ Done |
+| 7     | Node filter on `GET /api/events`               | ✅ Done |
+
+## License
+
+MIT
