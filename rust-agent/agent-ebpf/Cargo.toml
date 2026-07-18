@@ -3,8 +3,12 @@ name = "sentinel-agent-ebpf"
 version = "0.1.0"
 edition = "2021"
 
+# Build with:
+#   cargo +nightly build --target bpfel-unknown-none -Z build-std=core
+# Requires: bpf-linker, LLVM dev headers (sudo apt install llvm-18-dev)
+
 [dependencies]
-aya-bpf = { workspace = true }
+aya-bpf = "0.1"
 
 [[bin]]
 name = "sentinel-agent-ebpf"
