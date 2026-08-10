@@ -1,23 +1,33 @@
 rules:
-  - id: suspicious_exec
-    description: Detect execution of suspicious binaries
+  - id: mock_proc_detection
+    description: Detect mock process (for testing)
     event_type: exec
-    severity: warning
-    message: "Suspicious binary execution detected"
+    severity: info
+    message: "Mock process execution detected"
     conditions:
       - field: comm
-        operator: contains
-        value: "bash"
+        operator: eq
+        value: "mock-proc"
 
-  - id: high_memory_write
-    description: Detect large memory writes
-    event_type: file
-    severity: info
-    message: "File write operation detected"
+  - id: high_uid_exec
+    description: Detect execution by high UID (suspicious)
+    event_type: exec
+    severity: warning
+    message: "Process execution by high UID detected"
     conditions:
-      - field: flags
-        operator: contains
-        value: "O_WRONLY"
+      - field: uid
+        operator: gt
+        value: "500"
+
+  - id: bash_execution
+    description: Detect execution of bash shell
+    event_type: exec
+    severity: warning
+    message: "Bash shell execution detected"
+    conditions:
+      - field: comm
+        operator: eq
+        value: "bash"
 
   - id: tcp_to_suspicious_port
     description: Alert on connections to high ports
