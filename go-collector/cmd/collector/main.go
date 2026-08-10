@@ -13,6 +13,7 @@ import (
 
 	"github.com/flipslidersand/sentinel-mesh/internal/alerting"
 	"github.com/flipslidersand/sentinel-mesh/internal/exporter"
+	"github.com/flipslidersand/sentinel-mesh/internal/otel"
 	"github.com/flipslidersand/sentinel-mesh/internal/receiver"
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
 	"github.com/flipslidersand/sentinel-mesh/internal/store"
@@ -74,6 +75,23 @@ func serveCmd() *cobra.Command {
 				logger.Info("alerting engine loaded", zap.Int("rules", len(ruleset.Rules)))
 			}
 
+			// Phase 6: initialize OTel metrics and traces
+			metricsProvider, err := otel.NewMetricsProvider(ctx)
+			if err != nil {
+				return fmt.Errorf("otel metrics: %w", err)
+			}
+			logger.Info("Prometheus metrics endpoint enabled", zap.String("addr", httpAddr+"/metrics"))
+
+			otelEndpoint, _ := cmd.Flags().GetString("otel-endpoint")
+			tracesProvider, err := otel.NewTracesProvider(ctx, otelEndpoint)
+			if err != nil {
+				return fmt.Errorf("otel traces: %w", err)
+			}
+			defer tracesProvider.Close(ctx) //nolint:errcheck
+			if otelEndpoint != "" {
+				logger.Info("distributed tracing enabled", zap.String("endpoint", otelEndpoint))
+			}
+
 			// REST API in background
 			router := exporter.Router(st, reg)
 			go func() {
@@ -84,7 +102,7 @@ func serveCmd() *cobra.Command {
 			}()
 
 			// gRPC server (blocking)
-			return receiver.Serve(grpcAddr, st, reg, engine, logger)
+			return receiver.Serve(grpcAddr, st, reg, engine, metricsProvider, tracesProvider.Tracer(), logger)
 		},
 	}
 	cmd.Flags().String("grpc-addr", ":50051", "gRPC listen address")
@@ -92,5 +110,6 @@ func serveCmd() *cobra.Command {
 	cmd.Flags().String("data-dir", "/tmp/sentinel-data", "BadgerDB data directory")
 	cmd.Flags().Duration("heartbeat-timeout", 60*time.Second, "inactivity duration before agent is marked inactive")
 	cmd.Flags().String("rules", "", "path to alerting rules YAML file")
+	cmd.Flags().String("otel-endpoint", "", "OTLP HTTP endpoint for distributed tracing (e.g., http://localhost:4318)")
 	return cmd
 }

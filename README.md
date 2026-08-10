@@ -43,9 +43,9 @@ go build ./cmd/collector
 ## Quick Start
 
 ```bash
-# Terminal 1: Start the Go Collector
+# Terminal 1: Start the Go Collector (with alerting rules)
 cd go-collector
-./collector serve --grpc-addr :50051 --http-addr :8081 --data-dir /tmp/sentinel-data
+./collector serve --grpc-addr :50051 --http-addr :8081 --data-dir /tmp/sentinel-data --rules ../rules.yaml
 
 # Terminal 2: Start the Rust Agent (mock mode)
 cd rust-agent/agent
@@ -57,6 +57,8 @@ curl http://localhost:8081/api/events                        # list events (defa
 curl "http://localhost:8081/api/events?node=web-01&limit=20"
 curl http://localhost:8081/api/nodes                         # list registered agents + status
 curl http://localhost:8081/api/stats                         # event counts by type
+curl http://localhost:8081/api/alerts                        # list triggered alerts
+curl http://localhost:8081/metrics                           # Prometheus metrics
 curl http://localhost:8081/healthz                           # health check
 ```
 
@@ -148,6 +150,7 @@ sentinel-mesh/
 | 3     | BadgerDB store + Gin REST API                  | ✅ Done |
 | 4     | Heartbeat timeout — stale agent detection      | ✅ Done |
 | 5     | Alerting engine — rules.yaml + evaluation      | ✅ Done |
+| 6     | OpenTelemetry metrics + distributed traces     | ✅ Done |
 | 7     | Node filter on `GET /api/events`               | ✅ Done |
 
 ## License

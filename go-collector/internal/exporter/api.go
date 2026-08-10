@@ -8,6 +8,7 @@ import (
 
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
 	"github.com/flipslidersand/sentinel-mesh/internal/store"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // Router builds the gin HTTP router with REST endpoints.
@@ -19,6 +20,9 @@ func Router(st *store.Store, reg *registry.Registry) *gin.Engine {
 	r.GET("/healthz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
+
+	// Prometheus metrics endpoint
+	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
 	api := r.Group("/api")
 	{

@@ -8,10 +8,13 @@ import (
 	"net"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
 	"github.com/flipslidersand/sentinel-mesh/internal/alerting"
+	"github.com/flipslidersand/sentinel-mesh/internal/otel"
 	"github.com/flipslidersand/sentinel-mesh/internal/pb"
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
 	"github.com/flipslidersand/sentinel-mesh/internal/store"
@@ -19,10 +22,12 @@ import (
 
 type server struct {
 	pb.UnimplementedSentinelCollectorServer
-	st     *store.Store
-	reg    *registry.Registry
-	engine *alerting.Engine
-	log    *zap.Logger
+	st      *store.Store
+	reg     *registry.Registry
+	engine  *alerting.Engine
+	metrics *otel.MetricsProvider
+	tracer  trace.Tracer
+	log     *zap.Logger
 }
 
 // Register handles agent registration (unary RPC).
@@ -59,13 +64,37 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 			s.log.Error("save event", zap.Error(storeErr))
 		}
 
+		// Phase 6: record event metric
+		if s.metrics != nil {
+			s.metrics.RecordEvent(storedEvent.Type, storedEvent.NodeID)
+		}
+
 		// Phase 5: evaluate alerts
 		if s.engine != nil {
+			_, span := s.tracer.Start(stream.Context(), "evaluate_alerts",
+				trace.WithAttributes(
+					attribute.String("event.id", storedEvent.EventID),
+					attribute.String("event.type", storedEvent.Type),
+					attribute.String("node.id", storedEvent.NodeID),
+				),
+			)
+			defer span.End()
+
 			alerts := s.engine.Evaluate(storedEvent)
 			for _, alert := range alerts {
 				if err := s.st.SaveAlert(alert); err != nil {
 					s.log.Error("save alert", zap.Error(err))
 				}
+
+				// Phase 6: record alert metric and trace
+				if s.metrics != nil {
+					s.metrics.RecordAlert(alert.RuleID, alert.Severity, alert.NodeID)
+				}
+				span.AddEvent("alert_triggered", trace.WithAttributes(
+					attribute.String("rule.id", alert.RuleID),
+					attribute.String("severity", alert.Severity),
+					attribute.String("message", alert.Message),
+				))
 			}
 		}
 
@@ -111,14 +140,15 @@ func (s *server) eventPayload(e *pb.KernelEvent) json.RawMessage {
 }
 
 // Serve starts the gRPC server on addr.
-func Serve(addr string, st *store.Store, reg *registry.Registry, engine *alerting.Engine, log *zap.Logger) error {
+func Serve(addr string, st *store.Store, reg *registry.Registry, engine *alerting.Engine,
+	metrics *otel.MetricsProvider, tracer trace.Tracer, log *zap.Logger) error {
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", addr, err)
 	}
 	srv := grpc.NewServer()
 
-	s := &server{st: st, reg: reg, engine: engine, log: log}
+	s := &server{st: st, reg: reg, engine: engine, metrics: metrics, tracer: tracer, log: log}
 	pb.RegisterSentinelCollectorServer(srv, s)
 
 	log.Info("gRPC server listening", zap.String("addr", addr))
