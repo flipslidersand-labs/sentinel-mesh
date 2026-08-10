@@ -86,12 +86,13 @@ Options:
 
 ## REST API
 
-| Endpoint          | Description                                              |
-| ----------------- | -------------------------------------------------------- |
-| `GET /healthz`    | Health check                                             |
-| `GET /api/events` | List events. Query params: `node=<id>`, `limit=<N>`      |
-| `GET /api/nodes`  | List registered agents with `active` / `inactive` status |
-| `GET /api/stats`  | Event counts per event type                              |
+| Endpoint          | Description                                                   |
+| ----------------- | ------------------------------------------------------------- |
+| `GET /healthz`    | Health check                                                  |
+| `GET /api/events` | List events. Query params: `node=<id>`, `limit=<N>`           |
+| `GET /api/nodes`  | List registered agents with `active` / `inactive` status      |
+| `GET /api/stats`  | Event counts per event type                                   |
+| `GET /api/alerts` | List triggered alerts. Query params: `node=<id>`, `limit=<N>` |
 
 ## Heartbeat Tracking
 
@@ -146,6 +147,7 @@ sentinel-mesh/
 | 2     | Proto definition + Go Collector gRPC server    | ✅ Done |
 | 3     | BadgerDB store + Gin REST API                  | ✅ Done |
 | 4     | Heartbeat timeout — stale agent detection      | ✅ Done |
+| 5     | Alerting engine — rules.yaml + evaluation      | ✅ Done |
 | 7     | Node filter on `GET /api/events`               | ✅ Done |
 
 ## License

@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 
+	"github.com/flipslidersand/sentinel-mesh/internal/alerting"
 	"github.com/flipslidersand/sentinel-mesh/internal/exporter"
 	"github.com/flipslidersand/sentinel-mesh/internal/receiver"
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
@@ -59,6 +60,20 @@ func serveCmd() *cobra.Command {
 			reg.StartHeartbeatChecker(ctx, heartbeatTimeout, heartbeatTimeout/2)
 			logger.Info("heartbeat checker started", zap.Duration("timeout", heartbeatTimeout))
 
+			// Phase 5: load alerting rules and initialize engine
+			rulesPath, _ := cmd.Flags().GetString("rules")
+			ruleset, err := alerting.LoadRules(rulesPath)
+			if err != nil {
+				return fmt.Errorf("load rules: %w", err)
+			}
+			if err := ruleset.Validate(); err != nil {
+				return fmt.Errorf("validate rules: %w", err)
+			}
+			engine := alerting.New(ruleset, logger)
+			if len(ruleset.Rules) > 0 {
+				logger.Info("alerting engine loaded", zap.Int("rules", len(ruleset.Rules)))
+			}
+
 			// REST API in background
 			router := exporter.Router(st, reg)
 			go func() {
@@ -69,12 +84,13 @@ func serveCmd() *cobra.Command {
 			}()
 
 			// gRPC server (blocking)
-			return receiver.Serve(grpcAddr, st, reg, logger)
+			return receiver.Serve(grpcAddr, st, reg, engine, logger)
 		},
 	}
 	cmd.Flags().String("grpc-addr", ":50051", "gRPC listen address")
 	cmd.Flags().String("http-addr", ":8081", "REST API listen address")
 	cmd.Flags().String("data-dir", "/tmp/sentinel-data", "BadgerDB data directory")
 	cmd.Flags().Duration("heartbeat-timeout", 60*time.Second, "inactivity duration before agent is marked inactive")
+	cmd.Flags().String("rules", "", "path to alerting rules YAML file")
 	return cmd
 }

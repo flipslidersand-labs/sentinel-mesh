@@ -1,0 +1,30 @@
+rules:
+  - id: suspicious_exec
+    description: Detect execution of suspicious binaries
+    event_type: exec
+    severity: warning
+    message: "Suspicious binary execution detected"
+    conditions:
+      - field: comm
+        operator: contains
+        value: "bash"
+
+  - id: high_memory_write
+    description: Detect large memory writes
+    event_type: file
+    severity: info
+    message: "File write operation detected"
+    conditions:
+      - field: flags
+        operator: contains
+        value: "O_WRONLY"
+
+  - id: tcp_to_suspicious_port
+    description: Alert on connections to high ports
+    event_type: tcp
+    severity: warning
+    message: "TCP connection to non-standard port detected"
+    conditions:
+      - field: dport
+        operator: gt
+        value: "10000"

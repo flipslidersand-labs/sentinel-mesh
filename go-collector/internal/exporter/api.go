@@ -53,6 +53,23 @@ func Router(st *store.Store, reg *registry.Registry) *gin.Engine {
 			}
 			c.JSON(http.StatusOK, counts)
 		})
+
+		// GET /api/alerts?node=xxx&limit=N
+		api.GET("/alerts", func(c *gin.Context) {
+			limit := 100
+			if l := c.Query("limit"); l != "" {
+				if n, err := strconv.Atoi(l); err == nil && n > 0 {
+					limit = n
+				}
+			}
+			node := c.Query("node")
+			alerts, err := st.ListAlerts(node, limit)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, alerts)
+		})
 	}
 
 	return r
