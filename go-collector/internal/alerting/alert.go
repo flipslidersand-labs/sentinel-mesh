@@ -2,12 +2,12 @@ package alerting
 
 // Rule represents an alerting rule.
 type Rule struct {
-	ID          string            `yaml:"id"`
-	Description string            `yaml:"description"`
-	EventType   string            `yaml:"event_type"` // "exec" | "tcp" | "file" | "*"
-	Conditions  []Condition       `yaml:"conditions"`
-	Severity    string            `yaml:"severity"`
-	Message     string            `yaml:"message"`
+	ID          string      `yaml:"id"`
+	Description string      `yaml:"description"`
+	EventType   string      `yaml:"event_type"` // "exec" | "tcp" | "file" | "*"
+	Conditions  []Condition `yaml:"conditions"`
+	Severity    string      `yaml:"severity"`
+	Message     string      `yaml:"message"`
 }
 
 // Condition represents a single condition to match.

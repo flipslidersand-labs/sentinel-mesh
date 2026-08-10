@@ -5,8 +5,8 @@ import (
 	"net/http"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	promexp "go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/attribute"
+	promexp "go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/metric"
 	metricsdk "go.opentelemetry.io/otel/sdk/metric"
 )
