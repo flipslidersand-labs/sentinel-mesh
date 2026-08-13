@@ -95,16 +95,10 @@ func serveCmd() *cobra.Command {
 
 			// Phase 7: anomaly detector (sliding-window frequency detection)
 			detector := anomaly.New(nil)
-			logger.Info("anomaly detector started",
-				zap.Int("windows", len(anomaly.DefaultWindows)))
+			logger.Info("anomaly detector started", zap.Int("windows", len(anomaly.DefaultWindows)))
 
 			staticDir, _ := cmd.Flags().GetString("static-dir")
 			corsOrigins, _ := cmd.Flags().GetStringSlice("cors-origins")
-
-			// Phase 7: anomaly detection
-			detector := anomaly.New(st, logger)
-			go detector.Run(ctx)
-			logger.Info("anomaly detector started")
 
 			// REST API in background
 			router := exporter.Router(st, reg, detector, staticDir, corsOrigins)

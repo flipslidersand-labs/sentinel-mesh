@@ -81,7 +81,11 @@ func Router(st *store.Store, reg *registry.Registry, detector *anomaly.Detector,
 		})
 
 		api.GET("/stats/windows", func(c *gin.Context) {
-			c.JSON(http.StatusOK, det.Stats())
+			if detector == nil {
+				c.JSON(http.StatusOK, gin.H{})
+				return
+			}
+			c.JSON(http.StatusOK, detector.WindowStats())
 		})
 
 		api.GET("/alerts", func(c *gin.Context) {
@@ -91,14 +95,6 @@ func Router(st *store.Store, reg *registry.Registry, detector *anomaly.Detector,
 				return
 			}
 			c.JSON(http.StatusOK, alerts)
-		})
-
-		api.GET("/stats/windows", func(c *gin.Context) {
-			if detector == nil {
-				c.JSON(http.StatusOK, gin.H{})
-				return
-			}
-			c.JSON(http.StatusOK, detector.WindowStats())
 		})
 	}
 

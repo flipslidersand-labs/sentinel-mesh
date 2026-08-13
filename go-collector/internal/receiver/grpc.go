@@ -106,11 +106,6 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 			}
 		}
 
-		// Phase 7: anomaly detection feed
-		if s.detector != nil {
-			s.detector.Feed(storedEvent.NodeID, storedEvent.Type)
-		}
-
 		if err := stream.Send(&pb.EventAck{Ok: true}); err != nil {
 			return err
 		}
