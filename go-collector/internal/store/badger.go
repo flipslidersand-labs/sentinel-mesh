@@ -93,6 +93,58 @@ func (s *Store) Stats() (map[string]int, error) {
 	return counts, err
 }
 
+// Alert represents a triggered alert.
+type Alert struct {
+	AlertID   string    `json:"alert_id"`
+	RuleID    string    `json:"rule_id"`
+	NodeID    string    `json:"node_id"`
+	EventID   string    `json:"event_id"`
+	Timestamp time.Time `json:"timestamp"`
+	Message   string    `json:"message"`
+	Severity  string    `json:"severity"`
+}
+
+// SaveAlert persists an alert to the store.
+func (s *Store) SaveAlert(a Alert) error {
+	val, err := json.Marshal(a)
+	if err != nil {
+		return err
+	}
+	key := []byte(fmt.Sprintf("alert:%s:%s", a.Timestamp.Format(time.RFC3339Nano), a.AlertID))
+	return s.db.Update(func(tx *badger.Txn) error {
+		return tx.Set(key, val)
+	})
+}
+
+// ListAlerts returns up to limit alerts, newest first.
+// If node is non-empty, only alerts with matching NodeID are returned.
+func (s *Store) ListAlerts(node string, limit int) ([]Alert, error) {
+	var alerts []Alert
+	err := s.db.View(func(tx *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Reverse = true
+		it := tx.NewIterator(opts)
+		defer it.Close()
+
+		prefix := []byte("alert:")
+		it.Seek(append(prefix, 0xFF))
+		for ; it.ValidForPrefix(prefix) && len(alerts) < limit; it.Next() {
+			var a Alert
+			if err := it.Item().Value(func(v []byte) error {
+				return json.Unmarshal(v, &a)
+			}); err != nil {
+				return err
+			}
+			if node != "" && a.NodeID != node {
+				continue
+			}
+			alerts = append(alerts, a)
+		}
+		return nil
+	})
+	return alerts, err
+}
+
 func (s *Store) Close() error {
 	return s.db.Close()
 }
