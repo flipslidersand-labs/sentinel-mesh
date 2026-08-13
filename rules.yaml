@@ -1,0 +1,40 @@
+rules:
+  - id: mock_proc_detection
+    description: Detect mock process (for testing)
+    event_type: exec
+    severity: info
+    message: "Mock process execution detected"
+    conditions:
+      - field: comm
+        operator: eq
+        value: "mock-proc"
+
+  - id: high_uid_exec
+    description: Detect execution by high UID (suspicious)
+    event_type: exec
+    severity: warning
+    message: "Process execution by high UID detected"
+    conditions:
+      - field: uid
+        operator: gt
+        value: "500"
+
+  - id: bash_execution
+    description: Detect execution of bash shell
+    event_type: exec
+    severity: warning
+    message: "Bash shell execution detected"
+    conditions:
+      - field: comm
+        operator: eq
+        value: "bash"
+
+  - id: tcp_to_suspicious_port
+    description: Alert on connections to high ports
+    event_type: tcp
+    severity: warning
+    message: "TCP connection to non-standard port detected"
+    conditions:
+      - field: dport
+        operator: gt
+        value: "10000"
