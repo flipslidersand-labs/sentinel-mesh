@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/flipslidersand/sentinel-mesh/internal/alerting"
+	"github.com/flipslidersand/sentinel-mesh/internal/anomaly"
 	"github.com/flipslidersand/sentinel-mesh/internal/otel"
 	"github.com/flipslidersand/sentinel-mesh/internal/pb"
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
@@ -22,12 +23,13 @@ import (
 
 type server struct {
 	pb.UnimplementedSentinelCollectorServer
-	st      *store.Store
-	reg     *registry.Registry
-	engine  *alerting.Engine
-	metrics *otel.MetricsProvider
-	tracer  trace.Tracer
-	log     *zap.Logger
+	st       *store.Store
+	reg      *registry.Registry
+	engine   *alerting.Engine
+	detector *anomaly.Detector
+	metrics  *otel.MetricsProvider
+	tracer   trace.Tracer
+	log      *zap.Logger
 }
 
 // Register handles agent registration (unary RPC).
@@ -98,6 +100,11 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 			}
 		}
 
+		// Phase 7: anomaly detection feed
+		if s.detector != nil {
+			s.detector.Feed(storedEvent.NodeID, storedEvent.Type)
+		}
+
 		if err := stream.Send(&pb.EventAck{Ok: true}); err != nil {
 			return err
 		}
@@ -141,14 +148,14 @@ func (s *server) eventPayload(e *pb.KernelEvent) json.RawMessage {
 
 // Serve starts the gRPC server on addr.
 func Serve(addr string, st *store.Store, reg *registry.Registry, engine *alerting.Engine,
-	metrics *otel.MetricsProvider, tracer trace.Tracer, log *zap.Logger) error {
+	detector *anomaly.Detector, metrics *otel.MetricsProvider, tracer trace.Tracer, log *zap.Logger) error {
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", addr, err)
 	}
 	srv := grpc.NewServer()
 
-	s := &server{st: st, reg: reg, engine: engine, metrics: metrics, tracer: tracer, log: log}
+	s := &server{st: st, reg: reg, engine: engine, detector: detector, metrics: metrics, tracer: tracer, log: log}
 	pb.RegisterSentinelCollectorServer(srv, s)
 
 	log.Info("gRPC server listening", zap.String("addr", addr))

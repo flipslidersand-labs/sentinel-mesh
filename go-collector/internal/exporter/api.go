@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/flipslidersand/sentinel-mesh/internal/anomaly"
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
 	"github.com/flipslidersand/sentinel-mesh/internal/store"
 )
@@ -24,7 +25,7 @@ func queryInt(c *gin.Context, key string, def int) int {
 
 // Router builds the gin HTTP router with REST endpoints and static UI.
 // staticDir must be an absolute path or relative to the process CWD.
-func Router(st *store.Store, reg *registry.Registry, staticDir string, corsOrigins []string) *gin.Engine {
+func Router(st *store.Store, reg *registry.Registry, det *anomaly.Detector, staticDir string, corsOrigins []string) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -77,6 +78,10 @@ func Router(st *store.Store, reg *registry.Registry, staticDir string, corsOrigi
 				return
 			}
 			c.JSON(http.StatusOK, counts)
+		})
+
+		api.GET("/stats/windows", func(c *gin.Context) {
+			c.JSON(http.StatusOK, det.Stats())
 		})
 
 		api.GET("/alerts", func(c *gin.Context) {
