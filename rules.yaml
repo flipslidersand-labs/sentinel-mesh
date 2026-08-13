@@ -38,3 +38,14 @@ rules:
       - field: dport
         operator: gt
         value: "10000"
+
+# Anomaly detection rules are handled automatically by the in-process frequency
+# detector (internal/anomaly). The detector emits alerts with rule IDs of the
+# form "anomaly_<event_type>" (e.g. "anomaly_exec") when event frequency
+# exceeds the sliding-window thresholds below:
+#
+# Window 1:  30 events / 1 minute  (burst detection)
+# Window 2: 100 events / 5 minutes (sustained detection)
+#
+# These thresholds are configured in go-collector/internal/anomaly/detector.go
+# (DefaultWindows). No additional YAML entry is required.
