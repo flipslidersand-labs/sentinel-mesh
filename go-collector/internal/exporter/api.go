@@ -25,7 +25,7 @@ func queryInt(c *gin.Context, key string, def int) int {
 
 // Router builds the gin HTTP router with REST endpoints and static UI.
 // staticDir must be an absolute path or relative to the process CWD.
-func Router(st *store.Store, reg *registry.Registry, det *anomaly.Detector, staticDir string, corsOrigins []string) *gin.Engine {
+func Router(st *store.Store, reg *registry.Registry, detector *anomaly.Detector, staticDir string, corsOrigins []string) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -91,6 +91,14 @@ func Router(st *store.Store, reg *registry.Registry, det *anomaly.Detector, stat
 				return
 			}
 			c.JSON(http.StatusOK, alerts)
+		})
+
+		api.GET("/stats/windows", func(c *gin.Context) {
+			if detector == nil {
+				c.JSON(http.StatusOK, gin.H{})
+				return
+			}
+			c.JSON(http.StatusOK, detector.WindowStats())
 		})
 	}
 

@@ -93,6 +93,11 @@ func serveCmd() *cobra.Command {
 				logger.Info("distributed tracing enabled", zap.String("endpoint", otelEndpoint))
 			}
 
+			// Phase 7: anomaly detector (sliding-window frequency detection)
+			detector := anomaly.New(nil)
+			logger.Info("anomaly detector started",
+				zap.Int("windows", len(anomaly.DefaultWindows)))
+
 			staticDir, _ := cmd.Flags().GetString("static-dir")
 			corsOrigins, _ := cmd.Flags().GetStringSlice("cors-origins")
 

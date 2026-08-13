@@ -82,8 +82,14 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 			)
 			defer span.End()
 
-			alerts := s.engine.Evaluate(storedEvent)
-			for _, alert := range alerts {
+			allAlerts := s.engine.Evaluate(storedEvent)
+
+			// Phase 7: frequency-based anomaly detection
+			if s.detector != nil {
+				allAlerts = append(allAlerts, s.detector.Record(storedEvent)...)
+			}
+
+			for _, alert := range allAlerts {
 				if err := s.st.SaveAlert(alert); err != nil {
 					s.log.Error("save alert", zap.Error(err))
 				}

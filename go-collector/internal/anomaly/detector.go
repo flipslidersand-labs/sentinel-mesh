@@ -1,198 +1,170 @@
-// Package anomaly provides statistical spike detection over event streams.
-// It maintains per-(node, event_type) sliding windows of 1-minute buckets
-// and fires an alert when the current rate exceeds mean + k*stddev of history.
+// Package anomaly implements statistical frequency-based anomaly detection.
+//
+// Each incoming event increments a per-(node, event_type) sliding-window counter.
+// When the count within any configured window exceeds its threshold, an alert is
+// emitted. No external dependencies are required — the detector is fully in-memory.
 package anomaly
 
 import (
-	"context"
 	"fmt"
-	"math"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
-	"go.uber.org/zap"
 
 	"github.com/flipslidersand/sentinel-mesh/internal/store"
 )
 
-const (
-	bucketDuration = time.Minute
-	historyLen     = 10  // number of past buckets used for baseline
-	sigmaK         = 3.0 // alert threshold: mean + k*stddev
-	minBaseline    = 5   // minimum total events in history to start alerting
-)
-
-// key identifies a unique (node, event_type) stream.
-type key struct {
-	node      string
-	eventType string
+// WindowConfig defines a time window and the event-count threshold for anomaly detection.
+type WindowConfig struct {
+	// Duration is the length of the sliding window (e.g. time.Minute).
+	Duration time.Duration
+	// Threshold is the maximum number of events per (node, type) allowed in Duration.
+	// Exceeding this count triggers an anomaly alert.
+	Threshold int
 }
 
-// window holds a circular buffer of per-minute event counts.
-type window struct {
-	counts  [historyLen]int64
-	current int64     // accumulator for the in-progress bucket
-	head    int       // index of the oldest bucket
-	filled  int       // how many buckets are valid (0..historyLen)
-	lastFlush time.Time
+// DefaultWindows are the windows used when none are specified.
+var DefaultWindows = []WindowConfig{
+	{Duration: time.Minute, Threshold: 30},
+	{Duration: 5 * time.Minute, Threshold: 100},
 }
 
-func (w *window) add(n int64) {
-	w.current += n
+// windowKey identifies a per-node, per-event-type sliding window.
+type windowKey struct {
+	NodeID    string
+	EventType string
 }
 
-// flush finalises the current bucket and rotates the ring.
-func (w *window) flush() int64 {
-	completed := w.current
-	w.counts[w.head] = completed
-	w.head = (w.head + 1) % historyLen
-	if w.filled < historyLen {
-		w.filled++
-	}
-	w.current = 0
-	return completed
-}
-
-// stats returns (mean, stddev, total) of the stored history buckets.
-func (w *window) stats() (mean, stddev float64, total int64) {
-	if w.filled == 0 {
-		return 0, 0, 0
-	}
-	for i := 0; i < w.filled; i++ {
-		total += w.counts[i]
-	}
-	mean = float64(total) / float64(w.filled)
-	var variance float64
-	for i := 0; i < w.filled; i++ {
-		d := float64(w.counts[i]) - mean
-		variance += d * d
-	}
-	if w.filled > 1 {
-		stddev = math.Sqrt(variance / float64(w.filled-1))
-	}
-	return mean, stddev, total
-}
-
-// WindowStat is returned by Stats for the /api/stats/windows endpoint.
-type WindowStat struct {
-	Node      string  `json:"node"`
-	EventType string  `json:"event_type"`
-	Current   int64   `json:"current_count"`
-	Mean      float64 `json:"mean_per_min"`
-	Stddev    float64 `json:"stddev"`
-	Threshold float64 `json:"threshold"`
-}
-
-// Detector is a stateful anomaly detector.
+// Detector maintains sliding-window event counters and emits alerts on threshold breach.
 type Detector struct {
 	mu      sync.Mutex
-	windows map[key]*window
-	st      *store.Store
-	log     *zap.Logger
+	windows []WindowConfig
+	// timestamps stores the recorded event times for each (node, type) key.
+	// Old entries are pruned on each Record call.
+	timestamps map[windowKey][]time.Time
 }
 
-// New creates a Detector backed by the given store.
-func New(st *store.Store, log *zap.Logger) *Detector {
+// New returns a Detector with the given window configurations.
+// If windows is nil or empty, DefaultWindows is used.
+func New(windows []WindowConfig) *Detector {
+	if len(windows) == 0 {
+		windows = DefaultWindows
+	}
 	return &Detector{
-		windows: make(map[key]*window),
-		st:      st,
-		log:     log,
+		windows:    windows,
+		timestamps: make(map[windowKey][]time.Time),
 	}
 }
 
-// Feed records one event for the given node and event type.
-func (d *Detector) Feed(node, eventType string) {
-	d.mu.Lock()
-	k := key{node, eventType}
-	w, ok := d.windows[k]
-	if !ok {
-		w = &window{lastFlush: time.Now().Truncate(bucketDuration)}
-		d.windows[k] = w
-	}
-	w.add(1)
-	d.mu.Unlock()
-}
-
-// Run starts the background evaluation loop, flushing buckets every minute.
-func (d *Detector) Run(ctx context.Context) {
-	ticker := time.NewTicker(bucketDuration)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			d.evaluate()
-		}
-	}
-}
-
-func (d *Detector) evaluate() {
+// Record registers an event and returns any anomaly alerts triggered by the event.
+// It is safe to call Record concurrently.
+func (d *Detector) Record(event store.Event) []store.Alert {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	for k, w := range d.windows {
-		mean, stddev, total := w.stats()
-		completed := w.flush()
+	key := windowKey{NodeID: event.NodeID, EventType: event.Type}
+	now := time.Now()
 
-		if total < int64(minBaseline) {
-			// Not enough history to establish a baseline.
-			continue
-		}
+	d.timestamps[key] = append(d.timestamps[key], now)
+	d.prune(key, now)
 
-		threshold := mean + sigmaK*stddev
-		if stddev == 0 {
-			// No variance yet — use 2× mean as a simple heuristic.
-			threshold = mean * 2
-		}
-
-		if float64(completed) > threshold && threshold > 0 {
-			alert := store.Alert{
+	var alerts []store.Alert
+	for _, w := range d.windows {
+		count := d.countWithin(key, now, w.Duration)
+		if count > w.Threshold {
+			alerts = append(alerts, store.Alert{
 				AlertID:   uuid.New().String(),
-				NodeID:    k.node,
-				RuleID:    "anomaly:spike",
-				Severity:  "warning",
+				RuleID:    fmt.Sprintf("anomaly_%s", event.Type),
+				NodeID:    event.NodeID,
+				EventID:   event.EventID,
+				Timestamp: now.UTC(),
 				Message: fmt.Sprintf(
-					"event spike detected: %s/%s — %d events/min (threshold %.1f, mean %.1f, σ %.1f)",
-					k.node, k.eventType, completed, threshold, mean, stddev,
+					"anomaly: %d %q events in %s exceeds threshold %d",
+					count, event.Type, w.Duration, w.Threshold,
 				),
-				Timestamp: time.Now().UTC(),
-			}
-			if err := d.st.SaveAlert(alert); err != nil {
-				d.log.Warn("anomaly: failed to save alert", zap.Error(err))
-			} else {
-				d.log.Info("anomaly alert",
-					zap.String("node", k.node),
-					zap.String("type", k.eventType),
-					zap.Int64("count", completed),
-					zap.Float64("threshold", threshold),
-				)
-			}
+				Severity: "warning",
+			})
+			break // one alert per event even if multiple windows breach
 		}
 	}
+	return alerts
 }
 
-// Stats returns current window statistics for all tracked streams.
-func (d *Detector) Stats() []WindowStat {
+// WindowStats returns the current window counts aggregated across all nodes.
+// The returned map has the structure: event_type → window_label → count.
+// Window labels are formatted as "1m", "5m", "1h", etc.
+func (d *Detector) WindowStats() map[string]map[string]int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	out := make([]WindowStat, 0, len(d.windows))
-	for k, w := range d.windows {
-		mean, stddev, _ := w.stats()
-		threshold := mean + sigmaK*stddev
-		if stddev == 0 {
-			threshold = mean * 2
+	now := time.Now()
+	result := make(map[string]map[string]int)
+
+	for key, ts := range d.timestamps {
+		if result[key.EventType] == nil {
+			result[key.EventType] = make(map[string]int)
 		}
-		out = append(out, WindowStat{
-			Node:      k.node,
-			EventType: k.eventType,
-			Current:   w.current,
-			Mean:      math.Round(mean*100) / 100,
-			Stddev:    math.Round(stddev*100) / 100,
-			Threshold: math.Round(threshold*100) / 100,
-		})
+		for _, w := range d.windows {
+			label := durationLabel(w.Duration)
+			count := 0
+			cutoff := now.Add(-w.Duration)
+			for _, t := range ts {
+				if !t.Before(cutoff) {
+					count++
+				}
+			}
+			result[key.EventType][label] += count
+		}
 	}
-	return out
+	return result
+}
+
+// prune removes timestamps older than the longest configured window.
+// Must be called with d.mu held.
+func (d *Detector) prune(key windowKey, now time.Time) {
+	maxDur := d.maxDuration()
+	cutoff := now.Add(-maxDur)
+	ts := d.timestamps[key]
+	i := 0
+	for i < len(ts) && ts[i].Before(cutoff) {
+		i++
+	}
+	if i > 0 {
+		d.timestamps[key] = ts[i:]
+	}
+}
+
+// countWithin returns how many timestamps for key fall within dur from now.
+// Must be called with d.mu held.
+func (d *Detector) countWithin(key windowKey, now time.Time, dur time.Duration) int {
+	cutoff := now.Add(-dur)
+	count := 0
+	for _, t := range d.timestamps[key] {
+		if !t.Before(cutoff) {
+			count++
+		}
+	}
+	return count
+}
+
+func (d *Detector) maxDuration() time.Duration {
+	var max time.Duration
+	for _, w := range d.windows {
+		if w.Duration > max {
+			max = w.Duration
+		}
+	}
+	return max
+}
+
+func durationLabel(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	default:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	}
 }
