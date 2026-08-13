@@ -12,6 +12,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/flipslidersand/sentinel-mesh/internal/alerting"
+	"github.com/flipslidersand/sentinel-mesh/internal/anomaly"
 	"github.com/flipslidersand/sentinel-mesh/internal/exporter"
 	"github.com/flipslidersand/sentinel-mesh/internal/otel"
 	"github.com/flipslidersand/sentinel-mesh/internal/receiver"
@@ -92,11 +93,16 @@ func serveCmd() *cobra.Command {
 				logger.Info("distributed tracing enabled", zap.String("endpoint", otelEndpoint))
 			}
 
+			// Phase 7: anomaly detector (sliding-window frequency detection)
+			detector := anomaly.New(nil)
+			logger.Info("anomaly detector started",
+				zap.Int("windows", len(anomaly.DefaultWindows)))
+
 			staticDir, _ := cmd.Flags().GetString("static-dir")
 			corsOrigins, _ := cmd.Flags().GetStringSlice("cors-origins")
 
 			// REST API in background
-			router := exporter.Router(st, reg, staticDir, corsOrigins)
+			router := exporter.Router(st, reg, detector, staticDir, corsOrigins)
 			go func() {
 				logger.Info("REST API listening", zap.String("addr", httpAddr))
 				if err := router.Run(httpAddr); err != nil {
@@ -105,7 +111,7 @@ func serveCmd() *cobra.Command {
 			}()
 
 			// gRPC server (blocking)
-			return receiver.Serve(grpcAddr, st, reg, engine, metricsProvider, tracesProvider.Tracer(), logger)
+			return receiver.Serve(grpcAddr, st, reg, engine, detector, metricsProvider, tracesProvider.Tracer(), logger)
 		},
 	}
 	cmd.Flags().String("grpc-addr", ":50051", "gRPC listen address")
