@@ -1,1 +1,3 @@
 go-collector/static/
+web/node_modules/
+web/dist/

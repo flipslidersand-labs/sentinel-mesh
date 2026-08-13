@@ -4,18 +4,29 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
 	"github.com/flipslidersand/sentinel-mesh/internal/store"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-// Router builds the gin HTTP router with REST endpoints.
+// Router builds the gin HTTP router with REST endpoints and static UI.
 func Router(st *store.Store, reg *registry.Registry) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
+	r.Use(cors.Default())
+
+	// Serve the React SPA from go-collector/static/
+	r.Static("/assets", "./static/assets")
+	r.StaticFile("/", "./static/index.html")
+	r.StaticFile("/favicon.svg", "./static/favicon.svg")
+	r.NoRoute(func(c *gin.Context) {
+		// SPA fallback
+		c.File("./static/index.html")
+	})
 
 	r.GET("/healthz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
