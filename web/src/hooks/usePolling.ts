@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export function usePolling<T>(
   fetcher: () => Promise<T>,
@@ -8,12 +8,18 @@ export function usePolling<T>(
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // Always holds the latest fetcher without triggering re-subscription
+  const fetcherRef = useRef(fetcher);
+  useEffect(() => {
+    fetcherRef.current = fetcher;
+  });
+
   useEffect(() => {
     let cancelled = false;
 
-    const fetch = async () => {
+    const run = async () => {
       try {
-        const result = await fetcher();
+        const result = await fetcherRef.current();
         if (!cancelled) {
           setData(result);
           setError(null);
@@ -25,13 +31,13 @@ export function usePolling<T>(
       }
     };
 
-    fetch();
-    const id = setInterval(fetch, intervalMs);
+    run();
+    const id = setInterval(run, intervalMs);
     return () => {
       cancelled = true;
       clearInterval(id);
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [intervalMs]);
 
   return { data, error, loading };
 }

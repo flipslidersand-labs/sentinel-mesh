@@ -92,8 +92,11 @@ func serveCmd() *cobra.Command {
 				logger.Info("distributed tracing enabled", zap.String("endpoint", otelEndpoint))
 			}
 
+			staticDir, _ := cmd.Flags().GetString("static-dir")
+			corsOrigins, _ := cmd.Flags().GetStringSlice("cors-origins")
+
 			// REST API in background
-			router := exporter.Router(st, reg)
+			router := exporter.Router(st, reg, staticDir, corsOrigins)
 			go func() {
 				logger.Info("REST API listening", zap.String("addr", httpAddr))
 				if err := router.Run(httpAddr); err != nil {
@@ -111,5 +114,7 @@ func serveCmd() *cobra.Command {
 	cmd.Flags().Duration("heartbeat-timeout", 60*time.Second, "inactivity duration before agent is marked inactive")
 	cmd.Flags().String("rules", "", "path to alerting rules YAML file")
 	cmd.Flags().String("otel-endpoint", "", "OTLP HTTP endpoint for distributed tracing (e.g., http://localhost:4318)")
+	cmd.Flags().String("static-dir", "./static", "path to static UI directory")
+	cmd.Flags().StringSlice("cors-origins", nil, "allowed CORS origins (empty = allow all; production: http://localhost:8081)")
 	return cmd
 }

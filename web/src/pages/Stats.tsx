@@ -2,7 +2,7 @@ import { api, type Stats as StatsType } from "../api";
 import { usePolling } from "../hooks/usePolling";
 
 export function Stats() {
-  const { data, error, loading } = usePolling<StatsType>(api.stats);
+  const { data, error, loading } = usePolling<StatsType>(() => api.stats());
 
   if (loading) return <div className="status">Loading…</div>;
   if (error) return <div className="status error">{error}</div>;
