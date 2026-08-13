@@ -3,35 +3,62 @@ package exporter
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
 	"github.com/flipslidersand/sentinel-mesh/internal/store"
 )
 
-// Router builds the gin HTTP router with REST endpoints.
-func Router(st *store.Store, reg *registry.Registry) *gin.Engine {
+func queryInt(c *gin.Context, key string, def int) int {
+	if v := c.Query(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
+}
+
+// Router builds the gin HTTP router with REST endpoints and static UI.
+// staticDir must be an absolute path or relative to the process CWD.
+func Router(st *store.Store, reg *registry.Registry, staticDir string, corsOrigins []string) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
+
+	corsConfig := cors.DefaultConfig()
+	if len(corsOrigins) > 0 {
+		corsConfig.AllowOrigins = corsOrigins
+	} else {
+		corsConfig.AllowAllOrigins = true
+	}
+	r.Use(cors.New(corsConfig))
+
+	// Serve the React SPA
+	r.Static("/assets", staticDir+"/assets")
+	r.StaticFile("/", staticDir+"/index.html")
+	r.StaticFile("/favicon.svg", staticDir+"/favicon.svg")
+	r.NoRoute(func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return
+		}
+		c.File(staticDir + "/index.html")
+	})
 
 	r.GET("/healthz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
+	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
+
 	api := r.Group("/api")
 	{
-		// GET /api/events?node=xxx&limit=N
 		api.GET("/events", func(c *gin.Context) {
-			limit := 100
-			if l := c.Query("limit"); l != "" {
-				if n, err := strconv.Atoi(l); err == nil && n > 0 {
-					limit = n
-				}
-			}
-			node := c.Query("node")
-			events, err := st.ListEvents(node, limit)
+			events, err := st.ListEvents(c.Query("node"), queryInt(c, "limit", 100))
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
@@ -39,12 +66,10 @@ func Router(st *store.Store, reg *registry.Registry) *gin.Engine {
 			c.JSON(http.StatusOK, events)
 		})
 
-		// GET /api/nodes
 		api.GET("/nodes", func(c *gin.Context) {
 			c.JSON(http.StatusOK, reg.List())
 		})
 
-		// GET /api/stats
 		api.GET("/stats", func(c *gin.Context) {
 			counts, err := st.Stats()
 			if err != nil {
@@ -52,6 +77,15 @@ func Router(st *store.Store, reg *registry.Registry) *gin.Engine {
 				return
 			}
 			c.JSON(http.StatusOK, counts)
+		})
+
+		api.GET("/alerts", func(c *gin.Context) {
+			alerts, err := st.ListAlerts(c.Query("node"), queryInt(c, "limit", 100))
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, alerts)
 		})
 	}
 
