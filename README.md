@@ -141,6 +141,65 @@ sentinel-mesh/
 | CLI                         | clap (Rust) / cobra (Go)              |
 | CI                          | GitHub Actions                        |
 
+## Multi-Node Demo
+
+Deploy Collector on one node and Agents on multiple nodes in a local network.
+
+### Prerequisites
+
+- SSH access to target nodes (passwordless key auth)
+- Rust toolchain with `x86_64-unknown-linux-gnu` target (`rustup target add x86_64-unknown-linux-gnu`)
+- Go 1.22+
+
+### Quick Start (3 nodes)
+
+```bash
+# 1. Build all binaries (cross-compiled for Linux/amd64)
+bash scripts/build.sh
+
+# 2. Deploy Collector to MINIPC (systemd service)
+bash scripts/install-collector.sh minipc
+
+# 3. Deploy Agents to each node (mock mode, 3 events/sec)
+bash scripts/deploy-agent.sh minipc  minipc  192.168.68.63:50051
+bash scripts/deploy-agent.sh yuki    yuki    192.168.68.63:50051
+bash scripts/deploy-agent.sh ds1     ds1     192.168.68.63:50051
+
+# Or run everything at once (skips unreachable nodes automatically)
+bash scripts/demo-multi-node.sh
+```
+
+### Verify
+
+```bash
+# All registered nodes (active/inactive)
+curl http://192.168.68.63:8081/api/nodes
+
+# Events from a specific node
+curl "http://192.168.68.63:8081/api/events?node=yuki&limit=20"
+
+# Dashboard
+open http://192.168.68.63:8081
+```
+
+### Node Layout
+
+| Role      | Host            | IP            | SSH alias      |
+| --------- | --------------- | ------------- | -------------- |
+| Collector | MINIPC          | 192.168.68.63 | `minipc`       |
+| Agent     | YUKI-PRIVATE002 | 192.168.68.56 | `yuki-private` |
+| Agent     | DS1HANAHANA     | 192.168.68.59 | `ds1`          |
+
+### Switching to real eBPF mode
+
+```bash
+# On each agent host, replace --mock with CAP_BPF capability:
+sudo setcap cap_bpf+eip /usr/local/bin/sentinel-agent
+# Edit the systemd service to remove --mock and --mock-rate flags
+sudo systemctl edit sentinel-agent-<NODE_ID>
+sudo systemctl restart sentinel-agent-<NODE_ID>
+```
+
 ## Status
 
 | Phase | Description                                    | Status  |
@@ -152,6 +211,8 @@ sentinel-mesh/
 | 5     | Alerting engine — rules.yaml + evaluation      | ✅ Done |
 | 6     | OpenTelemetry metrics + distributed traces     | ✅ Done |
 | 7     | Node filter on `GET /api/events`               | ✅ Done |
+| 8     | Web UI dashboard (React + Vite)                | ✅ Done |
+| 9     | Multi-node deploy scripts                      | ✅ Done |
 
 ## License
 
