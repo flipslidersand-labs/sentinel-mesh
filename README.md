@@ -62,6 +62,18 @@ curl http://localhost:8081/metrics                           # Prometheus metric
 curl http://localhost:8081/healthz                           # health check
 ```
 
+## Event Types
+
+The agent collects kernel events via eBPF tracepoints and kprobes. Each event is tagged with a type:
+
+| Type   | Trigger                       | Example                                  |
+| ------ | ----------------------------- | ---------------------------------------- |
+| `exec` | `sys_enter_execve` tracepoint | Process execution (binary, args)         |
+| `tcp`  | `tcp_connect` kprobe          | TCP connection attempt (src/dst IP/port) |
+| `file` | `sys_enter_openat` tracepoint | File open operation (path, flags)        |
+
+In **mock mode** (`--mock`), events are synthetic and evenly distributed across types. In **eBPF mode** (requires `CAP_BPF`), events are captured from running kernel.
+
 ## Agent CLI
 
 ```text
@@ -88,17 +100,38 @@ Options:
 
 ## REST API
 
-| Endpoint          | Description                                                   |
-| ----------------- | ------------------------------------------------------------- |
-| `GET /healthz`    | Health check                                                  |
-| `GET /api/events` | List events. Query params: `node=<id>`, `limit=<N>`           |
-| `GET /api/nodes`  | List registered agents with `active` / `inactive` status      |
-| `GET /api/stats`  | Event counts per event type                                   |
-| `GET /api/alerts` | List triggered alerts. Query params: `node=<id>`, `limit=<N>` |
+| Endpoint                 | Description                                                              |
+| ------------------------ | ------------------------------------------------------------------------ |
+| `GET /healthz`           | Health check                                                             |
+| `GET /api/events`        | List events. Query params: `node=<id>`, `limit=<N>`                      |
+| `GET /api/nodes`         | List registered agents with `active` / `inactive` status                 |
+| `GET /api/stats`         | Event counts per event type                                              |
+| `GET /api/stats/windows` | Anomaly detector window stats. Aggregated by event type × window (1m/5m) |
+| `GET /api/alerts`        | List triggered alerts. Query params: `node=<id>`, `limit=<N>`            |
 
 ## Heartbeat Tracking
 
 The collector runs a background goroutine that checks agent liveness every `heartbeat-timeout / 2`. An agent is marked `inactive` when its last gRPC message is older than `heartbeat-timeout`. Status is visible in `GET /api/nodes`.
+
+## Anomaly Detection
+
+The collector implements **sliding-window frequency-based anomaly detection**. Per-(node, event_type) counters are maintained over configured time windows (default: 1-minute and 5-minute). When event count exceeds a threshold within a window, an anomaly alert is fired and saved to the store.
+
+### Default Windows
+
+| Window | Threshold  | Behavior                           |
+| ------ | ---------- | ---------------------------------- |
+| 1m     | 30 events  | Alert if 30+ events/min per type   |
+| 5m     | 100 events | Alert if 100+ events/5min per type |
+
+### Query Window Stats
+
+```bash
+curl http://localhost:8081/api/stats/windows
+# → {"exec":{"1m":4,"5m":12},"tcp":{"1m":0,"5m":2},"file":{"1m":1,"5m":3}}
+```
+
+Window thresholds are configured in `internal/anomaly/detector.go`; modify `DefaultWindows` to adjust sensitivity.
 
 ## Directory Structure
 
@@ -190,6 +223,38 @@ open http://192.168.68.63:8081
 | Agent     | YUKI-PRIVATE002 | 192.168.68.56 | `yuki-private` |
 | Agent     | DS1HANAHANA     | 192.168.68.59 | `ds1`          |
 
+### Deploy Scripts
+
+#### `scripts/build.sh`
+
+Cross-compiles Rust and Go binaries for Linux/amd64 (even on macOS) and places output in `dist/`.
+
+```bash
+bash scripts/build.sh
+# → dist/sentinel-agent, dist/sentinel-collector
+```
+
+#### `scripts/install-collector.sh`
+
+Deploys the collector binary to a remote host and installs as a systemd service.
+
+```bash
+bash scripts/install-collector.sh <SSH_ALIAS> [collector_addr] [http_addr]
+# Example:
+bash scripts/install-collector.sh minipc :50051 :8081
+```
+
+#### `scripts/deploy-agent.sh`
+
+Deploys an agent to a remote host, registers with the collector, and starts as a systemd service. Runs in mock mode by default.
+
+```bash
+bash scripts/deploy-agent.sh <SSH_ALIAS> <NODE_ID> <COLLECTOR_ADDR> [--ebpf]
+# Example:
+bash scripts/deploy-agent.sh yuki    yuki    192.168.68.63:50051
+bash scripts/deploy-agent.sh ds1     ds1     192.168.68.63:50051 --ebpf
+```
+
 ### Switching to real eBPF mode
 
 ```bash
@@ -210,9 +275,9 @@ sudo systemctl restart sentinel-agent-<NODE_ID>
 | 4     | Heartbeat timeout — stale agent detection      | ✅ Done |
 | 5     | Alerting engine — rules.yaml + evaluation      | ✅ Done |
 | 6     | OpenTelemetry metrics + distributed traces     | ✅ Done |
-| 7     | Node filter on `GET /api/events`               | ✅ Done |
+| 7     | Anomaly detection — sliding-window frequency   | ✅ Done |
 | 8     | Web UI dashboard (React + Vite)                | ✅ Done |
-| 9     | Multi-node deploy scripts                      | ✅ Done |
+| 9     | Multi-node deploy scripts + systemd service    | ✅ Done |
 
 ## License
 
