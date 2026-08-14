@@ -1,4 +1,15 @@
-go-collector/static/
-web/node_modules/
-web/dist/
-dist/
+# Rust
+target/
+*.bpf.o
+
+# Go
+collector
+sentinel-collector
+
+# Environment
+.env
+.env.*
+
+# IDEs
+.idea/
+.vscode/
