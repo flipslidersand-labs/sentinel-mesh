@@ -29,6 +29,7 @@ pub async fn stream_to_collector(
             hostname,
             ip: String::new(),
             version: env!("CARGO_PKG_VERSION").to_string(),
+            region: String::new(), // wired to --region flag in #43
         })
         .await?;
 

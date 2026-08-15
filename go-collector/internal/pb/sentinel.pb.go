@@ -458,6 +458,7 @@ type RegisterRequest struct {
 	Hostname      string                 `protobuf:"bytes,2,opt,name=hostname,proto3" json:"hostname,omitempty"`
 	Ip            string                 `protobuf:"bytes,3,opt,name=ip,proto3" json:"ip,omitempty"`
 	Version       string                 `protobuf:"bytes,4,opt,name=version,proto3" json:"version,omitempty"`
+	Region        string                 `protobuf:"bytes,5,opt,name=region,proto3" json:"region,omitempty"` // geographic/logical region for multi-region grouping
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -516,6 +517,13 @@ func (x *RegisterRequest) GetIp() string {
 func (x *RegisterRequest) GetVersion() string {
 	if x != nil {
 		return x.Version
+	}
+	return ""
+}
+
+func (x *RegisterRequest) GetRegion() string {
+	if x != nil {
+		return x.Region
 	}
 	return ""
 }
@@ -651,12 +659,13 @@ const file_sentinel_proto_rawDesc = "" +
 	" \x01(\v2\x16.sentinel.v1.ExecEventH\x00R\x04exec\x12)\n" +
 	"\x03tcp\x18\v \x01(\v2\x15.sentinel.v1.TcpEventH\x00R\x03tcp\x12,\n" +
 	"\x04file\x18\f \x01(\v2\x16.sentinel.v1.FileEventH\x00R\x04fileB\t\n" +
-	"\apayload\"p\n" +
+	"\apayload\"\x88\x01\n" +
 	"\x0fRegisterRequest\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x1a\n" +
 	"\bhostname\x18\x02 \x01(\tR\bhostname\x12\x0e\n" +
 	"\x02ip\x18\x03 \x01(\tR\x02ip\x12\x18\n" +
-	"\aversion\x18\x04 \x01(\tR\aversion\"<\n" +
+	"\aversion\x18\x04 \x01(\tR\aversion\x12\x16\n" +
+	"\x06region\x18\x05 \x01(\tR\x06region\"<\n" +
 	"\x10RegisterResponse\x12\x0e\n" +
 	"\x02ok\x18\x01 \x01(\bR\x02ok\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\"\x1a\n" +
