@@ -314,3 +314,139 @@ impl From<&KernelEvent> for MockEventLog {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pb::{kernel_event::Payload, ExecEvent, FileEvent, KernelEvent, TcpEvent};
+
+    fn ke(payload: Option<Payload>) -> KernelEvent {
+        KernelEvent {
+            event_id: "id-1".into(),
+            node_id: String::new(),
+            timestamp: 0,
+            r#type: 0,
+            payload,
+        }
+    }
+
+    #[test]
+    fn mock_event_log_exec() {
+        let e = ke(Some(Payload::Exec(ExecEvent {
+            pid: 42,
+            ppid: 41,
+            comm: "bash".into(),
+            cmdline: "/usr/bin/bash -x".into(),
+            cwd: "/root".into(),
+            uid: 0,
+        })));
+        let log = MockEventLog::from(&e);
+        assert_eq!(log.r#type, "exec");
+        assert_eq!(log.pid, 42);
+        assert_eq!(log.comm, "bash");
+        assert_eq!(log.detail, "/usr/bin/bash -x");
+        assert_eq!(log.event_id, "id-1");
+    }
+
+    #[test]
+    fn mock_event_log_tcp() {
+        let e = ke(Some(Payload::Tcp(TcpEvent {
+            pid: 7,
+            comm: "curl".into(),
+            src_ip: "10.0.0.1".into(),
+            src_port: 40000,
+            dst_ip: "1.1.1.1".into(),
+            dst_port: 443,
+            direction: "outbound".into(),
+        })));
+        let log = MockEventLog::from(&e);
+        assert_eq!(log.r#type, "tcp");
+        assert_eq!(log.pid, 7);
+        assert_eq!(log.comm, "curl");
+        assert_eq!(log.detail, "10.0.0.1:40000 -> 1.1.1.1:443");
+    }
+
+    #[test]
+    fn mock_event_log_file() {
+        let e = ke(Some(Payload::File(FileEvent {
+            pid: 9,
+            comm: "python3".into(),
+            path: "/etc/passwd".into(),
+            op: "open".into(),
+            ret: 0,
+        })));
+        let log = MockEventLog::from(&e);
+        assert_eq!(log.r#type, "file");
+        assert_eq!(log.pid, 9);
+        assert_eq!(log.comm, "python3");
+        assert_eq!(log.detail, "open /etc/passwd");
+    }
+
+    #[test]
+    fn mock_event_log_none_is_unknown() {
+        let log = MockEventLog::from(&ke(None));
+        assert_eq!(log.r#type, "unknown");
+        assert_eq!(log.pid, 0);
+        assert!(log.comm.is_empty());
+        assert!(log.detail.is_empty());
+    }
+
+    #[test]
+    fn now_nanos_is_positive() {
+        assert!(now_nanos() > 0);
+    }
+
+    fn pid_of(e: &KernelEvent) -> u32 {
+        match &e.payload {
+            Some(Payload::Exec(p)) => p.pid,
+            Some(Payload::Tcp(p)) => p.pid,
+            Some(Payload::File(p)) => p.pid,
+            None => 0,
+        }
+    }
+
+    fn kind_of(e: &KernelEvent) -> &'static str {
+        match &e.payload {
+            Some(Payload::Exec(_)) => "exec",
+            Some(Payload::Tcp(_)) => "tcp",
+            Some(Payload::File(_)) => "file",
+            None => "unknown",
+        }
+    }
+
+    #[tokio::test]
+    async fn mock_source_emits_all_event_types_with_incrementing_pids() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let handle = tokio::spawn(mock_source(tx, 1000)); // ~1ms interval
+
+        let mut events = Vec::new();
+        for _ in 0..6 {
+            events.push(rx.recv().await.expect("event"));
+        }
+        // Dropping rx makes the next tx.send fail, ending the task cleanly.
+        drop(rx);
+        let _ = handle.await;
+
+        // All three payload variants appear within one full cycle.
+        let kinds: std::collections::HashSet<_> = events.iter().map(kind_of).collect();
+        assert!(kinds.contains("exec"), "exec missing: {kinds:?}");
+        assert!(kinds.contains("tcp"), "tcp missing: {kinds:?}");
+        assert!(kinds.contains("file"), "file missing: {kinds:?}");
+
+        for e in &events {
+            assert!(e.node_id.is_empty(), "node_id filled by grpc layer, not source");
+            assert!(e.timestamp > 0);
+            assert!(
+                uuid::Uuid::parse_str(&e.event_id).is_ok(),
+                "event_id must be a UUID: {}",
+                e.event_id
+            );
+        }
+
+        // pid increments by exactly 1 per event, starting at 1001.
+        assert_eq!(pid_of(&events[0]), 1001);
+        for w in events.windows(2) {
+            assert_eq!(pid_of(&w[1]), pid_of(&w[0]) + 1);
+        }
+    }
+}
