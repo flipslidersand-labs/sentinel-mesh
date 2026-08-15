@@ -5,19 +5,21 @@ export interface NodeInfo {
 }
 
 export interface Event {
-  id: string;
+  event_id: string;
   node_id: string;
-  event_type: string;
-  payload: string;
   timestamp: string;
+  type: string; // "exec" | "tcp" | "file"
+  payload: unknown; // raw event payload (JSON object)
 }
 
 export interface Alert {
-  id: string;
+  alert_id: string;
+  rule_id: string;
   node_id: string;
-  rule_name: string;
+  event_id: string;
+  timestamp: string;
   message: string;
-  triggered_at: string;
+  severity: string; // "info" | "warning" | "critical"
 }
 
 export type Stats = Record<string, number>;
