@@ -36,10 +36,13 @@ type server struct {
 
 // Register handles agent registration (unary RPC).
 func (s *server) Register(_ context.Context, req *pb.RegisterRequest) (*pb.RegisterResponse, error) {
-	if err := s.reg.Register(req.NodeId, req.Hostname, req.Ip, req.Version); err != nil {
+	if err := s.reg.Register(req.NodeId, req.Hostname, req.Ip, req.Version, req.Region); err != nil {
 		return &pb.RegisterResponse{Ok: false, Message: err.Error()}, nil
 	}
-	s.log.Info("agent registered", zap.String("node_id", req.NodeId), zap.String("host", req.Hostname))
+	s.log.Info("agent registered",
+		zap.String("node_id", req.NodeId),
+		zap.String("host", req.Hostname),
+		zap.String("region", req.Region))
 	return &pb.RegisterResponse{Ok: true, Message: "registered"}, nil
 }
 
