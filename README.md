@@ -133,6 +133,30 @@ curl http://localhost:8081/api/stats/windows
 
 Window thresholds are configured in `internal/anomaly/detector.go`; modify `DefaultWindows` to adjust sensitivity.
 
+## Alert Notifications
+
+Triggered alerts (from both the rules engine and the anomaly detector) can be forwarded to **Slack** and/or **email**. Notifications are configured entirely through environment variables so that secrets never enter the rules YAML, CLI flags, or version control. If no channel is configured, notification dispatch is a no-op.
+
+| Variable                       | Channel | Description                                                                |
+| ------------------------------ | ------- | -------------------------------------------------------------------------- |
+| `SENTINEL_SLACK_WEBHOOK_URL`   | Slack   | Incoming-webhook URL. Enables Slack when set.                              |
+| `SENTINEL_SMTP_ADDR`           | Email   | SMTP server `host:port`. Enables email when set.                           |
+| `SENTINEL_SMTP_FROM`           | Email   | Sender address (required for email).                                       |
+| `SENTINEL_SMTP_TO`             | Email   | Comma-separated recipients (required for email).                           |
+| `SENTINEL_SMTP_USER`           | Email   | SMTP username. Omit for unauthenticated relays.                            |
+| `SENTINEL_SMTP_PASSWORD`       | Email   | SMTP password (PLAIN auth, used only when user is set).                    |
+| `SENTINEL_NOTIFY_MIN_SEVERITY` | Both    | Minimum severity to notify (default `warning`).                            |
+| `SENTINEL_NOTIFY_COOLDOWN`     | Both    | Min gap between notifications per (rule, node); Go duration, default `5m`. |
+
+```bash
+# Example: Slack-only, notify on warning+ with a 2-minute cooldown
+export SENTINEL_SLACK_WEBHOOK_URL="https://hooks.slack.com/services/XXX/YYY/ZZZ"
+export SENTINEL_NOTIFY_COOLDOWN=2m
+./collector serve --rules ../rules.yaml
+```
+
+Severity ordering: `info`/`low` < `warning`/`warn`/`medium` < `high`/`critical`/`error`. The per-(rule, node) cooldown suppresses duplicate alert storms; a distinct node or rule notifies independently. Delivery is best-effort and runs off the event hot path — a failing channel is logged and never blocks event ingestion.
+
 ## Directory Structure
 
 ```text

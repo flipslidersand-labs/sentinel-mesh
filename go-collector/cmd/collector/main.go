@@ -14,6 +14,7 @@ import (
 	"github.com/flipslidersand/sentinel-mesh/internal/alerting"
 	"github.com/flipslidersand/sentinel-mesh/internal/anomaly"
 	"github.com/flipslidersand/sentinel-mesh/internal/exporter"
+	"github.com/flipslidersand/sentinel-mesh/internal/notify"
 	"github.com/flipslidersand/sentinel-mesh/internal/otel"
 	"github.com/flipslidersand/sentinel-mesh/internal/receiver"
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
@@ -98,6 +99,12 @@ func serveCmd() *cobra.Command {
 			logger.Info("anomaly detector started",
 				zap.Int("windows", len(anomaly.DefaultWindows)))
 
+			// Alert notifications (Slack/email) — configured via SENTINEL_* env vars.
+			notifier := notify.DispatcherFromEnv(logger)
+			if notifier.Enabled() {
+				logger.Info("alert notifications enabled")
+			}
+
 			staticDir, _ := cmd.Flags().GetString("static-dir")
 			corsOrigins, _ := cmd.Flags().GetStringSlice("cors-origins")
 
@@ -111,7 +118,7 @@ func serveCmd() *cobra.Command {
 			}()
 
 			// gRPC server (blocking)
-			return receiver.Serve(grpcAddr, st, reg, engine, detector, metricsProvider, tracesProvider.Tracer(), logger)
+			return receiver.Serve(grpcAddr, st, reg, engine, detector, notifier, metricsProvider, tracesProvider.Tracer(), logger)
 		},
 	}
 	cmd.Flags().String("grpc-addr", ":50051", "gRPC listen address")
