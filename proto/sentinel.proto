@@ -58,6 +58,7 @@ message RegisterRequest {
   string hostname = 2;
   string ip       = 3;
   string version  = 4;
+  string region   = 5; // geographic/logical region for multi-region grouping
 }
 
 message RegisterResponse {
