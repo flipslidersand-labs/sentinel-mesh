@@ -105,6 +105,10 @@ func serveCmd() *cobra.Command {
 				logger.Info("alert notifications enabled")
 			}
 
+			// Default region for agents that register without one.
+			defaultRegion, _ := cmd.Flags().GetString("region")
+			logger.Info("collector default region", zap.String("region", defaultRegion))
+
 			staticDir, _ := cmd.Flags().GetString("static-dir")
 			corsOrigins, _ := cmd.Flags().GetStringSlice("cors-origins")
 
@@ -118,7 +122,7 @@ func serveCmd() *cobra.Command {
 			}()
 
 			// gRPC server (blocking)
-			return receiver.Serve(grpcAddr, st, reg, engine, detector, notifier, metricsProvider, tracesProvider.Tracer(), logger)
+			return receiver.Serve(grpcAddr, st, reg, engine, detector, notifier, metricsProvider, tracesProvider.Tracer(), defaultRegion, logger)
 		},
 	}
 	cmd.Flags().String("grpc-addr", ":50051", "gRPC listen address")
@@ -127,6 +131,7 @@ func serveCmd() *cobra.Command {
 	cmd.Flags().Duration("heartbeat-timeout", 60*time.Second, "inactivity duration before agent is marked inactive")
 	cmd.Flags().String("rules", "", "path to alerting rules YAML file")
 	cmd.Flags().String("otel-endpoint", "", "OTLP HTTP endpoint for distributed tracing (e.g., http://localhost:4318)")
+	cmd.Flags().String("region", "default", "default region for agents that register without one")
 	cmd.Flags().String("static-dir", "./static", "path to static UI directory")
 	cmd.Flags().StringSlice("cors-origins", nil, "allowed CORS origins (empty = allow all; production: http://localhost:8081)")
 	return cmd
