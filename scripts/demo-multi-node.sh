@@ -28,8 +28,8 @@ echo "==> Step 3: Deploy Agents"
 for ssh_host in "${!AGENTS[@]}"; do
   node_id="${AGENTS[$ssh_host]}"
   if ssh -o ConnectTimeout=5 -o BatchMode=yes "$ssh_host" true 2>/dev/null; then
-    echo "--- Deploying agent '$node_id' to $ssh_host"
-    bash "$SCRIPTS/deploy-agent.sh" "$ssh_host" "$node_id" "$COLLECTOR_ADDR"
+    echo "--- Deploying agent '$node_id' to $ssh_host (mock mode)"
+    bash "$SCRIPTS/deploy-agent.sh" --mock --collector "$COLLECTOR_ADDR" --node-id "$node_id" "$ssh_host"
   else
     echo "--- Skipping $ssh_host (unreachable)"
   fi
