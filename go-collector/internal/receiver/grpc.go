@@ -15,6 +15,7 @@ import (
 
 	"github.com/flipslidersand/sentinel-mesh/internal/alerting"
 	"github.com/flipslidersand/sentinel-mesh/internal/anomaly"
+	"github.com/flipslidersand/sentinel-mesh/internal/notify"
 	"github.com/flipslidersand/sentinel-mesh/internal/otel"
 	"github.com/flipslidersand/sentinel-mesh/internal/pb"
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
@@ -27,6 +28,7 @@ type server struct {
 	reg      *registry.Registry
 	engine   *alerting.Engine
 	detector *anomaly.Detector
+	notifier *notify.Dispatcher
 	metrics  *otel.MetricsProvider
 	tracer   trace.Tracer
 	log      *zap.Logger
@@ -103,6 +105,11 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 					attribute.String("severity", alert.Severity),
 					attribute.String("message", alert.Message),
 				))
+
+				// Notify external channels off the hot path (best-effort).
+				if s.notifier.Enabled() {
+					go s.notifier.Dispatch(alert)
+				}
 			}
 		}
 
@@ -149,14 +156,15 @@ func (s *server) eventPayload(e *pb.KernelEvent) json.RawMessage {
 
 // Serve starts the gRPC server on addr.
 func Serve(addr string, st *store.Store, reg *registry.Registry, engine *alerting.Engine,
-	detector *anomaly.Detector, metrics *otel.MetricsProvider, tracer trace.Tracer, log *zap.Logger) error {
+	detector *anomaly.Detector, notifier *notify.Dispatcher, metrics *otel.MetricsProvider,
+	tracer trace.Tracer, log *zap.Logger) error {
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", addr, err)
 	}
 	srv := grpc.NewServer()
 
-	s := &server{st: st, reg: reg, engine: engine, detector: detector, metrics: metrics, tracer: tracer, log: log}
+	s := &server{st: st, reg: reg, engine: engine, detector: detector, notifier: notifier, metrics: metrics, tracer: tracer, log: log}
 	pb.RegisterSentinelCollectorServer(srv, s)
 
 	log.Info("gRPC server listening", zap.String("addr", addr))
