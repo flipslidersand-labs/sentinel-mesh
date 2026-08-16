@@ -4,6 +4,17 @@ use uuid::Uuid;
 
 use crate::pb::{kernel_event::Payload, EventType, ExecEvent, FileEvent, KernelEvent, TcpEvent};
 
+#[cfg(feature = "ebpf")]
+macro_rules! include_bytes_aligned {
+    ($path:expr) => {{
+        #[repr(C, align(4096))]
+        struct Aligned<const N: usize>([u8; N]);
+        static DATA: Aligned<{ include_bytes!($path).len() }> =
+            Aligned(*include_bytes!($path));
+        &DATA.0
+    }};
+}
+
 // Mock pools for realistic-looking events
 static MOCK_IPS: &[&str] = &[
     "10.0.0.1", "10.0.0.2", "172.16.0.10", "192.168.1.100", "8.8.8.8", "1.1.1.1",
@@ -103,7 +114,7 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
 
     let bytes = include_bytes_aligned!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../target/bpfel-unknown-none/debug/sentinel-agent-ebpf"
+        "/../target/bpfel-unknown-none/debug/sentinel-agent-ebpf"
     ));
 
     let mut bpf = match Bpf::load(bytes) {
@@ -217,17 +228,6 @@ fn bytes_to_str(b: &[u8]) -> String {
         .unwrap_or("")
         .trim_end_matches('\0')
         .to_string()
-}
-
-#[cfg(feature = "ebpf")]
-macro_rules! include_bytes_aligned {
-    ($path:expr) => {{
-        #[repr(C, align(4096))]
-        struct Aligned<const N: usize>([u8; N]);
-        static DATA: Aligned<{ include_bytes!($path).len() }> =
-            Aligned(*include_bytes!($path));
-        &DATA.0
-    }};
 }
 
 // Shared C structs mirroring agent-ebpf layout — must stay in sync with kernel side.
