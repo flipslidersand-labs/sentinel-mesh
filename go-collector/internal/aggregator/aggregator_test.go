@@ -106,7 +106,7 @@ func TestAggregator_RouterServesMergedData(t *testing.T) {
 	agg := New([]Upstream{{Region: "us-east", URL: east.URL}}, 0, nil)
 	agg.PollOnce(context.Background())
 
-	r := Router(agg, t.TempDir(), nil)
+	r := Router(agg, t.TempDir(), nil, "")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/regions", nil)
 	w := httptest.NewRecorder()

@@ -10,6 +10,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/flipslidersand/sentinel-mesh/internal/anomaly"
+	"github.com/flipslidersand/sentinel-mesh/internal/httpauth"
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
 	"github.com/flipslidersand/sentinel-mesh/internal/store"
 )
@@ -42,18 +43,21 @@ type regionSummary struct {
 
 // Router builds the gin HTTP router with REST endpoints and static UI.
 // staticDir must be an absolute path or relative to the process CWD.
-func Router(st *store.Store, reg *registry.Registry, detector *anomaly.Detector, staticDir string, corsOrigins []string) *gin.Engine {
+// corsOrigins restricts cross-origin access; when empty, no cross-origin
+// requests are allowed (the UI is served same-origin, so this is the safe
+// default). apiToken, when non-empty, gates /api/* behind bearer auth.
+func Router(st *store.Store, reg *registry.Registry, detector *anomaly.Detector, staticDir string, corsOrigins []string, apiToken string) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
 
-	corsConfig := cors.DefaultConfig()
+	// CORS: default deny. Only allow explicitly configured origins. Same-origin
+	// requests (the bundled UI) carry no Origin header and are unaffected.
 	if len(corsOrigins) > 0 {
+		corsConfig := cors.DefaultConfig()
 		corsConfig.AllowOrigins = corsOrigins
-	} else {
-		corsConfig.AllowAllOrigins = true
+		r.Use(cors.New(corsConfig))
 	}
-	r.Use(cors.New(corsConfig))
 
 	// Serve the React SPA
 	r.Static("/assets", staticDir+"/assets")
@@ -73,7 +77,7 @@ func Router(st *store.Store, reg *registry.Registry, detector *anomaly.Detector,
 
 	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
-	api := r.Group("/api")
+	api := r.Group("/api", httpauth.BearerAuth(apiToken))
 	{
 		api.GET("/events", func(c *gin.Context) {
 			events, err := st.ListEvents(c.Query("node"), queryInt(c, "limit", 100))

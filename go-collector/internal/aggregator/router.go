@@ -6,23 +6,26 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+
+	"github.com/flipslidersand/sentinel-mesh/internal/httpauth"
 )
 
 // Router builds the read-only HTTP router for aggregate mode. It serves the same
 // REST shape as a normal collector (nodes / events / alerts / regions) plus the
 // static UI, but backed by the aggregator's merged cache instead of a store.
-func Router(a *Aggregator, staticDir string, corsOrigins []string) *gin.Engine {
+// corsOrigins restricts cross-origin access (empty = deny cross-origin);
+// apiToken, when non-empty, gates /api/* behind bearer auth.
+func Router(a *Aggregator, staticDir string, corsOrigins []string, apiToken string) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
 
-	corsConfig := cors.DefaultConfig()
+	// CORS: default deny. Only allow explicitly configured origins.
 	if len(corsOrigins) > 0 {
+		corsConfig := cors.DefaultConfig()
 		corsConfig.AllowOrigins = corsOrigins
-	} else {
-		corsConfig.AllowAllOrigins = true
+		r.Use(cors.New(corsConfig))
 	}
-	r.Use(cors.New(corsConfig))
 
 	r.Static("/assets", staticDir+"/assets")
 	r.StaticFile("/", staticDir+"/index.html")
@@ -39,7 +42,7 @@ func Router(a *Aggregator, staticDir string, corsOrigins []string) *gin.Engine {
 		c.JSON(http.StatusOK, gin.H{"status": "ok", "mode": "aggregator"})
 	})
 
-	api := r.Group("/api")
+	api := r.Group("/api", httpauth.BearerAuth(apiToken))
 	{
 		api.GET("/nodes", func(c *gin.Context) {
 			nodes := a.Nodes()
