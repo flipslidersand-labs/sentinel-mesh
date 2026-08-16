@@ -18,3 +18,4 @@ web/dist/
 # IDEs
 .idea/
 .vscode/
+rust-agent/agent-ebpf/Cargo.lock
