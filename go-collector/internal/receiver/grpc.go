@@ -24,25 +24,30 @@ import (
 
 type server struct {
 	pb.UnimplementedSentinelCollectorServer
-	st       *store.Store
-	reg      *registry.Registry
-	engine   *alerting.Engine
-	detector *anomaly.Detector
-	notifier *notify.Dispatcher
-	metrics  *otel.MetricsProvider
-	tracer   trace.Tracer
-	log      *zap.Logger
+	st            *store.Store
+	reg           *registry.Registry
+	engine        *alerting.Engine
+	detector      *anomaly.Detector
+	notifier      *notify.Dispatcher
+	metrics       *otel.MetricsProvider
+	tracer        trace.Tracer
+	defaultRegion string // used when an agent registers without a region
+	log           *zap.Logger
 }
 
 // Register handles agent registration (unary RPC).
 func (s *server) Register(_ context.Context, req *pb.RegisterRequest) (*pb.RegisterResponse, error) {
-	if err := s.reg.Register(req.NodeId, req.Hostname, req.Ip, req.Version, req.Region); err != nil {
+	region := req.Region
+	if region == "" {
+		region = s.defaultRegion // fall back to the collector's default region
+	}
+	if err := s.reg.Register(req.NodeId, req.Hostname, req.Ip, req.Version, region); err != nil {
 		return &pb.RegisterResponse{Ok: false, Message: err.Error()}, nil
 	}
 	s.log.Info("agent registered",
 		zap.String("node_id", req.NodeId),
 		zap.String("host", req.Hostname),
-		zap.String("region", req.Region))
+		zap.String("region", region))
 	return &pb.RegisterResponse{Ok: true, Message: "registered"}, nil
 }
 
@@ -160,14 +165,14 @@ func (s *server) eventPayload(e *pb.KernelEvent) json.RawMessage {
 // Serve starts the gRPC server on addr.
 func Serve(addr string, st *store.Store, reg *registry.Registry, engine *alerting.Engine,
 	detector *anomaly.Detector, notifier *notify.Dispatcher, metrics *otel.MetricsProvider,
-	tracer trace.Tracer, log *zap.Logger) error {
+	tracer trace.Tracer, defaultRegion string, log *zap.Logger) error {
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", addr, err)
 	}
 	srv := grpc.NewServer()
 
-	s := &server{st: st, reg: reg, engine: engine, detector: detector, notifier: notifier, metrics: metrics, tracer: tracer, log: log}
+	s := &server{st: st, reg: reg, engine: engine, detector: detector, notifier: notifier, metrics: metrics, tracer: tracer, defaultRegion: defaultRegion, log: log}
 	pb.RegisterSentinelCollectorServer(srv, s)
 
 	log.Info("gRPC server listening", zap.String("addr", addr))
