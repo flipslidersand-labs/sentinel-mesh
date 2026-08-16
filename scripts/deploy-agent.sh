@@ -12,6 +12,7 @@
 #   ./scripts/deploy-agent.sh --collector 192.168.68.63:50051 yuki-private ds1
 #   ./scripts/deploy-agent.sh --mock --collector 192.168.68.63:50051 minipc
 #   ./scripts/deploy-agent.sh --node-id web-01 --collector 192.168.68.63:50051 minipc
+#   ./scripts/deploy-agent.sh --region tokyo --collector 192.168.68.63:50051 yuki-private
 #
 # Requirements:
 #   - dist/sentinel-agent built locally (scripts/build.sh)
@@ -24,6 +25,7 @@ COLLECTOR_ADDR="${SENTINEL_COLLECTOR:-192.168.68.63:50051}"
 MOCK=false
 MOCK_RATE=3
 NODE_ID_OVERRIDE=""
+REGION="${SENTINEL_REGION:-}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BINARY="$REPO_ROOT/dist/sentinel-agent"
@@ -38,6 +40,7 @@ while [[ $# -gt 0 ]]; do
     --mock)      MOCK=true; shift ;;
     --mock-rate) MOCK_RATE="$2"; shift 2 ;;
     --node-id)   NODE_ID_OVERRIDE="$2"; shift 2 ;;
+    --region)    REGION="$2"; shift 2 ;;
     -h|--help)
       sed -n '2,19p' "$0" | sed 's/^# \?//'
       exit 0
@@ -69,6 +72,9 @@ make_unit() {
   local extra_flags=""
   if $MOCK; then
     extra_flags=" --mock --mock-rate ${MOCK_RATE}"
+  fi
+  if [[ -n "${REGION:-}" ]]; then
+    extra_flags="${extra_flags} --region ${REGION}"
   fi
 
   cat <<UNIT
@@ -127,4 +133,4 @@ echo ""
 echo "=== deploy complete ==="
 echo "Collector API: http://${COLLECTOR_ADDR%:*}:8081/api/nodes"
 echo "Check all nodes active with:"
-echo "  curl -s http://${COLLECTOR_ADDR%:*}:8081/api/nodes | jq '.[] | {node_id, active}'"
+echo "  curl -s http://${COLLECTOR_ADDR%:*}:8081/api/nodes | jq '.[] | {node_id, status, region}'"
