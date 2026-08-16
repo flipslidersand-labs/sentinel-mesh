@@ -8,20 +8,11 @@ on:
 
 jobs:
   go-collector:
-    name: Go Collector (build + test)
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: go-collector
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.25"
-          cache-dependency-path: go-collector/go.sum
-      - run: go build ./...
-      - run: go vet ./...
-      - run: go test ./...
+    uses: flipslidersand-labs/qa-platform/.github/workflows/go-test.yml@main
+    with:
+      go-version: "1.25"
+      working-directory: go-collector
+      coverage-threshold: 60
 
   rust-agent:
     name: Rust Agent (check + test)
