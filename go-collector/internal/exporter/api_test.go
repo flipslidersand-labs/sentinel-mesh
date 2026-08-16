@@ -23,7 +23,7 @@ func testRouter(t *testing.T) (*store.Store, *registry.Registry) {
 
 func doGET(t *testing.T, st *store.Store, reg *registry.Registry, path string, out any) int {
 	t.Helper()
-	r := Router(st, reg, nil, t.TempDir(), nil)
+	r := Router(st, reg, nil, t.TempDir(), nil, "")
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)

@@ -15,6 +15,7 @@ import (
 	"github.com/flipslidersand/sentinel-mesh/internal/alerting"
 	"github.com/flipslidersand/sentinel-mesh/internal/anomaly"
 	"github.com/flipslidersand/sentinel-mesh/internal/exporter"
+	"github.com/flipslidersand/sentinel-mesh/internal/httpauth"
 	"github.com/flipslidersand/sentinel-mesh/internal/notify"
 	"github.com/flipslidersand/sentinel-mesh/internal/otel"
 	"github.com/flipslidersand/sentinel-mesh/internal/receiver"
@@ -118,9 +119,13 @@ func serveCmd() *cobra.Command {
 
 			staticDir, _ := cmd.Flags().GetString("static-dir")
 			corsOrigins, _ := cmd.Flags().GetStringSlice("cors-origins")
+			apiToken := httpauth.TokenFromEnv()
+			if apiToken == "" {
+				logger.Warn("REST API is UNAUTHENTICATED — set " + httpauth.EnvAPIToken + " to require a bearer token")
+			}
 
 			// REST API in background
-			router := exporter.Router(st, reg, detector, staticDir, corsOrigins)
+			router := exporter.Router(st, reg, detector, staticDir, corsOrigins, apiToken)
 			go func() {
 				logger.Info("REST API listening", zap.String("addr", httpAddr))
 				if err := router.Run(httpAddr); err != nil {
@@ -140,7 +145,7 @@ func serveCmd() *cobra.Command {
 	cmd.Flags().String("otel-endpoint", "", "OTLP HTTP endpoint for distributed tracing (e.g., http://localhost:4318)")
 	cmd.Flags().String("region", "default", "default region for agents that register without one")
 	cmd.Flags().String("static-dir", "./static", "path to static UI directory")
-	cmd.Flags().StringSlice("cors-origins", nil, "allowed CORS origins (empty = allow all; production: http://localhost:8081)")
+	cmd.Flags().StringSlice("cors-origins", nil, "allowed CORS origins (empty = deny all cross-origin; the bundled UI is same-origin)")
 	cmd.Flags().Bool("aggregate", false, "run as a cross-region aggregator (polls --upstreams, no gRPC)")
 	cmd.Flags().StringSlice("upstreams", nil, "aggregate mode: region collectors as region=url (repeatable)")
 	cmd.Flags().Duration("poll-interval", 10*time.Second, "aggregate mode: how often to poll upstreams")
@@ -155,6 +160,10 @@ func runAggregate(cmd *cobra.Command, logger *zap.Logger) error {
 	interval, _ := cmd.Flags().GetDuration("poll-interval")
 	staticDir, _ := cmd.Flags().GetString("static-dir")
 	corsOrigins, _ := cmd.Flags().GetStringSlice("cors-origins")
+	apiToken := httpauth.TokenFromEnv()
+	if apiToken == "" {
+		logger.Warn("aggregator REST API is UNAUTHENTICATED — set " + httpauth.EnvAPIToken + " to require a bearer token")
+	}
 
 	upstreams, err := aggregator.ParseUpstreams(specs)
 	if err != nil {
@@ -172,5 +181,5 @@ func runAggregate(cmd *cobra.Command, logger *zap.Logger) error {
 	logger.Info("aggregator started",
 		zap.Int("upstreams", len(upstreams)), zap.Duration("poll_interval", interval))
 
-	return aggregator.Router(agg, staticDir, corsOrigins).Run(httpAddr)
+	return aggregator.Router(agg, staticDir, corsOrigins, apiToken).Run(httpAddr)
 }
