@@ -102,14 +102,15 @@ Options:
 
 ## REST API
 
-| Endpoint                 | Description                                                              |
-| ------------------------ | ------------------------------------------------------------------------ |
-| `GET /healthz`           | Health check                                                             |
-| `GET /api/events`        | List events. Query params: `node=<id>`, `limit=<N>`                      |
-| `GET /api/nodes`         | List registered agents with `active` / `inactive` status                 |
-| `GET /api/stats`         | Event counts per event type                                              |
-| `GET /api/stats/windows` | Anomaly detector window stats. Aggregated by event type × window (1m/5m) |
-| `GET /api/alerts`        | List triggered alerts. Query params: `node=<id>`, `limit=<N>`            |
+| Endpoint                 | Description                                                                            |
+| ------------------------ | -------------------------------------------------------------------------------------- |
+| `GET /healthz`           | Health check                                                                           |
+| `GET /api/events`        | List events. Query params: `node=<id>`, `region=<name>`, `limit=<N>`                   |
+| `GET /api/nodes`         | List registered agents with `active` / `inactive` status. Query param: `region=<name>` |
+| `GET /api/regions`       | Per-region roll-up: `{region, node_count, active_count}`                               |
+| `GET /api/stats`         | Event counts per event type                                                            |
+| `GET /api/stats/windows` | Anomaly detector window stats. Aggregated by event type × window (1m/5m)               |
+| `GET /api/alerts`        | List triggered alerts. Query params: `node=<id>`, `region=<name>`, `limit=<N>`         |
 
 ## Heartbeat Tracking
 
