@@ -20,6 +20,8 @@ export function Nodes() {
       <thead>
         <tr>
           <th>Node ID</th>
+          <th>Hostname</th>
+          <th>Region</th>
           <th>Status</th>
           <th>Last Seen</th>
         </tr>
@@ -28,9 +30,11 @@ export function Nodes() {
         {data.map((n) => (
           <tr key={n.node_id}>
             <td className="mono">{n.node_id}</td>
+            <td>{n.hostname}</td>
+            <td>{n.region}</td>
             <td>
-              <span className={`badge ${n.active ? "active" : "inactive"}`}>
-                {n.active ? "active" : "inactive"}
+              <span className={`badge ${n.status === "active" ? "active" : "inactive"}`}>
+                {n.status}
               </span>
             </td>
             <td>{timeSince(n.last_seen)}</td>
