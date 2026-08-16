@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use aya_bpf::{
+use aya_ebpf::{
     helpers::{bpf_get_current_comm, bpf_get_current_pid_tgid, bpf_get_current_uid_gid},
     macros::{kprobe, map, tracepoint},
     maps::RingBuf,
@@ -89,7 +89,7 @@ pub fn sentinel_openat(ctx: TracePointContext) -> u32 {
 
 #[inline(always)]
 fn try_openat(ctx: TracePointContext) -> Result<(), i64> {
-    use aya_bpf::helpers::bpf_probe_read_user_str_bytes;
+    use aya_ebpf::helpers::bpf_probe_read_user_str_bytes;
 
     let pid_tgid = bpf_get_current_pid_tgid();
     let pid = (pid_tgid >> 32) as u32;
@@ -118,7 +118,7 @@ fn try_openat(ctx: TracePointContext) -> Result<(), i64> {
 
 // ─── TCP connect: kprobe/tcp_connect ─────────────────────────────────────
 
-#[kprobe(name = "sentinel_tcp_connect")]
+#[kprobe]
 pub fn sentinel_tcp_connect(ctx: ProbeContext) -> u32 {
     match try_tcp_connect(ctx) {
         Ok(_) => 0,
@@ -128,7 +128,7 @@ pub fn sentinel_tcp_connect(ctx: ProbeContext) -> u32 {
 
 #[inline(always)]
 fn try_tcp_connect(ctx: ProbeContext) -> Result<(), i64> {
-    use aya_bpf::helpers::bpf_probe_read_kernel;
+    use aya_ebpf::helpers::bpf_probe_read_kernel;
 
     let pid_tgid = bpf_get_current_pid_tgid();
     let pid = (pid_tgid >> 32) as u32;
