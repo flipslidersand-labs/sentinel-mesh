@@ -1,7 +1,11 @@
 export interface NodeInfo {
   node_id: string;
+  hostname: string;
+  ip: string;
+  version: string;
+  region: string;
   last_seen: string;
-  active: boolean;
+  status: string; // "active" | "inactive"
 }
 
 export interface Event {
