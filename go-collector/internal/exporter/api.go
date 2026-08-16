@@ -23,6 +23,23 @@ func queryInt(c *gin.Context, key string, def int) int {
 	return def
 }
 
+// regionNodeSet returns the set of node IDs registered in the given region.
+func regionNodeSet(reg *registry.Registry, region string) map[string]struct{} {
+	nodes := reg.ListByRegion(region)
+	set := make(map[string]struct{}, len(nodes))
+	for _, n := range nodes {
+		set[n.NodeID] = struct{}{}
+	}
+	return set
+}
+
+// regionSummary is the per-region roll-up returned by GET /api/regions.
+type regionSummary struct {
+	Region      string `json:"region"`
+	NodeCount   int    `json:"node_count"`
+	ActiveCount int    `json:"active_count"`
+}
+
 // Router builds the gin HTTP router with REST endpoints and static UI.
 // staticDir must be an absolute path or relative to the process CWD.
 func Router(st *store.Store, reg *registry.Registry, detector *anomaly.Detector, staticDir string, corsOrigins []string) *gin.Engine {
@@ -64,11 +81,47 @@ func Router(st *store.Store, reg *registry.Registry, detector *anomaly.Detector,
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
 			}
+			// Optional region filter: keep only events from nodes in the region.
+			// Applied post-fetch (region→node mapping lives in the registry).
+			if region := c.Query("region"); region != "" {
+				set := regionNodeSet(reg, region)
+				filtered := make([]store.Event, 0, len(events))
+				for _, e := range events {
+					if _, ok := set[e.NodeID]; ok {
+						filtered = append(filtered, e)
+					}
+				}
+				events = filtered
+			}
 			c.JSON(http.StatusOK, events)
 		})
 
 		api.GET("/nodes", func(c *gin.Context) {
+			if region := c.Query("region"); region != "" {
+				c.JSON(http.StatusOK, reg.ListByRegion(region))
+				return
+			}
 			c.JSON(http.StatusOK, reg.List())
+		})
+
+		api.GET("/regions", func(c *gin.Context) {
+			regions := reg.Regions()
+			out := make([]regionSummary, 0, len(regions))
+			for _, region := range regions {
+				nodes := reg.ListByRegion(region)
+				active := 0
+				for _, n := range nodes {
+					if n.Status == "active" {
+						active++
+					}
+				}
+				out = append(out, regionSummary{
+					Region:      region,
+					NodeCount:   len(nodes),
+					ActiveCount: active,
+				})
+			}
+			c.JSON(http.StatusOK, out)
 		})
 
 		api.GET("/stats", func(c *gin.Context) {
@@ -85,6 +138,17 @@ func Router(st *store.Store, reg *registry.Registry, detector *anomaly.Detector,
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
+			}
+			// Optional region filter (applied post-fetch, same as /api/events).
+			if region := c.Query("region"); region != "" {
+				set := regionNodeSet(reg, region)
+				filtered := make([]store.Alert, 0, len(alerts))
+				for _, a := range alerts {
+					if _, ok := set[a.NodeID]; ok {
+						filtered = append(filtered, a)
+					}
+				}
+				alerts = filtered
 			}
 			c.JSON(http.StatusOK, alerts)
 		})
