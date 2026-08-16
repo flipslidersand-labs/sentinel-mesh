@@ -27,6 +27,10 @@ struct Args {
     /// Events per second in mock mode
     #[arg(long, default_value_t = 2)]
     mock_rate: u64,
+
+    /// Region this node belongs to (falls back to $SENTINEL_REGION, then empty)
+    #[arg(long, env = "SENTINEL_REGION")]
+    region: Option<String>,
 }
 
 #[tokio::main]
@@ -38,7 +42,12 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|_| Uuid::new_v4().to_string())
     });
 
-    println!("sentinel-agent starting: node={node_id} collector={}", args.collector);
+    let region = args.region.unwrap_or_default();
+
+    println!(
+        "sentinel-agent starting: node={node_id} region={region} collector={}",
+        args.collector
+    );
 
     let (tx, rx) = tokio::sync::mpsc::channel(256);
 
@@ -60,5 +69,5 @@ async fn main() -> Result<()> {
     }
 
     // Connect and stream to collector
-    grpc::stream_to_collector(args.collector, node_id, rx).await
+    grpc::stream_to_collector(args.collector, node_id, region, rx).await
 }
