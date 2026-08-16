@@ -11,8 +11,11 @@ import (
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 
+	"github.com/flipslidersand/sentinel-mesh/internal/aggregator"
 	"github.com/flipslidersand/sentinel-mesh/internal/alerting"
+	"github.com/flipslidersand/sentinel-mesh/internal/anomaly"
 	"github.com/flipslidersand/sentinel-mesh/internal/exporter"
+	"github.com/flipslidersand/sentinel-mesh/internal/notify"
 	"github.com/flipslidersand/sentinel-mesh/internal/otel"
 	"github.com/flipslidersand/sentinel-mesh/internal/receiver"
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
@@ -44,6 +47,12 @@ func serveCmd() *cobra.Command {
 				return err
 			}
 			defer logger.Sync() //nolint:errcheck
+
+			// Aggregate mode: no gRPC/store — poll upstream region collectors and
+			// serve a merged read-only view.
+			if aggregate, _ := cmd.Flags().GetBool("aggregate"); aggregate {
+				return runAggregate(cmd, logger)
+			}
 
 			st, err := store.New(dataDir)
 			if err != nil {
@@ -92,8 +101,26 @@ func serveCmd() *cobra.Command {
 				logger.Info("distributed tracing enabled", zap.String("endpoint", otelEndpoint))
 			}
 
+			// Phase 7: anomaly detector (sliding-window frequency detection)
+			detector := anomaly.New(nil)
+			logger.Info("anomaly detector started",
+				zap.Int("windows", len(anomaly.DefaultWindows)))
+
+			// Alert notifications (Slack/email) — configured via SENTINEL_* env vars.
+			notifier := notify.DispatcherFromEnv(logger)
+			if notifier.Enabled() {
+				logger.Info("alert notifications enabled")
+			}
+
+			// Default region for agents that register without one.
+			defaultRegion, _ := cmd.Flags().GetString("region")
+			logger.Info("collector default region", zap.String("region", defaultRegion))
+
+			staticDir, _ := cmd.Flags().GetString("static-dir")
+			corsOrigins, _ := cmd.Flags().GetStringSlice("cors-origins")
+
 			// REST API in background
-			router := exporter.Router(st, reg)
+			router := exporter.Router(st, reg, detector, staticDir, corsOrigins)
 			go func() {
 				logger.Info("REST API listening", zap.String("addr", httpAddr))
 				if err := router.Run(httpAddr); err != nil {
@@ -102,7 +129,7 @@ func serveCmd() *cobra.Command {
 			}()
 
 			// gRPC server (blocking)
-			return receiver.Serve(grpcAddr, st, reg, engine, metricsProvider, tracesProvider.Tracer(), logger)
+			return receiver.Serve(grpcAddr, st, reg, engine, detector, notifier, metricsProvider, tracesProvider.Tracer(), defaultRegion, logger)
 		},
 	}
 	cmd.Flags().String("grpc-addr", ":50051", "gRPC listen address")
@@ -111,5 +138,39 @@ func serveCmd() *cobra.Command {
 	cmd.Flags().Duration("heartbeat-timeout", 60*time.Second, "inactivity duration before agent is marked inactive")
 	cmd.Flags().String("rules", "", "path to alerting rules YAML file")
 	cmd.Flags().String("otel-endpoint", "", "OTLP HTTP endpoint for distributed tracing (e.g., http://localhost:4318)")
+	cmd.Flags().String("region", "default", "default region for agents that register without one")
+	cmd.Flags().String("static-dir", "./static", "path to static UI directory")
+	cmd.Flags().StringSlice("cors-origins", nil, "allowed CORS origins (empty = allow all; production: http://localhost:8081)")
+	cmd.Flags().Bool("aggregate", false, "run as a cross-region aggregator (polls --upstreams, no gRPC)")
+	cmd.Flags().StringSlice("upstreams", nil, "aggregate mode: region collectors as region=url (repeatable)")
+	cmd.Flags().Duration("poll-interval", 10*time.Second, "aggregate mode: how often to poll upstreams")
 	return cmd
+}
+
+// runAggregate starts the cross-region aggregator: it polls upstream region
+// collectors' REST APIs and serves a merged read-only view on --http-addr.
+func runAggregate(cmd *cobra.Command, logger *zap.Logger) error {
+	httpAddr, _ := cmd.Flags().GetString("http-addr")
+	specs, _ := cmd.Flags().GetStringSlice("upstreams")
+	interval, _ := cmd.Flags().GetDuration("poll-interval")
+	staticDir, _ := cmd.Flags().GetString("static-dir")
+	corsOrigins, _ := cmd.Flags().GetStringSlice("cors-origins")
+
+	upstreams, err := aggregator.ParseUpstreams(specs)
+	if err != nil {
+		return err
+	}
+	if len(upstreams) == 0 {
+		return fmt.Errorf("--aggregate requires at least one --upstreams region=url")
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	agg := aggregator.New(upstreams, interval, logger)
+	agg.Start(ctx)
+	logger.Info("aggregator started",
+		zap.Int("upstreams", len(upstreams)), zap.Duration("poll_interval", interval))
+
+	return aggregator.Router(agg, staticDir, corsOrigins).Run(httpAddr)
 }

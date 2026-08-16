@@ -9,6 +9,7 @@ use crate::pb::{
 pub async fn stream_to_collector(
     endpoint: String,
     node_id: String,
+    region: String,
     mut rx: Receiver<KernelEvent>,
 ) -> Result<()> {
     let channel = Channel::from_shared(endpoint.clone())?
@@ -29,6 +30,7 @@ pub async fn stream_to_collector(
             hostname,
             ip: String::new(),
             version: env!("CARGO_PKG_VERSION").to_string(),
+            region,
         })
         .await?;
 

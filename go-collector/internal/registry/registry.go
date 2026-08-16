@@ -4,9 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 )
+
+// DefaultRegion is assigned when an agent registers without a region.
+const DefaultRegion = "default"
 
 // AgentNode represents a registered eBPF agent.
 type AgentNode struct {
@@ -14,9 +18,18 @@ type AgentNode struct {
 	Hostname   string    `json:"hostname"`
 	IP         string    `json:"ip"`
 	Version    string    `json:"version"`
+	Region     string    `json:"region"`
 	Registered time.Time `json:"registered"`
 	LastSeen   time.Time `json:"last_seen"`
 	Status     string    `json:"status"` // "active" | "inactive"
+}
+
+// normalizeRegion maps an empty region to DefaultRegion.
+func normalizeRegion(region string) string {
+	if region == "" {
+		return DefaultRegion
+	}
+	return region
 }
 
 // Registry holds agent nodes in memory (backed by BadgerDB in Phase 4).
@@ -29,16 +42,18 @@ func New() *Registry {
 	return &Registry{nodes: map[string]*AgentNode{}}
 }
 
-func (r *Registry) Register(nodeID, hostname, ip, version string) error {
+func (r *Registry) Register(nodeID, hostname, ip, version, region string) error {
 	if nodeID == "" {
 		return fmt.Errorf("node_id required")
 	}
+	region = normalizeRegion(region)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := time.Now().UTC()
 	if existing, ok := r.nodes[nodeID]; ok {
 		existing.LastSeen = now
 		existing.Status = "active"
+		existing.Region = region
 		return nil
 	}
 	r.nodes[nodeID] = &AgentNode{
@@ -46,6 +61,7 @@ func (r *Registry) Register(nodeID, hostname, ip, version string) error {
 		Hostname:   hostname,
 		IP:         ip,
 		Version:    version,
+		Region:     region,
 		Registered: now,
 		LastSeen:   now,
 		Status:     "active",
@@ -76,6 +92,38 @@ func (r *Registry) List() []AgentNode {
 	for _, n := range r.nodes {
 		out = append(out, *n)
 	}
+	return out
+}
+
+// ListByRegion returns nodes in the given region. An empty region argument is
+// normalized to DefaultRegion, matching how nodes are stored.
+func (r *Registry) ListByRegion(region string) []AgentNode {
+	region = normalizeRegion(region)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]AgentNode, 0)
+	for _, n := range r.nodes {
+		if n.Region == region {
+			out = append(out, *n)
+		}
+	}
+	return out
+}
+
+// Regions returns the sorted, unique set of regions currently registered.
+func (r *Registry) Regions() []string {
+	r.mu.RLock()
+	seen := make(map[string]struct{}, len(r.nodes))
+	for _, n := range r.nodes {
+		seen[n.Region] = struct{}{}
+	}
+	r.mu.RUnlock()
+
+	out := make([]string, 0, len(seen))
+	for region := range seen {
+		out = append(out, region)
+	}
+	sort.Strings(out)
 	return out
 }
 
