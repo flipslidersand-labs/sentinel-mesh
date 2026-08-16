@@ -84,6 +84,7 @@ Options:
   --node-id <ID>        Node identifier [default: hostname]
   --mock                Generate mock events instead of loading eBPF
   --mock-rate <N>       Events per second in mock mode [default: 2]
+  --region <NAME>       Region this node belongs to [env: SENTINEL_REGION]
 ```
 
 ## Collector CLI
@@ -96,6 +97,7 @@ Options:
   --http-addr <ADDR>         REST API listen address [default: :8081]
   --data-dir <PATH>          BadgerDB data directory [default: /tmp/sentinel-data]
   --heartbeat-timeout <DUR>  Inactivity before agent is marked inactive [default: 60s]
+  --region <NAME>            Default region for agents that register without one [default: default]
 ```
 
 ## REST API
