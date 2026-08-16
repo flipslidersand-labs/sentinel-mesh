@@ -139,6 +139,22 @@ A region whose collector is unreachable is **isolated**: it is reported with `"r
 | `GET /api/stats/windows` | Anomaly detector window stats. Aggregated by event type × window (1m/5m)               |
 | `GET /api/alerts`        | List triggered alerts. Query params: `node=<id>`, `region=<name>`, `limit=<N>`         |
 
+### API Authentication & CORS
+
+- **Authentication**: set `SENTINEL_API_TOKEN` to require `Authorization: Bearer <token>` on all
+  `/api/*` endpoints (constant-time compared). If unset, the API is unauthenticated and the
+  collector logs a warning — only acceptable on a trusted network. `/healthz` and `/metrics`
+  remain open for probes/scraping.
+
+  ```bash
+  export SENTINEL_API_TOKEN="$(openssl rand -hex 32)"
+  curl -H "Authorization: Bearer $SENTINEL_API_TOKEN" http://localhost:8081/api/nodes
+  ```
+
+- **CORS**: cross-origin access is **denied by default**. The bundled UI is served same-origin, so
+  no CORS is needed in production. Pass `--cors-origins https://example.com` only when a separate
+  front-end origin must call the API.
+
 ## Heartbeat Tracking
 
 The collector runs a background goroutine that checks agent liveness every `heartbeat-timeout / 2`. An agent is marked `inactive` when its last gRPC message is older than `heartbeat-timeout`. Status is visible in `GET /api/nodes`.
