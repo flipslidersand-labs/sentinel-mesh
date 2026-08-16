@@ -98,7 +98,34 @@ Options:
   --data-dir <PATH>          BadgerDB data directory [default: /tmp/sentinel-data]
   --heartbeat-timeout <DUR>  Inactivity before agent is marked inactive [default: 60s]
   --region <NAME>            Default region for agents that register without one [default: default]
+
+  # Aggregate mode (cross-region, read-only — no gRPC)
+  --aggregate                Run as a cross-region aggregator
+  --upstreams <region=url>   Region collectors to poll (repeatable)
+  --poll-interval <DUR>      How often to poll upstreams [default: 10s]
 ```
+
+## Multi-Region Aggregation
+
+For geographically distributed deployments, run one collector per region (each with its own agents), then run a **cross-region aggregator** on top. The aggregator periodically polls each region collector's REST API and serves a unified, read-only view. Region collectors need no changes.
+
+```bash
+# Region collectors (one per region, agents register with --region)
+./collector serve --region us-east --http-addr :8081   # on us-east host
+./collector serve --region eu-west --http-addr :8081   # on eu-west host
+
+# Aggregator (polls both, serves merged view + UI)
+./collector serve --aggregate \
+  --upstreams us-east=http://10.0.1.10:8081 \
+  --upstreams eu-west=http://10.0.2.10:8081 \
+  --http-addr :8080 --poll-interval 10s
+
+curl http://localhost:8080/api/regions
+# → [{"region":"eu-west","node_count":3,"active_count":3,"reachable":true},
+#    {"region":"us-east","node_count":5,"active_count":4,"reachable":true}]
+```
+
+A region whose collector is unreachable is **isolated**: it is reported with `"reachable": false` and an `error`, while other regions continue to serve. The aggregator exposes `/api/nodes` (with `?region=`), `/api/events`, `/api/alerts`, and `/api/regions`.
 
 ## REST API
 
