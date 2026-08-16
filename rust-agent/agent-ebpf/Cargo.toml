@@ -8,8 +8,10 @@ edition = "2021"
 # Requires: bpf-linker, LLVM dev headers (sudo apt install llvm-18-dev)
 
 [dependencies]
-aya-bpf = "0.1"
+aya-ebpf = "0.2"
 
 [[bin]]
 name = "sentinel-agent-ebpf"
 path = "src/main.rs"
+
+[workspace]
