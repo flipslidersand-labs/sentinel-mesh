@@ -1,1 +1,36 @@
+name: CI
 
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  go-collector:
+    uses: flipslidersand-labs/qa-workflows/.github/workflows/go-test.yml@main
+    with:
+      go-version: "1.25"
+      working-directory: go-collector
+      coverage-threshold: 40   # 現状実測 43.0% に合わせた初期値。段階的に引き上げる
+
+  rust-agent:
+    name: Rust Agent (check + test)
+    runs-on: ${{ vars.GATE_RUNNER || 'ubuntu-latest' }}
+    defaults:
+      run:
+        working-directory: rust-agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust-agent
+      # build.rs (tonic-build) が proto をコンパイルするため protoc が必要
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - run: cargo check --workspace
+      - run: cargo test --workspace
+    # 注: agent-ebpf は nightly + bpf-linker + bpfel target が必要なため CI 対象外。
+    #     実 eBPF 経路の検証は別 Issue で環境整備後に追加する。
