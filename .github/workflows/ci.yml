@@ -16,7 +16,7 @@ jobs:
 
   rust-agent:
     name: Rust Agent (check + test)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.GATE_RUNNER || 'ubuntu-latest' }}
     defaults:
       run:
         working-directory: rust-agent
