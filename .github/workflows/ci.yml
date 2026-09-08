@@ -34,3 +34,8 @@ jobs:
       - run: cargo test --workspace
     # 注: agent-ebpf は nightly + bpf-linker + bpfel target が必要なため CI 対象外。
     #     実 eBPF 経路の検証は別 Issue で環境整備後に追加する。
+
+  gitleaks:
+    permissions:
+      contents: read
+    uses: flipslidersand-labs/qa-workflows/.github/workflows/gitleaks.yml@main
