@@ -85,6 +85,8 @@ Options:
   --mock                Generate mock events instead of loading eBPF
   --mock-rate <N>       Events per second in mock mode [default: 2]
   --region <NAME>       Region this node belongs to [env: SENTINEL_REGION]
+  --grpc-token <TOKEN>  Bearer token sent with every RPC [env: SENTINEL_API_TOKEN]
+  --grpc-ca-cert <PATH> CA cert (PEM) to verify a self-signed collector TLS cert [env: SENTINEL_GRPC_CA_CERT]
 ```
 
 ## Collector CLI
@@ -98,6 +100,8 @@ Options:
   --data-dir <PATH>          BadgerDB data directory [default: /tmp/sentinel-data]
   --heartbeat-timeout <DUR>  Inactivity before agent is marked inactive [default: 60s]
   --region <NAME>            Default region for agents that register without one [default: default]
+  --grpc-tls-cert <PATH>     gRPC server TLS certificate (PEM); requires --grpc-tls-key
+  --grpc-tls-key <PATH>      gRPC server TLS private key (PEM); requires --grpc-tls-cert
 
   # Aggregate mode (cross-region, read-only — no gRPC)
   --aggregate                Run as a cross-region aggregator
@@ -154,6 +158,31 @@ A region whose collector is unreachable is **isolated**: it is reported with `"r
 - **CORS**: cross-origin access is **denied by default**. The bundled UI is served same-origin, so
   no CORS is needed in production. Pass `--cors-origins https://example.com` only when a separate
   front-end origin must call the API.
+
+## gRPC TLS & Authentication
+
+The gRPC endpoint (`--grpc-addr`, default `:50051`) that agents connect to is **plaintext and
+unauthenticated by default** — the collector logs a warning at startup. On any network you don't
+fully trust, enable both:
+
+- **TLS**: pass `--grpc-tls-cert`/`--grpc-tls-key` (PEM) on the collector; agents connect with
+  `--collector https://<host>:50051`, adding `--grpc-ca-cert <path>` if the cert isn't from a
+  publicly trusted CA (e.g. self-signed).
+- **Authentication**: set `SENTINEL_API_TOKEN` on the collector (the same variable used by the
+  REST API above) and pass the matching `--grpc-token`/`$SENTINEL_API_TOKEN` on each agent. Every
+  RPC (`Register`, `StreamEvents`) must carry a matching `authorization: Bearer <token>` metadata
+  entry, compared in constant time; without it the collector rejects the call with
+  `Unauthenticated`.
+
+```bash
+# Collector
+export SENTINEL_API_TOKEN="$(openssl rand -hex 32)"
+sentinel-collector serve --grpc-tls-cert cert.pem --grpc-tls-key key.pem
+
+# Agent
+./sentinel-agent --collector https://collector.internal:50051 \
+  --grpc-ca-cert ca.pem --grpc-token "$SENTINEL_API_TOKEN"
+```
 
 ## Heartbeat Tracking
 
