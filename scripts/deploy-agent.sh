@@ -78,6 +78,16 @@ if [[ ! -f "$BINARY" ]]; then
   exit 1
 fi
 
+source "$REPO_ROOT/scripts/lib-validate.sh"
+
+# Every value below is interpolated into the systemd unit written via
+# `sudo tee` in deploy_to() below — validate before use (#65).
+validate_hostport "--collector" "$COLLECTOR_ADDR"
+[[ -n "$REGION" ]] && validate_ident "--region" "$REGION"
+[[ -n "$NODE_ID_OVERRIDE" ]] && validate_ident "--node-id" "$NODE_ID_OVERRIDE"
+[[ -n "$GRPC_TOKEN" ]] && validate_ident "--grpc-token" "$GRPC_TOKEN"
+[[ -n "$GRPC_CA_CERT" ]] && validate_path "--grpc-ca-cert" "$GRPC_CA_CERT"
+
 # ── Systemd unit template ─────────────────────────────────────────────────────
 make_unit() {
   local node_id="$1"
@@ -126,6 +136,9 @@ deploy_to() {
   local node_id="$NODE_ID_OVERRIDE"
   if [[ -z "$node_id" ]]; then
     node_id="$(ssh "$host" hostname -s 2>/dev/null || echo "$host")"
+    # Remote-controlled (the host's own `hostname -s`) — validate before it
+    # reaches the local systemd unit written via `sudo tee` (#65).
+    validate_ident "node_id (from ${host}'s hostname -s)" "$node_id"
   fi
 
   echo ""
