@@ -80,6 +80,12 @@ fi
 
 source "$REPO_ROOT/scripts/lib-validate.sh"
 
+# A leading '-' in a host would be interpreted by ssh/scp as an option
+# (e.g. -oProxyCommand=...), letting it run arbitrary local commands (#66).
+for host in "${HOSTS[@]}"; do
+  validate_host "host ($host)" "$host"
+done
+
 # Every value below is interpolated into the systemd unit written via
 # `sudo tee` in deploy_to() below — validate before use (#65).
 validate_hostport "--collector" "$COLLECTOR_ADDR"
@@ -135,7 +141,7 @@ deploy_to() {
   local host="$1"
   local node_id="$NODE_ID_OVERRIDE"
   if [[ -z "$node_id" ]]; then
-    node_id="$(ssh "$host" hostname -s 2>/dev/null || echo "$host")"
+    node_id="$(ssh -- "$host" hostname -s 2>/dev/null || echo "$host")"
     # Remote-controlled (the host's own `hostname -s`) — validate before it
     # reaches the local systemd unit written via `sudo tee` (#65).
     validate_ident "node_id (from ${host}'s hostname -s)" "$node_id"
@@ -144,21 +150,34 @@ deploy_to() {
   echo ""
   echo "=== deploying agent to ${host} (node_id=${node_id}, mock=${MOCK}) ==="
 
+  # Remote commands are sent as positional args to `bash -s --` inside a
+  # single-quoted heredoc, so the remote shell never re-parses an
+  # interpolated value as command text (#66). ssh/scp get a `--` guard so a
+  # (validated, non-'-'-leading) host can never be misread as an option.
   echo "[${host}] uploading binary ..."
-  scp "$BINARY" "${host}:/tmp/sentinel-agent"
-  ssh "$host" "sudo install -m 755 /tmp/sentinel-agent ${REMOTE_BIN} && rm -f /tmp/sentinel-agent"
+  scp -- "$BINARY" "${host}:/tmp/sentinel-agent"
+  ssh -- "$host" bash -s -- "$REMOTE_BIN" <<'REMOTE'
+set -euo pipefail
+sudo install -m 755 /tmp/sentinel-agent "$1"
+rm -f /tmp/sentinel-agent
+REMOTE
 
   echo "[${host}] installing systemd unit ..."
-  make_unit "$node_id" | ssh "$host" "sudo tee ${SYSTEMD_DIR}/sentinel-agent.service > /dev/null"
+  make_unit "$node_id" | ssh -- "$host" "sudo tee ${SYSTEMD_DIR}/sentinel-agent.service > /dev/null"
 
   echo "[${host}] enabling and starting service ..."
-  ssh "$host" "sudo systemctl daemon-reload && \
-               sudo systemctl enable sentinel-agent && \
-               sudo systemctl restart sentinel-agent"
+  ssh -- "$host" bash -s <<'REMOTE'
+set -euo pipefail
+sudo systemctl daemon-reload
+sudo systemctl enable sentinel-agent
+sudo systemctl restart sentinel-agent
+REMOTE
 
   echo "[${host}] service status:"
-  ssh "$host" "systemctl is-active sentinel-agent && \
-               journalctl -u sentinel-agent -n 5 --no-pager" || true
+  ssh -- "$host" bash -s <<'REMOTE' || true
+systemctl is-active sentinel-agent
+journalctl -u sentinel-agent -n 5 --no-pager
+REMOTE
 }
 
 for host in "${HOSTS[@]}"; do
