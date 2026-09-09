@@ -18,6 +18,15 @@ validate_ident() {
   [[ "$value" =~ ^[A-Za-z0-9._-]+$ ]] || die "$name must match ^[A-Za-z0-9._-]+\$: '$value'"
 }
 
+# SSH/SCP target host (or SSH config alias). Rejects a leading '-', which
+# ssh/scp would otherwise interpret as an option (e.g. `-oProxyCommand=...`),
+# letting an attacker-controlled hostname run arbitrary local commands (#66).
+validate_host() {
+  local name="$1" value="$2"
+  [[ "$value" != -* ]] || die "$name must not start with '-': '$value'"
+  [[ "$value" =~ ^[A-Za-z0-9._@-]+$ ]] || die "$name must match ^[A-Za-z0-9._@-]+\$: '$value'"
+}
+
 # host:port pair with a required host (e.g. the collector address agents dial).
 validate_hostport() {
   local name="$1" value="$2"
