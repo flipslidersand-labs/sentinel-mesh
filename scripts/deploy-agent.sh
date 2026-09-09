@@ -13,6 +13,12 @@
 #   ./scripts/deploy-agent.sh --mock --collector 192.0.2.10:50051 minipc
 #   ./scripts/deploy-agent.sh --node-id web-01 --collector 192.0.2.10:50051 minipc
 #   ./scripts/deploy-agent.sh --region tokyo --collector 192.0.2.10:50051 yuki-private
+#   ./scripts/deploy-agent.sh --tls --grpc-token "$SENTINEL_API_TOKEN" --collector 192.0.2.10:50051 minipc
+#
+# TLS/auth options:
+#   --tls              connect via https:// (collector must have --grpc-tls-cert/--grpc-tls-key set)
+#   --grpc-token TOKEN bearer token sent with every RPC (default: $SENTINEL_API_TOKEN)
+#   --grpc-ca-cert PATH CA cert (PEM) to verify a self-signed collector TLS cert
 #
 # Requirements:
 #   - dist/sentinel-agent built locally (scripts/build.sh)
@@ -26,6 +32,9 @@ MOCK=false
 MOCK_RATE=3
 NODE_ID_OVERRIDE=""
 REGION="${SENTINEL_REGION:-}"
+TLS=false
+GRPC_TOKEN="${SENTINEL_API_TOKEN:-}"
+GRPC_CA_CERT=""
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BINARY="$REPO_ROOT/dist/sentinel-agent"
@@ -41,6 +50,9 @@ while [[ $# -gt 0 ]]; do
     --mock-rate) MOCK_RATE="$2"; shift 2 ;;
     --node-id)   NODE_ID_OVERRIDE="$2"; shift 2 ;;
     --region)    REGION="$2"; shift 2 ;;
+    --tls)          TLS=true; shift ;;
+    --grpc-token)   GRPC_TOKEN="$2"; shift 2 ;;
+    --grpc-ca-cert) GRPC_CA_CERT="$2"; shift 2 ;;
     -h|--help)
       sed -n '2,19p' "$0" | sed 's/^# \?//'
       exit 0
@@ -76,6 +88,17 @@ make_unit() {
   if [[ -n "${REGION:-}" ]]; then
     extra_flags="${extra_flags} --region ${REGION}"
   fi
+  if [[ -n "${GRPC_TOKEN:-}" ]]; then
+    extra_flags="${extra_flags} --grpc-token ${GRPC_TOKEN}"
+  fi
+  if [[ -n "${GRPC_CA_CERT:-}" ]]; then
+    extra_flags="${extra_flags} --grpc-ca-cert ${GRPC_CA_CERT}"
+  fi
+
+  local scheme="http"
+  if $TLS; then
+    scheme="https"
+  fi
 
   cat <<UNIT
 [Unit]
@@ -85,7 +108,7 @@ Wants=network.target
 
 [Service]
 Type=simple
-ExecStart=${REMOTE_BIN} --collector http://${COLLECTOR_ADDR} --node-id ${node_id}${extra_flags}
+ExecStart=${REMOTE_BIN} --collector ${scheme}://${COLLECTOR_ADDR} --node-id ${node_id}${extra_flags}
 Restart=on-failure
 RestartSec=5s
 StandardOutput=journal

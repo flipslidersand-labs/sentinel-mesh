@@ -31,6 +31,15 @@ struct Args {
     /// Region this node belongs to (falls back to $SENTINEL_REGION, then empty)
     #[arg(long, env = "SENTINEL_REGION")]
     region: Option<String>,
+
+    /// Bearer token sent with every RPC (falls back to $SENTINEL_API_TOKEN, none = unauthenticated)
+    #[arg(long, env = "SENTINEL_API_TOKEN")]
+    grpc_token: Option<String>,
+
+    /// CA certificate (PEM) to verify the collector's TLS cert when --collector uses https://;
+    /// omit to use the system trust store (e.g. a publicly-signed cert)
+    #[arg(long, env = "SENTINEL_GRPC_CA_CERT")]
+    grpc_ca_cert: Option<String>,
 }
 
 #[tokio::main]
@@ -68,6 +77,23 @@ async fn main() -> Result<()> {
         }
     }
 
+    if args.collector.starts_with("http://") {
+        eprintln!("warning: connecting to collector over plaintext (http://) — use https:// once the collector has --grpc-tls-cert/--grpc-tls-key configured");
+    }
+    if args.grpc_token.is_none() {
+        eprintln!(
+            "warning: no --grpc-token/$SENTINEL_API_TOKEN set — RPCs will be unauthenticated"
+        );
+    }
+
     // Connect and stream to collector
-    grpc::stream_to_collector(args.collector, node_id, region, rx).await
+    grpc::stream_to_collector(
+        args.collector,
+        node_id,
+        region,
+        args.grpc_token,
+        args.grpc_ca_cert,
+        rx,
+    )
+    .await
 }

@@ -1,23 +1,57 @@
 use anyhow::Result;
 use tokio::sync::mpsc::Receiver;
-use tonic::transport::Channel;
+use tonic::metadata::MetadataValue;
+use tonic::service::Interceptor;
+use tonic::transport::{Certificate, ClientTlsConfig, Endpoint};
+use tonic::{Request, Status};
 
-use crate::pb::{
-    sentinel_collector_client::SentinelCollectorClient, KernelEvent, RegisterRequest,
-};
+use crate::pb::{sentinel_collector_client::SentinelCollectorClient, KernelEvent, RegisterRequest};
+
+/// Attaches `authorization: Bearer <token>` metadata to every outgoing RPC.
+/// A no-op if no token is configured.
+#[derive(Clone)]
+struct AuthInterceptor {
+    token: Option<MetadataValue<tonic::metadata::Ascii>>,
+}
+
+impl Interceptor for AuthInterceptor {
+    fn call(&mut self, mut req: Request<()>) -> std::result::Result<Request<()>, Status> {
+        if let Some(token) = &self.token {
+            req.metadata_mut().insert("authorization", token.clone());
+        }
+        Ok(req)
+    }
+}
 
 pub async fn stream_to_collector(
     endpoint: String,
     node_id: String,
     region: String,
+    token: Option<String>,
+    ca_cert_path: Option<String>,
     mut rx: Receiver<KernelEvent>,
 ) -> Result<()> {
-    let channel = Channel::from_shared(endpoint.clone())?
+    let mut builder = Endpoint::from_shared(endpoint.clone())?;
+    if endpoint.starts_with("https://") {
+        let mut tls = ClientTlsConfig::new();
+        if let Some(path) = &ca_cert_path {
+            let pem = std::fs::read_to_string(path)
+                .map_err(|e| anyhow::anyhow!("read CA cert {path}: {e}"))?;
+            tls = tls.ca_certificate(Certificate::from_pem(pem));
+        }
+        builder = builder.tls_config(tls)?;
+    }
+    let channel = builder
         .connect()
         .await
         .map_err(|e| anyhow::anyhow!("connect to {endpoint}: {e}"))?;
 
-    let mut client = SentinelCollectorClient::new(channel);
+    let auth_token = token
+        .map(|t| MetadataValue::try_from(format!("Bearer {t}")))
+        .transpose()
+        .map_err(|e| anyhow::anyhow!("invalid token: {e}"))?;
+    let mut client =
+        SentinelCollectorClient::with_interceptor(channel, AuthInterceptor { token: auth_token });
 
     // Register this node
     let hostname = hostname::get()
