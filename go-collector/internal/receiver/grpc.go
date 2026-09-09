@@ -2,16 +2,22 @@ package receiver
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	"github.com/flipslidersand/sentinel-mesh/internal/alerting"
 	"github.com/flipslidersand/sentinel-mesh/internal/anomaly"
@@ -162,19 +168,75 @@ func (s *server) eventPayload(e *pb.KernelEvent) json.RawMessage {
 	return raw
 }
 
-// Serve starts the gRPC server on addr.
+// Serve starts the gRPC server on addr. If tlsCertFile/tlsKeyFile are both
+// set, the server requires TLS; otherwise it serves in plaintext (caller is
+// expected to warn). If token is non-empty, every RPC must present a matching
+// `authorization: Bearer <token>` metadata entry.
 func Serve(addr string, st *store.Store, reg *registry.Registry, engine *alerting.Engine,
 	detector *anomaly.Detector, notifier *notify.Dispatcher, metrics *otel.MetricsProvider,
-	tracer trace.Tracer, defaultRegion string, log *zap.Logger) error {
+	tracer trace.Tracer, defaultRegion string, log *zap.Logger,
+	tlsCertFile, tlsKeyFile, token string) error {
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", addr, err)
 	}
-	srv := grpc.NewServer()
+
+	var opts []grpc.ServerOption
+	if tlsCertFile != "" && tlsKeyFile != "" {
+		creds, err := credentials.NewServerTLSFromFile(tlsCertFile, tlsKeyFile)
+		if err != nil {
+			return fmt.Errorf("load TLS cert/key: %w", err)
+		}
+		opts = append(opts, grpc.Creds(creds))
+	}
+	opts = append(opts,
+		grpc.ChainUnaryInterceptor(unaryAuthInterceptor(token)),
+		grpc.ChainStreamInterceptor(streamAuthInterceptor(token)),
+	)
+	srv := grpc.NewServer(opts...)
 
 	s := &server{st: st, reg: reg, engine: engine, detector: detector, notifier: notifier, metrics: metrics, tracer: tracer, defaultRegion: defaultRegion, log: log}
 	pb.RegisterSentinelCollectorServer(srv, s)
 
 	log.Info("gRPC server listening", zap.String("addr", addr))
 	return srv.Serve(lis)
+}
+
+// checkAuth validates the `authorization: Bearer <token>` metadata entry in
+// ctx against the expected token. A no-op (always ok) if token is empty.
+func checkAuth(ctx context.Context, token string) error {
+	if token == "" {
+		return nil
+	}
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return status.Error(codes.Unauthenticated, "missing metadata")
+	}
+	values := md.Get("authorization")
+	if len(values) == 0 {
+		return status.Error(codes.Unauthenticated, "missing authorization metadata")
+	}
+	got, ok := strings.CutPrefix(values[0], "Bearer ")
+	if !ok || subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
+		return status.Error(codes.Unauthenticated, "invalid token")
+	}
+	return nil
+}
+
+func unaryAuthInterceptor(token string) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		if err := checkAuth(ctx, token); err != nil {
+			return nil, err
+		}
+		return handler(ctx, req)
+	}
+}
+
+func streamAuthInterceptor(token string) grpc.StreamServerInterceptor {
+	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		if err := checkAuth(ss.Context(), token); err != nil {
+			return err
+		}
+		return handler(srv, ss)
+	}
 }
