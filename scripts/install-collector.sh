@@ -40,6 +40,10 @@ done
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib-validate.sh"
 
+# A leading '-' in SSH_HOST would be interpreted by ssh/scp as an option
+# (e.g. -oProxyCommand=...), letting it run arbitrary local commands (#66).
+validate_host "SSH_HOST" "$SSH_HOST"
+
 # Every value below is interpolated into the systemd unit written below via
 # `sudo tee` — validate before use (#65).
 validate_ident "--region" "$REGION"
@@ -66,19 +70,38 @@ if [[ ! -f "$BINARY" ]]; then
   exit 1
 fi
 
+REMOTE_TMP_BIN="/tmp/sentinel-collector"
+REMOTE_TMP_STATIC="/tmp/sentinel-static"
+
+# Remote commands are sent as positional args to `bash -s --` inside a
+# single-quoted heredoc, so the remote shell never re-parses an interpolated
+# value as command text (#66). ssh/scp get a `--` guard so a (validated,
+# non-'-'-leading) host can never be misread as an option either.
 echo "==> Deploying collector to $SSH_HOST (region=${REGION})..."
-ssh "$SSH_HOST" "sudo mkdir -p /opt/sentinel-collector/static"
-scp "$BINARY" "$SSH_HOST:/tmp/sentinel-collector"
-ssh "$SSH_HOST" "sudo mv /tmp/sentinel-collector $REMOTE_BIN && sudo chmod +x $REMOTE_BIN"
+ssh -- "$SSH_HOST" bash -s -- "$REMOTE_STATIC" <<'REMOTE'
+set -euo pipefail
+sudo mkdir -p "$1"
+REMOTE
+
+scp -- "$BINARY" "$SSH_HOST:$REMOTE_TMP_BIN"
+ssh -- "$SSH_HOST" bash -s -- "$REMOTE_TMP_BIN" "$REMOTE_BIN" <<'REMOTE'
+set -euo pipefail
+sudo mv "$1" "$2"
+sudo chmod +x "$2"
+REMOTE
 
 if [[ -d "$STATIC_DIR" ]]; then
   echo "==> Uploading UI static files..."
-  scp -r "$STATIC_DIR/." "$SSH_HOST:/tmp/sentinel-static/"
-  ssh "$SSH_HOST" "sudo rsync -a /tmp/sentinel-static/ $REMOTE_STATIC/ && rm -rf /tmp/sentinel-static"
+  scp -r -- "$STATIC_DIR/." "$SSH_HOST:$REMOTE_TMP_STATIC/"
+  ssh -- "$SSH_HOST" bash -s -- "$REMOTE_TMP_STATIC" "$REMOTE_STATIC" <<'REMOTE'
+set -euo pipefail
+sudo rsync -a "$1/" "$2/"
+rm -rf "$1"
+REMOTE
 fi
 
 echo "==> Installing systemd service..."
-ssh "$SSH_HOST" "sudo tee /etc/systemd/system/sentinel-collector.service > /dev/null" <<EOF
+ssh -- "$SSH_HOST" "sudo tee /etc/systemd/system/sentinel-collector.service > /dev/null" <<EOF
 [Unit]
 Description=SentinelMesh Collector (region=${REGION})
 After=network.target
@@ -93,6 +116,13 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-ssh "$SSH_HOST" "sudo systemctl daemon-reload && sudo systemctl enable --now sentinel-collector"
+ssh -- "$SSH_HOST" bash -s <<'REMOTE'
+set -euo pipefail
+sudo systemctl daemon-reload
+sudo systemctl enable --now sentinel-collector
+REMOTE
+
 echo "==> sentinel-collector running on $SSH_HOST ${GRPC_ADDR} (gRPC) ${HTTP_ADDR} (HTTP)"
-echo "    Dashboard: http://$(ssh "$SSH_HOST" 'hostname -I | awk "{print \$1}"')${HTTP_ADDR}"
+DASH_IP="$(ssh -- "$SSH_HOST" hostname -I)"
+DASH_IP="${DASH_IP%% *}"
+echo "    Dashboard: http://${DASH_IP}${HTTP_ADDR}"
