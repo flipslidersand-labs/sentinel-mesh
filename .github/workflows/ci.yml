@@ -13,6 +13,10 @@ jobs:
       go-version: "1.25"
       working-directory: go-collector
       coverage-threshold: 40   # 現状実測 43.0% に合わせた初期値。段階的に引き上げる
+      # self-hosted (linux-general) の actions-runner:latest イメージに build-essential が
+      # 無く cgo(-race) が失敗するため一時的に GitHub-hosted に固定。
+      # infra 側でランナーイメージ修正後に外す（dev-nodee-infrastructure 側 Issue で追跡）。
+      runner: ubuntu-latest
 
   rust-agent:
     name: Rust Agent (check + test)
@@ -30,6 +34,9 @@ jobs:
       - uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+      # self-hosted (linux-general) の actions-runner:latest イメージに cc が無く
+      # リンクに失敗するため build-essential を明示インストール。
+      - run: sudo apt-get update && sudo apt-get install -y build-essential
       - run: cargo check --workspace
       - run: cargo test --workspace
     # 注: agent-ebpf は nightly + bpf-linker + bpfel target が必要なため CI 対象外。
