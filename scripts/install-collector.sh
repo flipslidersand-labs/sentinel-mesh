@@ -38,6 +38,17 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib-validate.sh"
+
+# Every value below is interpolated into the systemd unit written below via
+# `sudo tee` — validate before use (#65).
+validate_ident "--region" "$REGION"
+validate_listen_addr "--grpc-addr" "$GRPC_ADDR"
+validate_listen_addr "--http-addr" "$HTTP_ADDR"
+validate_abs_path "--data-dir" "$DATA_DIR"
+[[ -n "$GRPC_TLS_CERT" ]] && validate_path "--grpc-tls-cert" "$GRPC_TLS_CERT"
+[[ -n "$GRPC_TLS_KEY" ]] && validate_path "--grpc-tls-key" "$GRPC_TLS_KEY"
+
 TLS_FLAGS=""
 if [[ -n "$GRPC_TLS_CERT" && -n "$GRPC_TLS_KEY" ]]; then
   TLS_FLAGS="--grpc-tls-cert ${GRPC_TLS_CERT} --grpc-tls-key ${GRPC_TLS_KEY}"
