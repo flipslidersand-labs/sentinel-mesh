@@ -134,10 +134,21 @@ func serveCmd() *cobra.Command {
 			}()
 
 			// gRPC server (blocking)
-			return receiver.Serve(grpcAddr, st, reg, engine, detector, notifier, metricsProvider, tracesProvider.Tracer(), defaultRegion, logger)
+			grpcTLSCert, _ := cmd.Flags().GetString("grpc-tls-cert")
+			grpcTLSKey, _ := cmd.Flags().GetString("grpc-tls-key")
+			if grpcTLSCert == "" || grpcTLSKey == "" {
+				logger.Warn("gRPC server is running WITHOUT TLS — set --grpc-tls-cert/--grpc-tls-key to require it")
+			}
+			if apiToken == "" {
+				logger.Warn("gRPC server is UNAUTHENTICATED — set " + httpauth.EnvAPIToken + " to require a bearer token")
+			}
+			return receiver.Serve(grpcAddr, st, reg, engine, detector, notifier, metricsProvider, tracesProvider.Tracer(), defaultRegion, logger,
+				grpcTLSCert, grpcTLSKey, apiToken)
 		},
 	}
 	cmd.Flags().String("grpc-addr", ":50051", "gRPC listen address")
+	cmd.Flags().String("grpc-tls-cert", "", "path to gRPC server TLS certificate (PEM); requires --grpc-tls-key")
+	cmd.Flags().String("grpc-tls-key", "", "path to gRPC server TLS private key (PEM); requires --grpc-tls-cert")
 	cmd.Flags().String("http-addr", ":8081", "REST API listen address")
 	cmd.Flags().String("data-dir", "/tmp/sentinel-data", "BadgerDB data directory")
 	cmd.Flags().Duration("heartbeat-timeout", 60*time.Second, "inactivity duration before agent is marked inactive")

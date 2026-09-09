@@ -9,6 +9,11 @@
 #   --grpc-addr ADDR      gRPC listen address (default: :50051)
 #   --http-addr ADDR      HTTP listen address (default: :8081)
 #   --data-dir DIR        BadgerDB data directory (default: /var/lib/sentinel)
+#   --grpc-tls-cert PATH  path (on SSH_HOST) to gRPC TLS certificate (PEM); requires --grpc-tls-key
+#   --grpc-tls-key PATH   path (on SSH_HOST) to gRPC TLS private key (PEM); requires --grpc-tls-cert
+#
+# gRPC auth: set SENTINEL_API_TOKEN in the remote environment (not handled by
+# this script) to require agents to present a matching bearer token.
 set -euo pipefail
 
 SSH_HOST="${1:?Usage: $0 <SSH_HOST> [options]}"
@@ -18,16 +23,25 @@ REGION="default"
 GRPC_ADDR=":50051"
 HTTP_ADDR=":8081"
 DATA_DIR="/var/lib/sentinel"
+GRPC_TLS_CERT=""
+GRPC_TLS_KEY=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --region)    REGION="$2";    shift 2 ;;
-    --grpc-addr) GRPC_ADDR="$2"; shift 2 ;;
-    --http-addr) HTTP_ADDR="$2"; shift 2 ;;
-    --data-dir)  DATA_DIR="$2";  shift 2 ;;
+    --region)       REGION="$2";       shift 2 ;;
+    --grpc-addr)    GRPC_ADDR="$2";    shift 2 ;;
+    --http-addr)    HTTP_ADDR="$2";    shift 2 ;;
+    --data-dir)     DATA_DIR="$2";     shift 2 ;;
+    --grpc-tls-cert) GRPC_TLS_CERT="$2"; shift 2 ;;
+    --grpc-tls-key)  GRPC_TLS_KEY="$2";  shift 2 ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
+
+TLS_FLAGS=""
+if [[ -n "$GRPC_TLS_CERT" && -n "$GRPC_TLS_KEY" ]]; then
+  TLS_FLAGS="--grpc-tls-cert ${GRPC_TLS_CERT} --grpc-tls-key ${GRPC_TLS_KEY}"
+fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST="$REPO_ROOT/dist"
@@ -59,7 +73,7 @@ Description=SentinelMesh Collector (region=${REGION})
 After=network.target
 
 [Service]
-ExecStart=${REMOTE_BIN} serve --grpc-addr ${GRPC_ADDR} --http-addr ${HTTP_ADDR} --data-dir ${DATA_DIR} --static-dir ${REMOTE_STATIC} --region ${REGION}
+ExecStart=${REMOTE_BIN} serve --grpc-addr ${GRPC_ADDR} --http-addr ${HTTP_ADDR} --data-dir ${DATA_DIR} --static-dir ${REMOTE_STATIC} --region ${REGION} ${TLS_FLAGS}
 WorkingDirectory=/opt/sentinel-collector
 Restart=always
 RestartSec=5
