@@ -43,6 +43,71 @@ func TestParseUpstreams(t *testing.T) {
 	if _, err := ParseUpstreams([]string{"=http://x"}); err == nil {
 		t.Error("expected error for empty region")
 	}
+	if _, err := ParseUpstreams([]string{"us-east=file:///etc/passwd"}); err == nil {
+		t.Error("expected error for non-http(s) scheme")
+	}
+	if _, err := ParseUpstreams([]string{"us-east=http://"}); err == nil {
+		t.Error("expected error for missing host")
+	}
+}
+
+// TestAggregator_DoesNotFollowRedirect verifies that a redirect response from
+// an upstream is treated as a failed fetch (region marked unreachable)
+// rather than followed — a compromised upstream could otherwise 302 the
+// aggregator's outbound request to an internal address (SSRF) (#76).
+func TestAggregator_DoesNotFollowRedirect(t *testing.T) {
+	var redirectTargetHit bool
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		redirectTargetHit = true
+		_, _ = w.Write([]byte(`{"hit": true}`))
+	}))
+	t.Cleanup(target.Close)
+
+	redirecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+r.URL.Path, http.StatusFound)
+	}))
+	t.Cleanup(redirecting.Close)
+
+	agg := New([]Upstream{{Region: "sus", URL: redirecting.URL}}, 0, nil)
+	agg.PollOnce(context.Background())
+
+	if redirectTargetHit {
+		t.Error("aggregator followed the redirect — SSRF via upstream redirect is possible")
+	}
+	regions := agg.Regions()
+	if len(regions) != 1 || regions[0].Reachable {
+		t.Errorf("region should be marked unreachable after a redirect, got %+v", regions)
+	}
+}
+
+// TestAggregator_LimitsResponseSize verifies an oversized upstream response
+// fails to decode (safe failure) instead of being read without bound, which
+// could otherwise OOM the aggregator (#76).
+func TestAggregator_LimitsResponseSize(t *testing.T) {
+	huge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte("[")) //nolint:errcheck
+		for i := 0; i < 2; i++ {
+			// One JSON array element per maxResponseBytes worth of padding —
+			// two elements guarantees crossing the limit mid-stream.
+			w.Write([]byte(`{"node_id":"`)) //nolint:errcheck
+			pad := make([]byte, maxResponseBytes)
+			for j := range pad {
+				pad[j] = 'a'
+			}
+			w.Write(pad)         //nolint:errcheck
+			w.Write([]byte(`"},`)) //nolint:errcheck
+		}
+		w.Write([]byte("{}]")) //nolint:errcheck
+	}))
+	t.Cleanup(huge.Close)
+
+	agg := New([]Upstream{{Region: "big", URL: huge.URL}}, 0, nil)
+	agg.PollOnce(context.Background())
+
+	regions := agg.Regions()
+	if len(regions) != 1 || regions[0].Reachable {
+		t.Errorf("oversized response should fail (truncated JSON) and mark unreachable, got %+v", regions)
+	}
 }
 
 func TestAggregator_MergeAndReachability(t *testing.T) {

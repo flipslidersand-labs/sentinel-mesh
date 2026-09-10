@@ -11,7 +11,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -23,22 +25,41 @@ import (
 	"github.com/flipslidersand/sentinel-mesh/internal/store"
 )
 
+// maxResponseBytes caps how much of an upstream response fetchJSON will
+// read. Without a limit, a malicious/compromised upstream could stream an
+// unbounded body and OOM the aggregator (#76).
+const maxResponseBytes = 10 * 1024 * 1024 // 10MB
+
 // Upstream is a single per-region collector to poll.
 type Upstream struct {
 	Region string
 	URL    string // base URL, e.g. http://192.0.2.10:8081
 }
 
-// ParseUpstreams parses "region=url" specs into Upstreams.
+// ParseUpstreams parses "region=url" specs into Upstreams. Only http/https
+// URLs with a host are accepted — this is operator-supplied config, not
+// attacker input, but rejecting other schemes (file://, unix://, ...) up
+// front is cheap and removes a class of misconfiguration (#76).
 func ParseUpstreams(specs []string) ([]Upstream, error) {
 	out := make([]Upstream, 0, len(specs))
 	for _, spec := range specs {
-		region, url, ok := strings.Cut(spec, "=")
-		region, url = strings.TrimSpace(region), strings.TrimSpace(url)
-		if !ok || region == "" || url == "" {
+		region, rawURL, ok := strings.Cut(spec, "=")
+		region, rawURL = strings.TrimSpace(region), strings.TrimSpace(rawURL)
+		if !ok || region == "" || rawURL == "" {
 			return nil, fmt.Errorf("invalid upstream %q: expected region=url", spec)
 		}
-		out = append(out, Upstream{Region: region, URL: strings.TrimRight(url, "/")})
+		rawURL = strings.TrimRight(rawURL, "/")
+		parsed, err := url.Parse(rawURL)
+		if err != nil {
+			return nil, fmt.Errorf("invalid upstream %q: %w", spec, err)
+		}
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return nil, fmt.Errorf("invalid upstream %q: scheme must be http or https", spec)
+		}
+		if parsed.Host == "" {
+			return nil, fmt.Errorf("invalid upstream %q: missing host", spec)
+		}
+		out = append(out, Upstream{Region: region, URL: rawURL})
 	}
 	return out, nil
 }
@@ -85,8 +106,18 @@ func New(upstreams []Upstream, interval time.Duration, log *zap.Logger) *Aggrega
 		state[u.Region] = &regionState{}
 	}
 	return &Aggregator{
-		upstreams:  upstreams,
-		client:     &http.Client{Timeout: 5 * time.Second},
+		upstreams: upstreams,
+		client: &http.Client{
+			Timeout: 5 * time.Second,
+			// Never follow redirects: a compromised/malicious upstream could
+			// 302 the aggregator's outbound request to an internal address
+			// (e.g. a cloud metadata endpoint) it can otherwise reach — SSRF
+			// via the aggregator's own network position (#76). Treat a
+			// redirect response as a failed fetch instead.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 		interval:   interval,
 		eventLimit: 100,
 		log:        log,
@@ -167,7 +198,9 @@ func (a *Aggregator) fetchJSON(ctx context.Context, url string, target any) erro
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("GET %s: status %d", url, resp.StatusCode)
 	}
-	return json.NewDecoder(resp.Body).Decode(target)
+	// Cap how much we'll read — an unbounded body from a malicious/misbehaving
+	// upstream could otherwise OOM the aggregator (#76).
+	return json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(target)
 }
 
 // Nodes returns merged nodes across all reachable regions.
