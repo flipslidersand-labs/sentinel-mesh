@@ -101,8 +101,13 @@ pub async fn mock_source(tx: Sender<KernelEvent>, rate: u64) {
         let json = serde_json::to_string(&MockEventLog::from(&event)).unwrap_or_default();
         println!("{json}");
 
-        if tx.send(event).await.is_err() {
-            break;
+        // try_send (not send().await): while stream_to_collector is
+        // reconnecting (#73), the channel can fill up — dropping new mock
+        // events here is preferable to blocking this generator indefinitely.
+        match tx.try_send(event) {
+            Ok(()) => {}
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
         }
     }
 }
