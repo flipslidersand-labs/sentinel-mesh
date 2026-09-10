@@ -35,7 +35,14 @@ func (s *Store) SaveEvent(e Event) error {
 	if err != nil {
 		return err
 	}
-	key := []byte(fmt.Sprintf("event:%s:%s", e.Timestamp.Format(time.RFC3339Nano), e.EventID))
+	// Key by the collector's own receive time, not e.Timestamp — that field
+	// is agent-supplied and untrusted. Keying by it let a malicious agent
+	// pin its events to the front of ListEvents forever with a far-future
+	// timestamp, or overwrite unrelated events via a timestamp+EventID
+	// collision (#78). e.Timestamp is still stored in the record itself for
+	// display; it's just no longer trusted for ordering/storage identity.
+	received := time.Now().UTC()
+	key := []byte(fmt.Sprintf("event:%s:%s", received.Format(time.RFC3339Nano), e.EventID))
 	return s.db.Update(func(tx *badger.Txn) error {
 		return tx.Set(key, val)
 	})
