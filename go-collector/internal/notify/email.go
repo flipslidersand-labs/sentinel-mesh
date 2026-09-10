@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/smtp"
 	"strings"
 	"time"
@@ -16,8 +17,10 @@ type EmailNotifier struct {
 	auth smtp.Auth
 	from string
 	to   []string
-	// sendMail is overridable in tests; defaults to smtp.SendMail.
-	sendMail func(addr string, a smtp.Auth, from string, to []string, msg []byte) error
+	// sendMail is overridable in tests; defaults to sendMailContext, which
+	// dials with a deadline derived from ctx instead of net/smtp.SendMail's
+	// unbounded dial+send.
+	sendMail func(ctx context.Context, addr string, a smtp.Auth, from string, to []string, msg []byte) error
 }
 
 // EmailConfig configures an EmailNotifier.
@@ -45,7 +48,7 @@ func NewEmailNotifier(cfg EmailConfig) *EmailNotifier {
 		auth:     auth,
 		from:     cfg.From,
 		to:       cfg.To,
-		sendMail: smtp.SendMail,
+		sendMail: sendMailContext,
 	}
 }
 
@@ -79,12 +82,74 @@ func (e *EmailNotifier) buildMessage(a store.Alert) []byte {
 }
 
 // Send implements Notifier.
-func (e *EmailNotifier) Send(_ context.Context, a store.Alert) error {
+func (e *EmailNotifier) Send(ctx context.Context, a store.Alert) error {
 	if len(e.to) == 0 {
 		return fmt.Errorf("no recipients configured")
 	}
-	if err := e.sendMail(e.addr, e.auth, e.from, e.to, e.buildMessage(a)); err != nil {
+	if err := e.sendMail(ctx, e.addr, e.auth, e.from, e.to, e.buildMessage(a)); err != nil {
 		return fmt.Errorf("send email: %w", err)
 	}
 	return nil
+}
+
+// sendMailContext mirrors net/smtp.SendMail but dials with a deadline
+// derived from ctx, so a SMTP server that never responds cannot block the
+// caller past the Dispatcher's SendTimeout (see issue #109). If ctx carries
+// no deadline, the dial falls back to net.Dialer's zero-value (no timeout),
+// matching net/smtp.SendMail's prior behavior for callers that don't set one.
+func sendMailContext(ctx context.Context, addr string, a smtp.Auth, from string, to []string, msg []byte) error {
+	var dialer net.Dialer
+	if deadline, ok := ctx.Deadline(); ok {
+		dialer.Timeout = time.Until(deadline)
+	}
+
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := conn.SetDeadline(deadline); err != nil {
+			return err
+		}
+	}
+
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+
+	c, err := smtp.NewClient(conn, host)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+
+	if a != nil {
+		if ok, _ := c.Extension("AUTH"); ok {
+			if err := c.Auth(a); err != nil {
+				return err
+			}
+		}
+	}
+	if err := c.Mail(from); err != nil {
+		return err
+	}
+	for _, addr := range to {
+		if err := c.Rcpt(addr); err != nil {
+			return err
+		}
+	}
+	w, err := c.Data()
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write(msg); err != nil {
+		return err
+	}
+	if err := w.Close(); err != nil {
+		return err
+	}
+	return c.Quit()
 }
