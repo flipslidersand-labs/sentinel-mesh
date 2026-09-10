@@ -44,6 +44,12 @@ func rankOf(severity string) int {
 	return severityRank[strings.ToLower(strings.TrimSpace(severity))]
 }
 
+// maxConcurrentDispatch bounds how many Dispatch goroutines DispatchAsync
+// will run at once. Without a bound, a flood of alerts (e.g. from a
+// misbehaving or malicious agent) spawning one goroutine per alert could
+// exhaust the collector's goroutines/memory (#75).
+const maxConcurrentDispatch = 32
+
 // Dispatcher fans an alert out to all configured notifiers, applying a
 // severity floor and a per-(rule, node) cooldown. It is safe for concurrent use.
 type Dispatcher struct {
@@ -55,8 +61,12 @@ type Dispatcher struct {
 
 	mu       sync.Mutex
 	lastSent map[string]time.Time
+	dropped  uint64
 	// now is overridable in tests; defaults to time.Now.
 	now func() time.Time
+
+	// sem bounds concurrent DispatchAsync goroutines (#75).
+	sem chan struct{}
 }
 
 // Options configures a Dispatcher.
@@ -90,6 +100,7 @@ func NewDispatcher(opts Options) *Dispatcher {
 		log:       log,
 		lastSent:  make(map[string]time.Time),
 		now:       time.Now,
+		sem:       make(chan struct{}, maxConcurrentDispatch),
 	}
 }
 
@@ -119,9 +130,39 @@ func (d *Dispatcher) shouldSend(a store.Alert) bool {
 	return true
 }
 
+// DispatchAsync delivers the alert asynchronously, bounded by
+// maxConcurrentDispatch. If that many Dispatch calls are already in flight,
+// the alert notification is dropped (logged + counted, not silently lost)
+// rather than spawning an unbounded goroutine (#75). Safe to call from a
+// hot path (e.g. the gRPC StreamEvents loop) — it never blocks.
+func (d *Dispatcher) DispatchAsync(a store.Alert) {
+	if !d.Enabled() {
+		return
+	}
+	select {
+	case d.sem <- struct{}{}:
+		go func() {
+			defer func() { <-d.sem }()
+			d.Dispatch(a)
+		}()
+	default:
+		d.mu.Lock()
+		d.dropped++
+		n := d.dropped
+		d.mu.Unlock()
+		if n == 1 || n%100 == 0 {
+			d.log.Warn("alert dispatch concurrency limit reached, dropping notification",
+				zap.String("rule_id", a.RuleID),
+				zap.String("node_id", a.NodeID),
+				zap.Uint64("dropped_total", n),
+			)
+		}
+	}
+}
+
 // Dispatch delivers the alert to every notifier if it passes the severity and
 // cooldown gates. It blocks until all notifiers have been attempted; callers
-// that must not block (e.g. the gRPC hot path) should invoke it in a goroutine.
+// that must not block (e.g. the gRPC hot path) should use DispatchAsync instead.
 func (d *Dispatcher) Dispatch(a store.Alert) {
 	if !d.Enabled() {
 		return

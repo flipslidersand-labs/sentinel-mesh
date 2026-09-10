@@ -3,6 +3,7 @@ package receiver
 import (
 	"context"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -46,6 +47,32 @@ func TestCheckAuth_ValidToken(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), md)
 	if err := checkAuth(ctx, "secret"); err != nil {
 		t.Fatalf("expected valid token to pass, got %v", err)
+	}
+}
+
+func TestTokenBucket_AllowsUpToBurstThenBlocks(t *testing.T) {
+	b := newTokenBucket(1, 5) // 1/sec sustained, burst of 5
+	for i := 0; i < 5; i++ {
+		if !b.allow() {
+			t.Fatalf("call %d within burst should be allowed", i)
+		}
+	}
+	if b.allow() {
+		t.Fatal("call beyond burst should be rejected")
+	}
+}
+
+func TestTokenBucket_RefillsOverTime(t *testing.T) {
+	b := newTokenBucket(1000, 1) // fast refill so the test doesn't sleep long
+	if !b.allow() {
+		t.Fatal("first call should be allowed")
+	}
+	if b.allow() {
+		t.Fatal("immediate second call should be rejected (burst=1)")
+	}
+	time.Sleep(5 * time.Millisecond) // >> 1/1000/sec refill interval
+	if !b.allow() {
+		t.Fatal("call after refill window should be allowed")
 	}
 }
 
