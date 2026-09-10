@@ -12,6 +12,18 @@ use crate::pb::{sentinel_collector_client::SentinelCollectorClient, KernelEvent,
 const INITIAL_BACKOFF: Duration = Duration::from_millis(100);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
+/// Cap on how long a single `connect()` attempt may block. Without this, a
+/// firewall that silently drops packets leaves `.connect().await` hanging
+/// until the OS/TCP stack's own timeout (which can be minutes), during which
+/// `run_once` never returns `Err` and the backoff-reconnect loop in
+/// `stream_to_collector` never runs (#108).
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Cap on how long any single RPC (register, or a message on the event
+/// stream) may take once connected, so a collector that accepts the TCP
+/// connection but then stalls can't hang the agent indefinitely either.
+const RPC_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Attaches `authorization: Bearer <token>` metadata to every outgoing RPC.
 /// A no-op if no token is configured.
 #[derive(Clone)]
@@ -104,7 +116,9 @@ async fn run_once(
     ca_cert_path: &Option<String>,
     rx: &mut Receiver<KernelEvent>,
 ) -> Result<()> {
-    let mut builder = Endpoint::from_shared(endpoint.to_string())?;
+    let mut builder = Endpoint::from_shared(endpoint.to_string())?
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(RPC_TIMEOUT);
     if endpoint.starts_with("https://") {
         let mut tls = ClientTlsConfig::new();
         if let Some(path) = ca_cert_path {
@@ -209,6 +223,16 @@ mod tests {
                 "jittered({base:?}) = {got:?} out of the expected ±25% range"
             );
         }
+    }
+
+    #[test]
+    fn connect_timeout_is_set_and_bounded() {
+        // Regression guard for #108: `run_once` must bound how long
+        // `.connect().await` can block, or a silently-dropping firewall
+        // stalls it past the OS/TCP default (minutes) and the
+        // backoff-reconnect loop in `stream_to_collector` never runs.
+        assert!(CONNECT_TIMEOUT > Duration::ZERO);
+        assert!(CONNECT_TIMEOUT <= Duration::from_secs(30));
     }
 
     #[test]
