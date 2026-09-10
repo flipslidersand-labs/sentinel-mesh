@@ -84,8 +84,58 @@ type server struct {
 	log           *zap.Logger
 }
 
+// maxRegisterFieldLength bounds node_id/hostname/ip/version/region on
+// Register so an unauthenticated client (gRPC often runs without a Bearer
+// token configured) can't push oversized or control-character strings that
+// get persisted to BadgerDB and rendered verbatim on the /api/nodes
+// dashboard (#106).
+const maxRegisterFieldLength = 256
+
+// isPrintableASCII reports whether s contains only printable ASCII
+// characters (0x20-0x7E) — no control characters, no newlines, no non-ASCII.
+func isPrintableASCII(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
+// validateRegisterRequest enforces a length cap and an ASCII-printable
+// charset on node_id/hostname/version/region, and validates ip (when set)
+// as a real IP address (#106).
+func validateRegisterRequest(req *pb.RegisterRequest) error {
+	fields := []struct{ name, value string }{
+		{"node_id", req.NodeId},
+		{"hostname", req.Hostname},
+		{"version", req.Version},
+		{"region", req.Region},
+	}
+	for _, f := range fields {
+		if len(f.value) > maxRegisterFieldLength {
+			return fmt.Errorf("%s exceeds max length of %d bytes", f.name, maxRegisterFieldLength)
+		}
+		if !isPrintableASCII(f.value) {
+			return fmt.Errorf("%s must contain only printable ASCII characters", f.name)
+		}
+	}
+	if req.Ip != "" {
+		if len(req.Ip) > maxRegisterFieldLength {
+			return fmt.Errorf("ip exceeds max length of %d bytes", maxRegisterFieldLength)
+		}
+		if net.ParseIP(req.Ip) == nil {
+			return fmt.Errorf("ip is not a valid IP address")
+		}
+	}
+	return nil
+}
+
 // Register handles agent registration (unary RPC).
 func (s *server) Register(_ context.Context, req *pb.RegisterRequest) (*pb.RegisterResponse, error) {
+	if err := validateRegisterRequest(req); err != nil {
+		return &pb.RegisterResponse{Ok: false, Message: err.Error()}, nil
+	}
 	region := req.Region
 	if region == "" {
 		region = s.defaultRegion // fall back to the collector's default region
