@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/smtp"
@@ -95,7 +96,7 @@ func TestEmailNotifier_Send(t *testing.T) {
 		From: "alerts@example.com",
 		To:   []string{"ops@example.com"},
 	})
-	n.sendMail = func(addr string, _ smtp.Auth, from string, to []string, msg []byte) error {
+	n.sendMail = func(_ context.Context, addr string, _ smtp.Auth, from string, to []string, msg []byte) error {
 		gotAddr, gotFrom, gotTo = addr, from, to
 		if len(msg) == 0 {
 			t.Error("empty message")
@@ -108,6 +109,54 @@ func TestEmailNotifier_Send(t *testing.T) {
 	}
 	if gotAddr != "smtp.example.com:587" || gotFrom != "alerts@example.com" || len(gotTo) != 1 {
 		t.Errorf("unexpected sendMail args: addr=%s from=%s to=%v", gotAddr, gotFrom, gotTo)
+	}
+}
+
+// TestEmailNotifier_Send_RespectsContextDeadline verifies that Send does not
+// hang past the caller's context deadline when the SMTP server accepts the
+// TCP connection but never replies (issue #109).
+func TestEmailNotifier_Send_RespectsContextDeadline(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	// Accept connections but never write anything back, simulating a
+	// hung SMTP server.
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			// Keep the connection open without responding; close only
+			// when the listener itself is closed.
+			go func(c net.Conn) {
+				<-make(chan struct{}) // block until process/test teardown
+				_ = c
+			}(conn)
+		}
+	}()
+
+	n := NewEmailNotifier(EmailConfig{
+		Addr: ln.Addr().String(),
+		From: "alerts@example.com",
+		To:   []string{"ops@example.com"},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err = n.Send(ctx, sampleAlert())
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected Send to fail against an unresponsive SMTP server")
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("Send blocked for %v, want it bounded by the context deadline", elapsed)
 	}
 }
 
