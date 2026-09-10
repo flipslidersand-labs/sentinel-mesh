@@ -1,4 +1,4 @@
-import { api, type Stats as StatsType } from "../api";
+import { api, asRecord, type Stats as StatsType } from "../api";
 import { usePolling } from "../hooks/usePolling";
 
 export function Stats() {
@@ -6,11 +6,11 @@ export function Stats() {
 
   if (loading) return <div className="status">Loading…</div>;
   if (error) return <div className="status error">{error}</div>;
-  if (!data || !Object.keys(data).length)
-    return <div className="status">No data</div>;
+  const counts = asRecord(data);
+  if (!Object.keys(counts).length) return <div className="status">No data</div>;
 
-  const total = Object.values(data).reduce((s, n) => s + n, 0);
-  const sorted = Object.entries(data).sort(([, a], [, b]) => b - a);
+  const total = Object.values(counts).reduce((s, n) => s + n, 0);
+  const sorted = Object.entries(counts).sort(([, a], [, b]) => b - a);
 
   return (
     <div className="stats-grid">

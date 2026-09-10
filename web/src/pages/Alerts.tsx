@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { api, type Alert } from "../api";
+import { api, asArray, type Alert } from "../api";
 import { usePolling } from "../hooks/usePolling";
 import {
   TIME_RANGES,
@@ -32,7 +32,7 @@ export function Alerts() {
   const ruleQuery = rule.trim().toLowerCase();
   const filtered = useMemo(
     () =>
-      (data ?? []).filter(
+      asArray<Alert>(data).filter(
         (a) =>
           (!severity || a.severity.toLowerCase() === severity) &&
           (!ruleQuery || a.rule_id.toLowerCase().includes(ruleQuery)) &&

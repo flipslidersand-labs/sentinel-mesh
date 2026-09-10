@@ -1,4 +1,4 @@
-import { api, type NodeInfo } from "../api";
+import { api, asArray, type NodeInfo } from "../api";
 import { usePolling } from "../hooks/usePolling";
 
 function timeSince(iso: string): string {
@@ -13,7 +13,8 @@ export function Nodes() {
 
   if (loading) return <div className="status">Loading…</div>;
   if (error) return <div className="status error">{error}</div>;
-  if (!data?.length) return <div className="status">No nodes registered</div>;
+  const nodes = asArray<NodeInfo>(data);
+  if (!nodes.length) return <div className="status">No nodes registered</div>;
 
   return (
     <table>
@@ -27,7 +28,7 @@ export function Nodes() {
         </tr>
       </thead>
       <tbody>
-        {data.map((n) => (
+        {nodes.map((n) => (
           <tr key={n.node_id}>
             <td className="mono">{n.node_id}</td>
             <td>{n.hostname}</td>

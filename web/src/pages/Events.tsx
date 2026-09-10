@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { api, type Event } from "../api";
+import { api, asArray, type Event } from "../api";
 import { usePolling } from "../hooks/usePolling";
 import {
   TIME_RANGES,
@@ -34,7 +34,7 @@ export function Events() {
   const rangeMs = rangeMsFor(range);
   const filtered = useMemo(
     () =>
-      (data ?? []).filter(
+      asArray<Event>(data).filter(
         (e) => (!type || e.type === type) && withinRange(e.timestamp, rangeMs),
       ),
     [data, type, rangeMs],
