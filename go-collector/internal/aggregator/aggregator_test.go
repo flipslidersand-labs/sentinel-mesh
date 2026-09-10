@@ -94,7 +94,7 @@ func TestAggregator_LimitsResponseSize(t *testing.T) {
 			for j := range pad {
 				pad[j] = 'a'
 			}
-			w.Write(pad)         //nolint:errcheck
+			w.Write(pad)           //nolint:errcheck
 			w.Write([]byte(`"},`)) //nolint:errcheck
 		}
 		w.Write([]byte("{}]")) //nolint:errcheck
