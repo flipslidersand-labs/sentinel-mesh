@@ -15,7 +15,7 @@ jobs:
       coverage-threshold: 40   # 現状実測 43.0% に合わせた初期値。段階的に引き上げる
       # self-hosted (linux-general) の actions-runner:latest イメージに build-essential が
       # 無く cgo(-race) が失敗するため一時的に GitHub-hosted に固定。
-      # infra 側でランナーイメージ修正後に外す（dev-nodee-infrastructure 側 Issue で追跡）。
+      # infra 側でランナーイメージ修正後に外す（トラッキング: flipslidersand-labs/sentinel-mesh#112）。
       runner: ubuntu-latest
 
   rust-agent:
