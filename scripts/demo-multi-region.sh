@@ -34,9 +34,9 @@ if $MOCK; then MOCK_FLAG="--mock"; fi
 
 # ── Host / address config ──────────────────────────────────────────────────────
 MINIPC_HOST="minipc"
-MINIPC_IP="192.168.68.63"
+MINIPC_IP="${SENTINEL_MINIPC_IP:-192.0.2.10}"
 YUKI_HOST="yuki-private"
-YUKI_IP="192.168.68.56"
+YUKI_IP="${SENTINEL_YUKI_IP:-192.0.2.11}"
 
 WEST_GRPC="${MINIPC_IP}:50051"
 WEST_HTTP="http://${MINIPC_IP}:8081"

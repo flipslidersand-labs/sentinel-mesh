@@ -9,11 +9,11 @@
 #   ./scripts/deploy-agent.sh [OPTIONS] HOST...
 #
 # Examples:
-#   ./scripts/deploy-agent.sh --collector 192.168.68.63:50051 yuki-private ds1
-#   ./scripts/deploy-agent.sh --mock --collector 192.168.68.63:50051 minipc
-#   ./scripts/deploy-agent.sh --node-id web-01 --collector 192.168.68.63:50051 minipc
-#   ./scripts/deploy-agent.sh --region tokyo --collector 192.168.68.63:50051 yuki-private
-#   ./scripts/deploy-agent.sh --tls --grpc-token "$SENTINEL_API_TOKEN" --collector 192.168.68.63:50051 minipc
+#   ./scripts/deploy-agent.sh --collector 192.0.2.10:50051 yuki-private ds1
+#   ./scripts/deploy-agent.sh --mock --collector 192.0.2.10:50051 minipc
+#   ./scripts/deploy-agent.sh --node-id web-01 --collector 192.0.2.10:50051 minipc
+#   ./scripts/deploy-agent.sh --region tokyo --collector 192.0.2.10:50051 yuki-private
+#   ./scripts/deploy-agent.sh --tls --grpc-token "$SENTINEL_API_TOKEN" --collector 192.0.2.10:50051 minipc
 #
 # TLS/auth options:
 #   --tls              connect via https:// (collector must have --grpc-tls-cert/--grpc-tls-key set)
@@ -27,7 +27,9 @@
 set -euo pipefail
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
-COLLECTOR_ADDR="${SENTINEL_COLLECTOR:-192.168.68.63:50051}"
+# No real default collector address is baked in — set $SENTINEL_COLLECTOR or
+# pass --collector explicitly for your own deployment.
+COLLECTOR_ADDR="${SENTINEL_COLLECTOR:-192.0.2.10:50051}"
 MOCK=false
 MOCK_RATE=3
 NODE_ID_OVERRIDE=""

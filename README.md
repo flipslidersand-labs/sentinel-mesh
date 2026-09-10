@@ -293,9 +293,9 @@ bash scripts/build.sh
 bash scripts/install-collector.sh minipc
 
 # 3. Deploy Agents to each node (mock mode, 3 events/sec)
-bash scripts/deploy-agent.sh minipc  minipc  192.168.68.63:50051
-bash scripts/deploy-agent.sh yuki    yuki    192.168.68.63:50051
-bash scripts/deploy-agent.sh ds1     ds1     192.168.68.63:50051
+bash scripts/deploy-agent.sh minipc  minipc  192.0.2.10:50051
+bash scripts/deploy-agent.sh yuki    yuki    192.0.2.10:50051
+bash scripts/deploy-agent.sh ds1     ds1     192.0.2.10:50051
 
 # Or run everything at once (skips unreachable nodes automatically)
 bash scripts/demo-multi-node.sh
@@ -305,22 +305,24 @@ bash scripts/demo-multi-node.sh
 
 ```bash
 # All registered nodes (active/inactive)
-curl http://192.168.68.63:8081/api/nodes
+curl http://192.0.2.10:8081/api/nodes
 
 # Events from a specific node
-curl "http://192.168.68.63:8081/api/events?node=yuki&limit=20"
+curl "http://192.0.2.10:8081/api/events?node=yuki&limit=20"
 
 # Dashboard
-open http://192.168.68.63:8081
+open http://192.0.2.10:8081
 ```
 
 ### Node Layout
 
-| Role      | Host            | IP            | SSH alias      |
-| --------- | --------------- | ------------- | -------------- |
-| Collector | MINIPC          | 192.168.68.63 | `minipc`       |
-| Agent     | YUKI-PRIVATE002 | 192.168.68.56 | `yuki-private` |
-| Agent     | DS1HANAHANA     | 192.168.68.59 | `ds1`          |
+Example layout for a 3-node home-lab deployment (substitute your own hosts/IPs):
+
+| Role      | Host            | IP           | SSH alias      |
+| --------- | --------------- | ------------ | -------------- |
+| Collector | collector-node  | 192.0.2.10   | `minipc`       |
+| Agent     | agent-node-1    | 192.0.2.11   | `yuki-private` |
+| Agent     | agent-node-2    | 192.0.2.12   | `ds1`          |
 
 ### Deploy Scripts
 
@@ -350,8 +352,8 @@ Deploys an agent to a remote host, registers with the collector, and starts as a
 ```bash
 bash scripts/deploy-agent.sh <SSH_ALIAS> <NODE_ID> <COLLECTOR_ADDR> [--ebpf]
 # Example:
-bash scripts/deploy-agent.sh yuki    yuki    192.168.68.63:50051
-bash scripts/deploy-agent.sh ds1     ds1     192.168.68.63:50051 --ebpf
+bash scripts/deploy-agent.sh yuki    yuki    192.0.2.10:50051
+bash scripts/deploy-agent.sh ds1     ds1     192.0.2.10:50051 --ebpf
 ```
 
 ### Switching to real eBPF mode
