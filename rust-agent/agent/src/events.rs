@@ -257,8 +257,7 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
 
 #[cfg(feature = "ebpf")]
 fn bytes_to_str(b: &[u8]) -> String {
-    std::str::from_utf8(b)
-        .unwrap_or("")
+    String::from_utf8_lossy(b)
         .trim_end_matches('\0')
         .to_string()
 }
@@ -427,6 +426,26 @@ mod tests {
     #[test]
     fn now_nanos_is_positive() {
         assert!(now_nanos() > 0);
+    }
+
+    #[cfg(feature = "ebpf")]
+    #[test]
+    fn bytes_to_str_preserves_non_utf8_content() {
+        // 0xFF is not valid UTF-8 on its own; a naive from_utf8().unwrap_or("")
+        // would silently drop the whole string instead of keeping the rest.
+        let raw = b"evil\xffname\0\0\0";
+        let s = bytes_to_str(raw);
+        assert!(!s.is_empty());
+        assert!(s.starts_with("evil"));
+        assert!(s.ends_with("name"));
+        assert!(s.contains('\u{FFFD}'));
+    }
+
+    #[cfg(feature = "ebpf")]
+    #[test]
+    fn bytes_to_str_trims_nul_terminator() {
+        let raw = b"bash\0\0\0\0\0\0\0\0\0\0\0\0";
+        assert_eq!(bytes_to_str(raw), "bash");
     }
 
     fn pid_of(e: &KernelEvent) -> u32 {
