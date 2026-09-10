@@ -49,13 +49,24 @@ func newHTTPServer(addr string, handler http.Handler) *http.Server {
 }
 
 func main() {
-	root := &cobra.Command{
-		Use:   "sentinel-collector",
-		Short: "SentinelMesh Go Control Plane",
-	}
+	root := rootCmd()
 	root.AddCommand(serveCmd())
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
+	}
+}
+
+func rootCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "sentinel-collector",
+		Short: "SentinelMesh Go Control Plane",
+		Long: `sentinel-collector is the Go control plane for SentinelMesh.
+
+It receives agent telemetry over gRPC, serves a REST API and bundled UI,
+evaluates alerting rules, and can run as a cross-region aggregator that
+polls other collectors' REST APIs for a merged read-only view.
+
+Run "sentinel-collector serve --help" for available modes and flags.`,
 	}
 }
 
@@ -63,7 +74,37 @@ func serveCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Start gRPC server and REST API",
+		Long: `Start the collector's gRPC server (for agent telemetry) and REST API.
+
+Two mutually exclusive modes:
+
+  - Normal mode (default): receives agent telemetry over gRPC, persists it
+    to BadgerDB, evaluates alerting rules, and serves a REST API + UI.
+  - Aggregate mode (--aggregate): no gRPC server or local store — instead
+    polls one or more upstream region collectors' REST APIs (--upstreams)
+    and serves a merged read-only view. Normal-mode-only flags such as
+    --grpc-addr, --data-dir, --rules, and --grpc-tls-cert/--grpc-tls-key
+    are ignored in this mode.
+
+TLS for the gRPC server is optional but, when enabled, both
+--grpc-tls-cert and --grpc-tls-key must be supplied together.`,
+		Example: `  # Normal mode: gRPC + REST API on default addresses
+  sentinel-collector serve
+
+  # Normal mode with gRPC TLS enabled
+  sentinel-collector serve --grpc-tls-cert=/etc/sentinel/tls.crt --grpc-tls-key=/etc/sentinel/tls.key
+
+  # Aggregate mode: merge two region collectors into one read-only view
+  sentinel-collector serve --aggregate \
+    --upstreams=us-east=http://collector-us-east:8081 \
+    --upstreams=eu-west=http://collector-eu-west:8081`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			aggregate, _ := cmd.Flags().GetBool("aggregate")
+			upstreamsSet := cmd.Flags().Changed("upstreams") || cmd.Flags().Changed("poll-interval")
+			if !aggregate && upstreamsSet {
+				return fmt.Errorf("--upstreams/--poll-interval require --aggregate")
+			}
+
 			grpcAddr, _ := cmd.Flags().GetString("grpc-addr")
 			httpAddr, _ := cmd.Flags().GetString("http-addr")
 			dataDir, _ := cmd.Flags().GetString("data-dir")
@@ -76,7 +117,7 @@ func serveCmd() *cobra.Command {
 
 			// Aggregate mode: no gRPC/store — poll upstream region collectors and
 			// serve a merged read-only view.
-			if aggregate, _ := cmd.Flags().GetBool("aggregate"); aggregate {
+			if aggregate {
 				return runAggregate(cmd, logger)
 			}
 
@@ -187,6 +228,7 @@ func serveCmd() *cobra.Command {
 	cmd.Flags().Bool("aggregate", false, "run as a cross-region aggregator (polls --upstreams, no gRPC)")
 	cmd.Flags().StringSlice("upstreams", nil, "aggregate mode: region collectors as region=url (repeatable)")
 	cmd.Flags().Duration("poll-interval", 10*time.Second, "aggregate mode: how often to poll upstreams")
+	cmd.MarkFlagsRequiredTogether("grpc-tls-cert", "grpc-tls-key")
 	return cmd
 }
 
