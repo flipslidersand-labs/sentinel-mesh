@@ -66,6 +66,9 @@ fn try_exec(_ctx: TracePointContext) -> Result<(), i64> {
     let mut entry = unsafe { EVENTS.reserve::<ExecEvent>(0) }.ok_or(1i64)?;
     let ev = entry.as_mut_ptr();
     unsafe {
+        // reserve() returns uninitialized memory (incl. struct padding); zero
+        // it before writing fields so we never submit stale kernel bytes (#71).
+        core::ptr::write_bytes(ev, 0, 1);
         (*ev).event_type = ET_EXEC;
         (*ev).pid = pid;
         (*ev).uid = uid;
@@ -102,6 +105,10 @@ fn try_openat(ctx: TracePointContext) -> Result<(), i64> {
     let mut entry = unsafe { EVENTS.reserve::<FileEvent>(0) }.ok_or(1i64)?;
     let ev = entry.as_mut_ptr();
     unsafe {
+        // reserve() returns uninitialized memory (incl. struct padding and
+        // any bytes of `path` the probe read below doesn't fill); zero it
+        // before writing fields so we never submit stale kernel bytes (#71).
+        core::ptr::write_bytes(ev, 0, 1);
         (*ev).event_type = ET_FILE;
         (*ev).pid = pid;
         (*ev).uid = uid;
@@ -144,6 +151,9 @@ fn try_tcp_connect(ctx: ProbeContext) -> Result<(), i64> {
     let mut entry = unsafe { EVENTS.reserve::<TcpEvent>(0) }.ok_or(1i64)?;
     let ev = entry.as_mut_ptr();
     unsafe {
+        // reserve() returns uninitialized memory (incl. struct padding); zero
+        // it before writing fields so we never submit stale kernel bytes (#71).
+        core::ptr::write_bytes(ev, 0, 1);
         (*ev).event_type = ET_TCP;
         (*ev).pid = pid;
         (*ev).src_ip = 0;
