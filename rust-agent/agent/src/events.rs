@@ -163,8 +163,16 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
                 continue;
             }
             let kernel_event = match data[0] {
-                0 if data.len() >= core::mem::size_of::<EbpfExecEvent>() => {
-                    let raw = unsafe { &*(data.as_ptr() as *const EbpfExecEvent) };
+                // read_unaligned copies the bytes out rather than casting `&[u8]`
+                // (alignment=1) directly to a `&EbpfXxxEvent` reference
+                // (alignment>=4) — that cast is UB in Rust regardless of the
+                // actual runtime address (#69). An exact length match (not
+                // `>=`) ensures the ring buffer record is really this struct,
+                // not a same-tag record of a different size.
+                0 if data.len() == core::mem::size_of::<EbpfExecEvent>() => {
+                    let raw = unsafe {
+                        core::ptr::read_unaligned(data.as_ptr() as *const EbpfExecEvent)
+                    };
                     KernelEvent {
                         event_id: Uuid::new_v4().to_string(),
                         node_id: String::new(),
@@ -180,8 +188,10 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
                         })),
                     }
                 }
-                1 if data.len() >= core::mem::size_of::<EbpfFileEvent>() => {
-                    let raw = unsafe { &*(data.as_ptr() as *const EbpfFileEvent) };
+                1 if data.len() == core::mem::size_of::<EbpfFileEvent>() => {
+                    let raw = unsafe {
+                        core::ptr::read_unaligned(data.as_ptr() as *const EbpfFileEvent)
+                    };
                     KernelEvent {
                         event_id: Uuid::new_v4().to_string(),
                         node_id: String::new(),
@@ -196,8 +206,10 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
                         })),
                     }
                 }
-                2 if data.len() >= core::mem::size_of::<EbpfTcpEvent>() => {
-                    let raw = unsafe { &*(data.as_ptr() as *const EbpfTcpEvent) };
+                2 if data.len() == core::mem::size_of::<EbpfTcpEvent>() => {
+                    let raw = unsafe {
+                        core::ptr::read_unaligned(data.as_ptr() as *const EbpfTcpEvent)
+                    };
                     KernelEvent {
                         event_id: Uuid::new_v4().to_string(),
                         node_id: String::new(),
