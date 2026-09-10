@@ -141,12 +141,26 @@ fn try_tcp_connect(ctx: ProbeContext) -> Result<(), i64> {
     let pid = (pid_tgid >> 32) as u32;
     let raw_comm = bpf_get_current_comm()?;
 
-    // arg(0) = struct sock *sk. skc_daddr is at offset 0, inet_dport at offset 12.
+    // arg(0) = struct sock * (struct sock_common at offset 0):
+    //   skc_daddr      @0  __be32 — remote (dst) IP, network byte order
+    //   skc_rcv_saddr  @4  __be32 — local (src) IP, network byte order
+    //   skc_dport      @12 __be16 — remote (dst) port, network byte order
+    //   skc_num        @14 __u16  — local (src) port, ALREADY host byte order
+    // Raw offsets are BTF-fragile across kernel versions — CO-RE (with
+    // vmlinux.h field offsets resolved by the loader) would be more robust;
+    // tracked as a follow-up, out of scope for this fix (#72).
     let sk: *const u8 = ctx.arg(0).ok_or(1i64)?;
-    let dst_ip: u32 =
-        unsafe { bpf_probe_read_kernel(sk as *const u32) }.map_err(|_| 1i64)?;
-    let dst_port: u16 =
+    let src_ip: u32 =
+        unsafe { bpf_probe_read_kernel(sk.add(4) as *const u32) }.map_err(|_| 1i64)?;
+    let dst_ip: u32 = unsafe { bpf_probe_read_kernel(sk as *const u32) }.map_err(|_| 1i64)?;
+    let src_port: u16 =
+        unsafe { bpf_probe_read_kernel(sk.add(14) as *const u16) }.map_err(|_| 1i64)?;
+    let dst_port_be: u16 =
         unsafe { bpf_probe_read_kernel(sk.add(12) as *const u16) }.map_err(|_| 1i64)?;
+    // skc_dport is network byte order (__be16) — convert here so userspace
+    // (and src_port, which is already host order) don't need to know which
+    // of the two ports needs swapping (#72).
+    let dst_port = u16::from_be(dst_port_be);
 
     let mut entry = unsafe { EVENTS.reserve::<TcpEvent>(0) }.ok_or(1i64)?;
     let ev = entry.as_mut_ptr();
@@ -156,9 +170,9 @@ fn try_tcp_connect(ctx: ProbeContext) -> Result<(), i64> {
         core::ptr::write_bytes(ev, 0, 1);
         (*ev).event_type = ET_TCP;
         (*ev).pid = pid;
-        (*ev).src_ip = 0;
+        (*ev).src_ip = src_ip;
         (*ev).dst_ip = dst_ip;
-        (*ev).src_port = 0;
+        (*ev).src_port = src_port;
         (*ev).dst_port = dst_port;
         for i in 0..16 {
             (*ev).comm[i] = raw_comm[i] as u8;
