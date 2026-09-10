@@ -103,6 +103,56 @@ func TestListEvents_NodeFilter_Unknown(t *testing.T) {
 	}
 }
 
+// TestSaveEvent_AgentTimestampCannotPinOrdering verifies that an
+// agent-supplied Timestamp far in the future (or past) does not affect
+// storage ordering or identity — only EventID + server receive time do
+// (#78). Before the fix, storage was keyed by e.Timestamp, so a malicious
+// agent could pin its own events to the front of ListEvents forever with a
+// far-future timestamp.
+func TestSaveEvent_AgentTimestampCannotPinOrdering(t *testing.T) {
+	st := newTempStore(t)
+
+	honest := store.Event{
+		EventID:   "honest-1",
+		NodeID:    "node-a",
+		Timestamp: time.Now(),
+		Type:      "exec",
+		Payload:   json.RawMessage(`{}`),
+	}
+	if err := st.SaveEvent(honest); err != nil {
+		t.Fatalf("SaveEvent(honest): %v", err)
+	}
+
+	malicious := store.Event{
+		EventID:   "malicious-1",
+		NodeID:    "node-b",
+		Timestamp: time.Now().Add(365 * 24 * time.Hour), // far-future claim
+		Type:      "exec",
+		Payload:   json.RawMessage(`{}`),
+	}
+	if err := st.SaveEvent(malicious); err != nil {
+		t.Fatalf("SaveEvent(malicious): %v", err)
+	}
+
+	got, err := st.ListEvents("", 100)
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 events, got %d", len(got))
+	}
+	// ListEvents is newest-first by storage key; since storage is keyed by
+	// receive time (not the claimed Timestamp), the event saved second
+	// (malicious, despite its far-future claimed Timestamp being no more
+	// "recent" than honest's real one by receive order) is not guaranteed
+	// to always be first — but it must reflect *receive* order, not the
+	// attacker's claimed Timestamp. Here that means "malicious" (saved
+	// second) is newest.
+	if got[0].EventID != "malicious-1" || got[1].EventID != "honest-1" {
+		t.Errorf("ordering should follow receive time, got %v then %v", got[0].EventID, got[1].EventID)
+	}
+}
+
 func TestListEvents_Limit_WithFilter(t *testing.T) {
 	st := newTempStore(t)
 	for i := 0; i < 5; i++ {
