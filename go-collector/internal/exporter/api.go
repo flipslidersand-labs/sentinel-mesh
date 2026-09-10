@@ -15,13 +15,29 @@ import (
 	"github.com/flipslidersand/sentinel-mesh/internal/store"
 )
 
-func queryInt(c *gin.Context, key string, def int) int {
-	if v := c.Query(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return n
-		}
+// maxLimit caps the "limit" query parameter accepted by list endpoints,
+// preventing a client-supplied value from forcing an unbounded store scan
+// or an oversized JSON response.
+const maxLimit = 1000
+
+// parseLimit parses the "limit" query parameter for key. When absent, def is
+// returned. When present but not a positive integer, it writes a 400
+// response and returns ok=false so the caller can abort the request. Values
+// above maxLimit are silently clamped rather than rejected.
+func parseLimit(c *gin.Context, key string, def int) (limit int, ok bool) {
+	v := c.Query(key)
+	if v == "" {
+		return def, true
 	}
-	return def
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid " + key + ": must be a positive integer"})
+		return 0, false
+	}
+	if n > maxLimit {
+		n = maxLimit
+	}
+	return n, true
 }
 
 // regionNodeSet returns the set of node IDs registered in the given region.
@@ -80,7 +96,11 @@ func Router(st *store.Store, reg *registry.Registry, detector *anomaly.Detector,
 	api := r.Group("/api", httpauth.BearerAuth(apiToken))
 	{
 		api.GET("/events", func(c *gin.Context) {
-			events, err := st.ListEvents(c.Query("node"), queryInt(c, "limit", 100))
+			limit, ok := parseLimit(c, "limit", 100)
+			if !ok {
+				return
+			}
+			events, err := st.ListEvents(c.Query("node"), limit)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
@@ -138,7 +158,11 @@ func Router(st *store.Store, reg *registry.Registry, detector *anomaly.Detector,
 		})
 
 		api.GET("/alerts", func(c *gin.Context) {
-			alerts, err := st.ListAlerts(c.Query("node"), queryInt(c, "limit", 100))
+			limit, ok := parseLimit(c, "limit", 100)
+			if !ok {
+				return
+			}
+			alerts, err := st.ListAlerts(c.Query("node"), limit)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
