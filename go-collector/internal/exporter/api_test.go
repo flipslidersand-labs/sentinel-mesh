@@ -122,3 +122,49 @@ func TestEvents_RegionFilter(t *testing.T) {
 		t.Errorf("all events = %d, want 3", len(all))
 	}
 }
+
+func TestEvents_InvalidLimit(t *testing.T) {
+	st, reg := testRouter(t)
+
+	for _, v := range []string{"abc", "-5", "0"} {
+		if code := doGET(t, st, reg, "/api/events?limit="+v, nil); code != http.StatusBadRequest {
+			t.Errorf("limit=%s: code=%d, want %d", v, code, http.StatusBadRequest)
+		}
+	}
+}
+
+func TestEvents_LimitClampedToMax(t *testing.T) {
+	st, reg := testRouter(t)
+	_ = reg.Register("a1", "h", "ip", "v1", "us-east")
+
+	now := time.Now().UTC()
+	for i := 0; i < 5; i++ {
+		if err := st.SaveEvent(store.Event{
+			EventID:   "a1-" + string(rune('0'+i)),
+			NodeID:    "a1",
+			Timestamp: now.Add(time.Duration(i) * time.Millisecond),
+			Type:      "exec",
+			Payload:   json.RawMessage(`{}`),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A limit far above maxLimit is clamped, not rejected: request succeeds
+	// and simply returns everything the store has.
+	var events []store.Event
+	if code := doGET(t, st, reg, "/api/events?limit=999999999", &events); code != http.StatusOK {
+		t.Fatalf("code=%d, want 200", code)
+	}
+	if len(events) != 5 {
+		t.Errorf("events = %d, want 5", len(events))
+	}
+}
+
+func TestAlerts_InvalidLimit(t *testing.T) {
+	st, reg := testRouter(t)
+
+	if code := doGET(t, st, reg, "/api/alerts?limit=abc", nil); code != http.StatusBadRequest {
+		t.Errorf("limit=abc: code=%d, want %d", code, http.StatusBadRequest)
+	}
+}
