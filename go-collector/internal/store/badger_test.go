@@ -169,3 +169,59 @@ func TestListEvents_Limit_WithFilter(t *testing.T) {
 		t.Errorf("want 3 (limit), got %d", len(got))
 	}
 }
+
+// TestStats_MatchesSavedEvents verifies Stats() reflects SaveEvent calls via
+// the in-memory counters (#77), without needing a full key scan per call.
+func TestStats_MatchesSavedEvents(t *testing.T) {
+	st := newTempStore(t)
+	for i, typ := range []string{"exec", "exec", "tcp", "file", "file", "file"} {
+		if err := st.SaveEvent(makeEvent("node-a", typ, i)); err != nil {
+			t.Fatalf("SaveEvent: %v", err)
+		}
+	}
+
+	counts, err := st.Stats()
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	want := map[string]int{"exec": 2, "tcp": 1, "file": 3}
+	for typ, n := range want {
+		if counts[typ] != n {
+			t.Errorf("counts[%q] = %d, want %d", typ, counts[typ], n)
+		}
+	}
+}
+
+// TestStats_SurvivesRestart verifies the counters are correctly reseeded
+// from disk (loadCounters) when a Store is reopened — Stats() must not reset
+// to zero just because the in-memory map was recreated (#77).
+func TestStats_SurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+
+	st1, err := store.New(dir)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	for i, typ := range []string{"exec", "tcp", "tcp"} {
+		if err := st1.SaveEvent(makeEvent("node-a", typ, i)); err != nil {
+			t.Fatalf("SaveEvent: %v", err)
+		}
+	}
+	if err := st1.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	st2, err := store.New(dir)
+	if err != nil {
+		t.Fatalf("store.New (reopen): %v", err)
+	}
+	t.Cleanup(func() { st2.Close() }) //nolint:errcheck
+
+	counts, err := st2.Stats()
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if counts["exec"] != 1 || counts["tcp"] != 2 {
+		t.Errorf("counts after reopen = %+v, want exec=1 tcp=2", counts)
+	}
+}
