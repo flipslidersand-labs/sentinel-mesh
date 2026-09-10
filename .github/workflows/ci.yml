@@ -42,6 +42,13 @@ jobs:
     # 注: agent-ebpf は nightly + bpf-linker + bpfel target が必要なため CI 対象外。
     #     実 eBPF 経路の検証は別 Issue で環境整備後に追加する。
 
+  web:
+    uses: flipslidersand-labs/qa-workflows/.github/workflows/node-test.yml@main
+    with:
+      node-version: "22"
+      package-manager: "npm"
+      working-directory: web
+
   gitleaks:
     permissions:
       contents: read
