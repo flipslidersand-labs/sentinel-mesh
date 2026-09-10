@@ -96,8 +96,6 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 					attribute.String("node.id", storedEvent.NodeID),
 				),
 			)
-			defer span.End()
-
 			allAlerts := s.engine.Evaluate(storedEvent)
 
 			// Phase 7: frequency-based anomaly detection
@@ -125,6 +123,11 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 					go s.notifier.Dispatch(alert)
 				}
 			}
+
+			// End the span at the end of this iteration, not the whole
+			// StreamEvents loop — a `defer` here would accumulate one span
+			// per event for the life of the (long-lived) stream (#74).
+			span.End()
 		}
 
 		if err := stream.Send(&pb.EventAck{Ok: true}); err != nil {
