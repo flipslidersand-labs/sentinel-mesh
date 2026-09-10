@@ -128,6 +128,66 @@ func TestEnabled(t *testing.T) {
 	}
 }
 
+// blockingNotifier's Send blocks until release is closed, letting a test
+// saturate DispatchAsync's concurrency limit deterministically.
+type blockingNotifier struct {
+	mu      sync.Mutex
+	started int
+	release chan struct{}
+}
+
+func (b *blockingNotifier) Name() string { return "blocking" }
+
+func (b *blockingNotifier) Send(_ context.Context, _ store.Alert) error {
+	b.mu.Lock()
+	b.started++
+	b.mu.Unlock()
+	<-b.release
+	return nil
+}
+
+func (b *blockingNotifier) startedCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.started
+}
+
+// TestDispatchAsync_BoundedConcurrency verifies that once maxConcurrentDispatch
+// Dispatch calls are in flight, further DispatchAsync calls are dropped
+// (not queued, not spawning an unbounded goroutine) (#75).
+func TestDispatchAsync_BoundedConcurrency(t *testing.T) {
+	n := &blockingNotifier{release: make(chan struct{})}
+	d := NewDispatcher(Options{Notifiers: []Notifier{n}, MinSeverity: "info"})
+
+	// Saturate the concurrency limit.
+	for i := 0; i < maxConcurrentDispatch; i++ {
+		d.DispatchAsync(alert("r", "n", "critical"))
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for n.startedCount() < maxConcurrentDispatch && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := n.startedCount(); got != maxConcurrentDispatch {
+		t.Fatalf("expected %d in-flight sends, got %d", maxConcurrentDispatch, got)
+	}
+
+	// One more beyond the limit must be dropped, not block or queue.
+	d.DispatchAsync(alert("r", "n", "critical"))
+	time.Sleep(20 * time.Millisecond) // let it settle if it were (incorrectly) processed
+
+	d.mu.Lock()
+	dropped := d.dropped
+	d.mu.Unlock()
+	if dropped != 1 {
+		t.Fatalf("dropped = %d, want 1", dropped)
+	}
+	if got := n.startedCount(); got != maxConcurrentDispatch {
+		t.Fatalf("extra alert should not have started a send: started = %d, want %d", got, maxConcurrentDispatch)
+	}
+
+	close(n.release) // unblock everything so the test can exit cleanly
+}
+
 func TestRankOf(t *testing.T) {
 	cases := map[string]int{
 		"info": 0, "INFO": 0, " warning ": 1, "critical": 2,

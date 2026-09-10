@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
@@ -27,6 +28,48 @@ import (
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
 	"github.com/flipslidersand/sentinel-mesh/internal/store"
 )
+
+const (
+	// streamEventsRateLimit/streamEventsRateBurst bound how many
+	// KernelEvents a single StreamEvents connection may push per second
+	// (#75). Real agents (mock or eBPF) run at a few events/sec; this is
+	// generous headroom while still capping a flooding agent.
+	streamEventsRateLimit float64 = 2000
+	streamEventsRateBurst float64 = 4000
+
+	// maxConcurrentStreams/maxRecvMsgSize bound server-wide resource use
+	// against a flood of connections or oversized messages (#75).
+	maxConcurrentStreams uint32 = 256
+	maxRecvMsgSize       int    = 4 * 1024 * 1024 // 4MB
+)
+
+// tokenBucket is a minimal, dependency-free rate limiter (events/sec with a
+// burst allowance). Not safe for concurrent use — each StreamEvents stream
+// is processed sequentially by its own goroutine, so no locking is needed.
+type tokenBucket struct {
+	tokens float64
+	max    float64
+	rate   float64
+	last   time.Time
+}
+
+func newTokenBucket(ratePerSec, burst float64) *tokenBucket {
+	return &tokenBucket{tokens: burst, max: burst, rate: ratePerSec, last: time.Now()}
+}
+
+func (b *tokenBucket) allow() bool {
+	now := time.Now()
+	b.tokens += now.Sub(b.last).Seconds() * b.rate
+	if b.tokens > b.max {
+		b.tokens = b.max
+	}
+	b.last = now
+	if b.tokens < 1 {
+		return false
+	}
+	b.tokens--
+	return true
+}
 
 type server struct {
 	pb.UnimplementedSentinelCollectorServer
@@ -59,6 +102,14 @@ func (s *server) Register(_ context.Context, req *pb.RegisterRequest) (*pb.Regis
 
 // StreamEvents receives a bidirectional stream of KernelEvents.
 func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) error {
+	// Per-stream (i.e. per connected agent) event rate limit — without one, a
+	// single flooding agent (malicious or misbehaving) can push events at an
+	// unbounded rate, exhausting store/alert-eval/notify capacity for every
+	// agent sharing the collector (#75). One tokenBucket per stream, used
+	// only by this goroutine, needs no locking.
+	limiter := newTokenBucket(streamEventsRateLimit, streamEventsRateBurst)
+	var throttled uint64
+
 	for {
 		event, err := stream.Recv()
 		if err == io.EOF {
@@ -69,6 +120,19 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 		}
 
 		s.reg.Heartbeat(event.NodeId)
+
+		if !limiter.allow() {
+			throttled++
+			if throttled == 1 || throttled%1000 == 0 {
+				s.log.Warn("StreamEvents rate limit exceeded, dropping event",
+					zap.String("node_id", event.NodeId),
+					zap.Uint64("throttled_total", throttled))
+			}
+			if err := stream.Send(&pb.EventAck{Ok: false}); err != nil {
+				return err
+			}
+			continue
+		}
 
 		storedEvent := store.Event{
 			EventID:   event.EventId,
@@ -119,9 +183,9 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 				))
 
 				// Notify external channels off the hot path (best-effort).
-				if s.notifier.Enabled() {
-					go s.notifier.Dispatch(alert)
-				}
+				// DispatchAsync is bounded — a flood of alerts can no longer
+				// spawn an unbounded number of goroutines (#75).
+				s.notifier.DispatchAsync(alert)
 			}
 
 			// End the span at the end of this iteration, not the whole
@@ -195,6 +259,15 @@ func Serve(addr string, st *store.Store, reg *registry.Registry, engine *alertin
 	opts = append(opts,
 		grpc.ChainUnaryInterceptor(unaryAuthInterceptor(token)),
 		grpc.ChainStreamInterceptor(streamAuthInterceptor(token)),
+		// A single agent could otherwise open unbounded concurrent
+		// StreamEvents connections or send oversized messages, exhausting
+		// collector resources (#75).
+		grpc.MaxConcurrentStreams(maxConcurrentStreams),
+		grpc.MaxRecvMsgSize(maxRecvMsgSize),
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             10 * time.Second,
+			PermitWithoutStream: true,
+		}),
 	)
 	srv := grpc.NewServer(opts...)
 
