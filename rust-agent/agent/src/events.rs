@@ -154,6 +154,10 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
     let ring_buf = RingBuf::try_from(bpf.map_mut("EVENTS").unwrap()).unwrap();
     let mut async_fd = tokio::io::unix::AsyncFd::new(ring_buf).unwrap();
 
+    // Total events dropped because the channel to grpc::stream_to_collector
+    // was full (collector unreachable/slow). Logged, not silent (#70).
+    let mut dropped: u64 = 0;
+
     loop {
         let mut guard = async_fd.readable_mut().await.unwrap();
         let rb = guard.get_inner_mut();
@@ -228,7 +232,19 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
                 }
                 _ => continue,
             };
-            let _ = tx.send(kernel_event).await;
+            // try_send (not send().await): blocking here when the channel is
+            // full would stall this drain loop, which in turn stalls draining
+            // the kernel ring buffer — a full ring buffer makes the kernel
+            // silently drop exec/connect events at the source (#70). Prefer
+            // dropping downstream (counted/logged) over blocking upstream.
+            if let Err(e) = tx.try_send(kernel_event) {
+                dropped += 1;
+                if dropped == 1 || dropped.is_multiple_of(1000) {
+                    eprintln!(
+                        "warn: agent→collector channel full, dropped {dropped} event(s) so far ({e})"
+                    );
+                }
+            }
         }
         guard.clear_ready();
     }
