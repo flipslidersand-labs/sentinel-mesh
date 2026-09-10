@@ -2,12 +2,17 @@ package receiver
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+
+	"github.com/flipslidersand/sentinel-mesh/internal/pb"
+	"github.com/flipslidersand/sentinel-mesh/internal/registry"
+	"go.uber.org/zap"
 )
 
 func TestCheckAuth_NoTokenConfigured(t *testing.T) {
@@ -73,6 +78,62 @@ func TestTokenBucket_RefillsOverTime(t *testing.T) {
 	time.Sleep(5 * time.Millisecond) // >> 1/1000/sec refill interval
 	if !b.allow() {
 		t.Fatal("call after refill window should be allowed")
+	}
+}
+
+func TestValidateRegisterRequest_ValidPasses(t *testing.T) {
+	req := &pb.RegisterRequest{NodeId: "node-1", Hostname: "host-1", Ip: "10.0.0.1", Version: "v1.2.3", Region: "us-east"}
+	if err := validateRegisterRequest(req); err != nil {
+		t.Fatalf("expected valid request to pass, got %v", err)
+	}
+}
+
+func TestValidateRegisterRequest_AllowsEmptyIP(t *testing.T) {
+	req := &pb.RegisterRequest{NodeId: "node-1", Hostname: "host-1", Ip: "", Version: "v1", Region: "us-east"}
+	if err := validateRegisterRequest(req); err != nil {
+		t.Fatalf("expected empty ip to pass, got %v", err)
+	}
+}
+
+func TestValidateRegisterRequest_RejectsOversizedField(t *testing.T) {
+	req := &pb.RegisterRequest{NodeId: strings.Repeat("a", maxRegisterFieldLength+1), Hostname: "h", Ip: "", Version: "v1", Region: "us-east"}
+	if err := validateRegisterRequest(req); err == nil {
+		t.Fatal("expected oversized node_id to be rejected")
+	}
+}
+
+func TestValidateRegisterRequest_RejectsControlCharacters(t *testing.T) {
+	req := &pb.RegisterRequest{NodeId: "node-1\x00evil", Hostname: "h", Ip: "", Version: "v1", Region: "us-east"}
+	if err := validateRegisterRequest(req); err == nil {
+		t.Fatal("expected control characters in node_id to be rejected")
+	}
+}
+
+func TestValidateRegisterRequest_RejectsNewlineInHostname(t *testing.T) {
+	req := &pb.RegisterRequest{NodeId: "node-1", Hostname: "h\nInjected-Header: 1", Ip: "", Version: "v1", Region: "us-east"}
+	if err := validateRegisterRequest(req); err == nil {
+		t.Fatal("expected newline in hostname to be rejected")
+	}
+}
+
+func TestValidateRegisterRequest_RejectsInvalidIP(t *testing.T) {
+	req := &pb.RegisterRequest{NodeId: "node-1", Hostname: "h", Ip: "not-an-ip", Version: "v1", Region: "us-east"}
+	if err := validateRegisterRequest(req); err == nil {
+		t.Fatal("expected invalid ip to be rejected")
+	}
+}
+
+func TestServerRegister_RejectsInvalidInput(t *testing.T) {
+	s := &server{reg: registry.New(), log: zap.NewNop()}
+	resp, err := s.Register(context.Background(), &pb.RegisterRequest{NodeId: "node-1\x00", Hostname: "h", Ip: "", Version: "v1", Region: ""})
+	if err != nil {
+		t.Fatalf("expected no transport error, got %v", err)
+	}
+	if resp.Ok {
+		t.Fatal("expected Ok=false for invalid input")
+	}
+	if len(s.reg.List()) != 0 {
+		t.Fatal("invalid registration must not be persisted to the registry")
 	}
 }
 
