@@ -1,6 +1,7 @@
 package anomaly
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -116,6 +117,68 @@ func TestWindowStats_EmptyReturnsNoError(t *testing.T) {
 	if stats == nil {
 		t.Fatal("expected non-nil stats map")
 	}
+}
+
+func TestGC_RemovesIdleKeys(t *testing.T) {
+	d := New([]WindowConfig{{Duration: time.Minute, Threshold: 100}})
+
+	// node1 is idle: its only timestamp is well before the window.
+	d.timestamps[windowKey{NodeID: "node1", EventType: "exec"}] = []time.Time{
+		time.Now().Add(-time.Hour),
+	}
+	// node2 is active: recorded just now.
+	d.Record(makeEvent("node2", "exec"))
+
+	d.gc()
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, ok := d.timestamps[windowKey{NodeID: "node1", EventType: "exec"}]; ok {
+		t.Error("expected idle key for node1 to be removed by gc")
+	}
+	if _, ok := d.timestamps[windowKey{NodeID: "node2", EventType: "exec"}]; !ok {
+		t.Error("expected active key for node2 to be retained by gc")
+	}
+}
+
+func TestGC_RemovesEmptySliceKeys(t *testing.T) {
+	d := New(nil)
+	d.timestamps[windowKey{NodeID: "node1", EventType: "exec"}] = []time.Time{}
+
+	d.gc()
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, ok := d.timestamps[windowKey{NodeID: "node1", EventType: "exec"}]; ok {
+		t.Error("expected empty-slice key to be removed by gc")
+	}
+}
+
+func TestStartGC_StopsOnContextCancel(t *testing.T) {
+	d := New([]WindowConfig{{Duration: 10 * time.Millisecond, Threshold: 100}})
+	d.timestamps[windowKey{NodeID: "node1", EventType: "exec"}] = []time.Time{
+		time.Now().Add(-time.Hour),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	d.StartGC(ctx, 10*time.Millisecond)
+
+	// Wait for at least one GC tick to remove the idle key.
+	deadline := time.Now().Add(time.Second)
+	for {
+		d.mu.Lock()
+		_, ok := d.timestamps[windowKey{NodeID: "node1", EventType: "exec"}]
+		d.mu.Unlock()
+		if !ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("expected StartGC to remove idle key within deadline")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	cancel()
 }
 
 func TestDurationLabel(t *testing.T) {
