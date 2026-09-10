@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -22,6 +23,30 @@ import (
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
 	"github.com/flipslidersand/sentinel-mesh/internal/store"
 )
+
+// REST API server timeouts. Go's http.Server has no defaults (unlimited),
+// so a slow or malicious client (e.g. Slowloris) can hold a connection open
+// indefinitely, leaking goroutines and file descriptors. These bound how
+// long a connection may sit idle or take to read/write.
+const (
+	httpReadHeaderTimeout = 5 * time.Second
+	httpReadTimeout       = 15 * time.Second
+	httpWriteTimeout      = 30 * time.Second
+	httpIdleTimeout       = 60 * time.Second
+)
+
+// newHTTPServer builds an http.Server with explicit read/write/idle
+// timeouts for the given address and handler.
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: httpReadHeaderTimeout,
+		ReadTimeout:       httpReadTimeout,
+		WriteTimeout:      httpWriteTimeout,
+		IdleTimeout:       httpIdleTimeout,
+	}
+}
 
 func main() {
 	root := &cobra.Command{
@@ -126,9 +151,10 @@ func serveCmd() *cobra.Command {
 
 			// REST API in background
 			router := exporter.Router(st, reg, detector, staticDir, corsOrigins, apiToken)
+			httpServer := newHTTPServer(httpAddr, router)
 			go func() {
 				logger.Info("REST API listening", zap.String("addr", httpAddr))
-				if err := router.Run(httpAddr); err != nil {
+				if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 					logger.Error("REST API stopped", zap.Error(err))
 				}
 			}()
@@ -192,5 +218,6 @@ func runAggregate(cmd *cobra.Command, logger *zap.Logger) error {
 	logger.Info("aggregator started",
 		zap.Int("upstreams", len(upstreams)), zap.Duration("poll_interval", interval))
 
-	return aggregator.Router(agg, staticDir, corsOrigins, apiToken).Run(httpAddr)
+	httpServer := newHTTPServer(httpAddr, aggregator.Router(agg, staticDir, corsOrigins, apiToken))
+	return httpServer.ListenAndServe()
 }
