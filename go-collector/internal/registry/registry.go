@@ -74,6 +74,7 @@ func (r *Registry) Heartbeat(nodeID string) {
 	defer r.mu.Unlock()
 	if n, ok := r.nodes[nodeID]; ok {
 		n.LastSeen = time.Now().UTC()
+		n.Status = "active"
 	}
 }
 

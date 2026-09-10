@@ -60,6 +60,28 @@ func TestHeartbeatChecker_StaysActiveWithHeartbeat(t *testing.T) {
 	assertStatus(t, reg, "node-2", "active")
 }
 
+func TestHeartbeat_RestoresActiveAfterInactive(t *testing.T) {
+	reg := registry.New()
+	if err := reg.Register("node-3", "host3", "1.2.3.6", "v1", "us-east"); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// timeout=50ms, interval=20ms — very short for tests
+	reg.StartHeartbeatChecker(ctx, 50*time.Millisecond, 20*time.Millisecond)
+
+	// let the node go stale/inactive
+	time.Sleep(100 * time.Millisecond)
+	assertStatus(t, reg, "node-3", "inactive")
+
+	// a heartbeat after silence should bring it back to active immediately,
+	// without waiting for re-Register (#79).
+	reg.Heartbeat("node-3")
+	assertStatus(t, reg, "node-3", "active")
+}
+
 func TestHeartbeatChecker_StopsOnContextCancel(t *testing.T) {
 	reg := registry.New()
 	ctx, cancel := context.WithCancel(context.Background())
