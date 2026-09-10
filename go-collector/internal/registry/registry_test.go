@@ -17,14 +17,15 @@ func TestHeartbeatChecker_MarksInactive(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// timeout=50ms, interval=20ms — very short for tests
-	reg.StartHeartbeatChecker(ctx, 50*time.Millisecond, 20*time.Millisecond)
+	// Wide margins (hundreds of ms) so this stays stable under -race, where
+	// goroutine scheduling overhead can otherwise flip a tight timer race (#115).
+	reg.StartHeartbeatChecker(ctx, 300*time.Millisecond, 50*time.Millisecond)
 
 	// node should be active right after register
 	assertStatus(t, reg, "node-1", "active")
 
 	// wait longer than timeout without sending a heartbeat
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(600 * time.Millisecond)
 	assertStatus(t, reg, "node-1", "inactive")
 }
 
@@ -37,14 +38,15 @@ func TestHeartbeatChecker_StaysActiveWithHeartbeat(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	reg.StartHeartbeatChecker(ctx, 80*time.Millisecond, 20*time.Millisecond)
+	// Wide margins (hundreds of ms) so this stays stable under -race (#115).
+	reg.StartHeartbeatChecker(ctx, 400*time.Millisecond, 50*time.Millisecond)
 
-	// send heartbeats every 30ms for 150ms total → should stay active
+	// send heartbeats every 100ms for 800ms total → should stay active
 	done := make(chan struct{})
 	go func() {
-		ticker := time.NewTicker(30 * time.Millisecond)
+		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
-		deadline := time.After(150 * time.Millisecond)
+		deadline := time.After(800 * time.Millisecond)
 		for {
 			select {
 			case <-ticker.C:
@@ -69,11 +71,11 @@ func TestHeartbeat_RestoresActiveAfterInactive(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// timeout=50ms, interval=20ms — very short for tests
-	reg.StartHeartbeatChecker(ctx, 50*time.Millisecond, 20*time.Millisecond)
+	// Wide margins (hundreds of ms) so this stays stable under -race (#115).
+	reg.StartHeartbeatChecker(ctx, 300*time.Millisecond, 50*time.Millisecond)
 
 	// let the node go stale/inactive
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(600 * time.Millisecond)
 	assertStatus(t, reg, "node-3", "inactive")
 
 	// a heartbeat after silence should bring it back to active immediately,
