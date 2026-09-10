@@ -129,6 +129,7 @@ func serveCmd() *cobra.Command {
 
 			// Phase 7: anomaly detector (sliding-window frequency detection)
 			detector := anomaly.New(nil)
+			detector.StartGC(ctx, time.Minute)
 			logger.Info("anomaly detector started",
 				zap.Int("windows", len(anomaly.DefaultWindows)))
 

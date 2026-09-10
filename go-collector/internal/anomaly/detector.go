@@ -6,6 +6,7 @@
 package anomaly
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -146,6 +147,39 @@ func (d *Detector) countWithin(key windowKey, now time.Time, dur time.Duration) 
 		}
 	}
 	return count
+}
+
+// StartGC runs a background goroutine that periodically removes (node, type)
+// keys with no events recorded within the longest configured window, so that
+// nodes which stop sending events (crash, uninstall, node_id rotation, etc.)
+// do not leak entries in timestamps forever. It stops when ctx is done.
+func (d *Detector) StartGC(ctx context.Context, interval time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				d.gc()
+			}
+		}
+	}()
+}
+
+// gc removes keys whose timestamps are all older than the longest configured
+// window (i.e. keys that have gone idle for at least maxDuration()).
+func (d *Detector) gc() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	cutoff := time.Now().Add(-d.maxDuration())
+	for key, ts := range d.timestamps {
+		if len(ts) == 0 || ts[len(ts)-1].Before(cutoff) {
+			delete(d.timestamps, key)
+		}
+	}
 }
 
 func (d *Detector) maxDuration() time.Duration {
