@@ -3,10 +3,15 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	badger "github.com/dgraph-io/badger/v4"
 )
+
+// DefaultRetention bounds how long events/alerts are kept before BadgerDB
+// expires them. Without a TTL the store grows without limit (#77).
+const DefaultRetention = 7 * 24 * time.Hour
 
 // Event is the normalized form stored in BadgerDB.
 type Event struct {
@@ -18,7 +23,16 @@ type Event struct {
 }
 
 type Store struct {
-	db *badger.DB
+	db        *badger.DB
+	retention time.Duration
+
+	// countersMu/counters back Stats(): an in-memory per-type count,
+	// incremented in SaveEvent and seeded once at startup by loadCounters,
+	// so Stats() no longer has to scan every event on every call (#77).
+	// Counts may run slightly high relative to what's still on disk once
+	// TTL expires old events; loadCounters corrects this on next restart.
+	countersMu sync.Mutex
+	counters   map[string]int
 }
 
 func New(dir string) (*Store, error) {
@@ -27,7 +41,38 @@ func New(dir string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Store{db: db}, nil
+	s := &Store{
+		db:        db,
+		retention: DefaultRetention,
+		counters:  map[string]int{"exec": 0, "tcp": 0, "file": 0},
+	}
+	if err := s.loadCounters(); err != nil {
+		db.Close() //nolint:errcheck
+		return nil, err
+	}
+	return s, nil
+}
+
+// loadCounters scans existing events once, at startup, to seed the in-memory
+// type counters Stats() serves from thereafter (#77).
+func (s *Store) loadCounters() error {
+	return s.db.View(func(tx *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchValues = true
+		it := tx.NewIterator(opts)
+		defer it.Close()
+
+		for it.Seek([]byte("event:")); it.ValidForPrefix([]byte("event:")); it.Next() {
+			var e Event
+			if err := it.Item().Value(func(v []byte) error {
+				return json.Unmarshal(v, &e)
+			}); err != nil {
+				return err
+			}
+			s.counters[e.Type]++
+		}
+		return nil
+	})
 }
 
 func (s *Store) SaveEvent(e Event) error {
@@ -43,9 +88,15 @@ func (s *Store) SaveEvent(e Event) error {
 	// display; it's just no longer trusted for ordering/storage identity.
 	received := time.Now().UTC()
 	key := []byte(fmt.Sprintf("event:%s:%s", received.Format(time.RFC3339Nano), e.EventID))
-	return s.db.Update(func(tx *badger.Txn) error {
-		return tx.Set(key, val)
-	})
+	if err := s.db.Update(func(tx *badger.Txn) error {
+		return tx.SetEntry(badger.NewEntry(key, val).WithTTL(s.retention))
+	}); err != nil {
+		return err
+	}
+	s.countersMu.Lock()
+	s.counters[e.Type]++
+	s.countersMu.Unlock()
+	return nil
 }
 
 // ListEvents returns up to limit events, newest first.
@@ -77,27 +128,16 @@ func (s *Store) ListEvents(node string, limit int) ([]Event, error) {
 	return events, err
 }
 
-// Stats returns event counts per type.
+// Stats returns event counts per type, from the in-memory counters (#77) —
+// no longer a full key scan on every call.
 func (s *Store) Stats() (map[string]int, error) {
-	counts := map[string]int{"exec": 0, "tcp": 0, "file": 0}
-	err := s.db.View(func(tx *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		opts.PrefetchValues = true
-		it := tx.NewIterator(opts)
-		defer it.Close()
-
-		for it.Seek([]byte("event:")); it.ValidForPrefix([]byte("event:")); it.Next() {
-			var e Event
-			if err := it.Item().Value(func(v []byte) error {
-				return json.Unmarshal(v, &e)
-			}); err != nil {
-				return err
-			}
-			counts[e.Type]++
-		}
-		return nil
-	})
-	return counts, err
+	s.countersMu.Lock()
+	defer s.countersMu.Unlock()
+	out := make(map[string]int, len(s.counters))
+	for t, n := range s.counters {
+		out[t] = n
+	}
+	return out, nil
 }
 
 // Alert represents a triggered alert.
@@ -119,7 +159,7 @@ func (s *Store) SaveAlert(a Alert) error {
 	}
 	key := []byte(fmt.Sprintf("alert:%s:%s", a.Timestamp.Format(time.RFC3339Nano), a.AlertID))
 	return s.db.Update(func(tx *badger.Txn) error {
-		return tx.Set(key, val)
+		return tx.SetEntry(badger.NewEntry(key, val).WithTTL(s.retention))
 	})
 }
 
