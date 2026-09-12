@@ -12,14 +12,15 @@ jobs:
     with:
       go-version: "1.25"
       working-directory: go-collector
-      coverage-threshold: 40   # 現状実測 43.0% に合わせた初期値。段階的に引き上げる
+      # 引き上げ追跡: flipslidersand-labs/sentinel-mesh#141 (段階的引き上げの運用ルールを規定)
+      coverage-threshold: 40   # 現状実測 43.0% に合わせた初期値。段階的に引き上げる（閾値変更時は本コメントの実測値も更新すること）
       # self-hosted (linux-general) の actions-runner:latest イメージに build-essential が
       # 無く cgo(-race) が失敗するため一時的に GitHub-hosted に固定。
       # infra 側でランナーイメージ修正後に外す（トラッキング: flipslidersand-labs/sentinel-mesh#112）。
       runner: ubuntu-latest
 
   rust-agent:
-    name: Rust Agent (check + test)
+    name: Rust Agent (check + test + coverage)
     # self-hosted (linux-general) の一部 Pod で ~/.cargo/bin の Permission denied が
     # 継続発生し dtolnay/rust-toolchain が失敗するため一時的に GitHub-hosted に固定。
     # infra 側で原因調査後に外す（トラッキング: flipslidersand-labs/dev-platform#1065）。
@@ -30,6 +31,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust-agent
@@ -42,6 +45,20 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y build-essential
       - run: cargo check --workspace
       - run: cargo test --workspace
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      # 現状実測ラインカバレッジ 55.26% (2026-09-13, agent crate のみ。
+      # agent-ebpf は workspace member 外のため対象外) に対する初期閾値。
+      # 引き上げ追跡: flipslidersand-labs/sentinel-mesh#141 と同様の運用ルールを適用し、
+      # 閾値を上げるたびに本コメントの実測値も更新すること。
+      - name: Coverage (fail under 50%)
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info --fail-under-lines 50
+      - name: PR coverage comment
+        if: github.event_name == 'pull_request'
+        uses: romeovs/lcov-reporter-action@v0.4.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          lcov-file: rust-agent/lcov.info
+          title: "rust-agent coverage"
     # 注: agent-ebpf は nightly + bpf-linker + bpfel target が必要なため CI 対象外。
     #     実 eBPF 経路の検証は別 Issue で環境整備後に追加する。
 
