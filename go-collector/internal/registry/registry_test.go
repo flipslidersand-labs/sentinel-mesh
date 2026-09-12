@@ -19,7 +19,7 @@ func TestHeartbeatChecker_MarksInactive(t *testing.T) {
 
 	// Wide margins (hundreds of ms) so this stays stable under -race, where
 	// goroutine scheduling overhead can otherwise flip a tight timer race (#115).
-	reg.StartHeartbeatChecker(ctx, 300*time.Millisecond, 50*time.Millisecond)
+	reg.StartHeartbeatChecker(ctx, 300*time.Millisecond, 50*time.Millisecond, time.Hour)
 
 	// node should be active right after register
 	assertStatus(t, reg, "node-1", "active")
@@ -39,7 +39,7 @@ func TestHeartbeatChecker_StaysActiveWithHeartbeat(t *testing.T) {
 	defer cancel()
 
 	// Wide margins (hundreds of ms) so this stays stable under -race (#115).
-	reg.StartHeartbeatChecker(ctx, 400*time.Millisecond, 50*time.Millisecond)
+	reg.StartHeartbeatChecker(ctx, 400*time.Millisecond, 50*time.Millisecond, time.Hour)
 
 	// send heartbeats every 100ms for 800ms total → should stay active
 	done := make(chan struct{})
@@ -72,7 +72,7 @@ func TestHeartbeat_RestoresActiveAfterInactive(t *testing.T) {
 	defer cancel()
 
 	// Wide margins (hundreds of ms) so this stays stable under -race (#115).
-	reg.StartHeartbeatChecker(ctx, 300*time.Millisecond, 50*time.Millisecond)
+	reg.StartHeartbeatChecker(ctx, 300*time.Millisecond, 50*time.Millisecond, time.Hour)
 
 	// let the node go stale/inactive
 	time.Sleep(600 * time.Millisecond)
@@ -88,9 +88,53 @@ func TestHeartbeatChecker_StopsOnContextCancel(t *testing.T) {
 	reg := registry.New()
 	ctx, cancel := context.WithCancel(context.Background())
 
-	reg.StartHeartbeatChecker(ctx, 10*time.Millisecond, 5*time.Millisecond)
+	reg.StartHeartbeatChecker(ctx, 10*time.Millisecond, 5*time.Millisecond, time.Hour)
 	cancel() // goroutine should exit cleanly — no panic or hang
 	time.Sleep(20 * time.Millisecond)
+}
+
+func TestHeartbeatChecker_EvictsAfterInactiveTooLong(t *testing.T) {
+	reg := registry.New()
+	if err := reg.Register("node-evict", "host", "1.2.3.4", "v1", "us-east"); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// timeout=20ms (goes inactive fast), evictAfter=40ms, interval=10ms.
+	reg.StartHeartbeatChecker(ctx, 20*time.Millisecond, 10*time.Millisecond, 40*time.Millisecond)
+
+	// wait for it to become inactive first.
+	time.Sleep(50 * time.Millisecond)
+	assertStatus(t, reg, "node-evict", "inactive")
+
+	// wait past evictAfter (measured from the inactive transition) — the
+	// node should now be removed from the registry entirely, not just
+	// marked inactive (issue #105: unbounded memory growth).
+	time.Sleep(60 * time.Millisecond)
+	for _, n := range reg.List() {
+		if n.NodeID == "node-evict" {
+			t.Fatalf("node-evict should have been evicted from the registry, still present: %+v", n)
+		}
+	}
+}
+
+func TestHeartbeatChecker_DoesNotEvictWhileActive(t *testing.T) {
+	reg := registry.New()
+	if err := reg.Register("node-keep", "host", "1.2.3.4", "v1", "us-east"); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// timeout is long enough that the node never goes inactive; a short
+	// evictAfter must not remove an active node.
+	reg.StartHeartbeatChecker(ctx, time.Hour, 10*time.Millisecond, 20*time.Millisecond)
+
+	time.Sleep(60 * time.Millisecond)
+	assertStatus(t, reg, "node-keep", "active")
 }
 
 func TestRegister_EmptyRegionNormalizedToDefault(t *testing.T) {

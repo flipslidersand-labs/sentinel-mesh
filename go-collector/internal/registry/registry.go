@@ -22,6 +22,11 @@ type AgentNode struct {
 	Registered time.Time `json:"registered"`
 	LastSeen   time.Time `json:"last_seen"`
 	Status     string    `json:"status"` // "active" | "inactive"
+
+	// inactiveSince records when the node transitioned to "inactive", so
+	// markStaleInactive can evict it once it has stayed inactive for longer
+	// than evictAfter. Not exposed in the JSON representation.
+	inactiveSince time.Time
 }
 
 // normalizeRegion maps an empty region to DefaultRegion.
@@ -54,6 +59,7 @@ func (r *Registry) Register(nodeID, hostname, ip, version, region string) error 
 		existing.LastSeen = now
 		existing.Status = "active"
 		existing.Region = region
+		existing.inactiveSince = time.Time{}
 		return nil
 	}
 	r.nodes[nodeID] = &AgentNode{
@@ -75,6 +81,7 @@ func (r *Registry) Heartbeat(nodeID string) {
 	if n, ok := r.nodes[nodeID]; ok {
 		n.LastSeen = time.Now().UTC()
 		n.Status = "active"
+		n.inactiveSince = time.Time{}
 	}
 }
 
@@ -132,10 +139,15 @@ func (r *Registry) MarshalJSON() ([]byte, error) {
 	return json.Marshal(r.List())
 }
 
+// DefaultEvictAfter is how long a node stays inactive before it is evicted
+// from the registry, if StartHeartbeatChecker is not given an explicit value.
+const DefaultEvictAfter = 24 * time.Hour
+
 // StartHeartbeatChecker runs a background goroutine that marks agents inactive
-// when their LastSeen is older than timeout. It ticks every interval.
-// The goroutine stops when ctx is cancelled.
-func (r *Registry) StartHeartbeatChecker(ctx context.Context, timeout, interval time.Duration) {
+// when their LastSeen is older than timeout, and evicts (removes from the
+// registry) any node that has stayed inactive for longer than evictAfter.
+// It ticks every interval. The goroutine stops when ctx is cancelled.
+func (r *Registry) StartHeartbeatChecker(ctx context.Context, timeout, interval, evictAfter time.Duration) {
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -144,19 +156,24 @@ func (r *Registry) StartHeartbeatChecker(ctx context.Context, timeout, interval 
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				r.markStaleInactive(timeout)
+				r.markStaleInactive(timeout, evictAfter)
 			}
 		}
 	}()
 }
 
-func (r *Registry) markStaleInactive(timeout time.Duration) {
-	deadline := time.Now().UTC().Add(-timeout)
+func (r *Registry) markStaleInactive(timeout, evictAfter time.Duration) {
+	now := time.Now().UTC()
+	deadline := now.Add(-timeout)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for _, n := range r.nodes {
+	for id, n := range r.nodes {
 		if n.Status == "active" && n.LastSeen.Before(deadline) {
 			n.Status = "inactive"
+			n.inactiveSince = now
+		}
+		if n.Status == "inactive" && !n.inactiveSince.IsZero() && now.Sub(n.inactiveSince) > evictAfter {
+			delete(r.nodes, id)
 		}
 	}
 }

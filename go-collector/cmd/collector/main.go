@@ -93,7 +93,7 @@ func serveCmd() *cobra.Command {
 
 			// Phase 4: mark agents inactive after 60s of silence, check every 30s
 			heartbeatTimeout, _ := cmd.Flags().GetDuration("heartbeat-timeout")
-			reg.StartHeartbeatChecker(ctx, heartbeatTimeout, heartbeatTimeout/2)
+			reg.StartHeartbeatChecker(ctx, heartbeatTimeout, heartbeatTimeout/2, registry.DefaultEvictAfter)
 			logger.Info("heartbeat checker started", zap.Duration("timeout", heartbeatTimeout))
 
 			// Phase 5: load alerting rules and initialize engine
