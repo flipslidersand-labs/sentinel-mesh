@@ -20,7 +20,10 @@ jobs:
 
   rust-agent:
     name: Rust Agent (check + test)
-    runs-on: ${{ vars.GATE_RUNNER || 'ubuntu-latest' }}
+    # self-hosted (linux-general) の一部 Pod で ~/.cargo/bin の Permission denied が
+    # 継続発生し dtolnay/rust-toolchain が失敗するため一時的に GitHub-hosted に固定。
+    # infra 側で原因調査後に外す（トラッキング: flipslidersand-labs/dev-platform#1065）。
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: rust-agent

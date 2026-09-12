@@ -2,17 +2,20 @@ package receiver
 
 import (
 	"context"
+	"io"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	"github.com/flipslidersand/sentinel-mesh/internal/pb"
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
-	"go.uber.org/zap"
+	"github.com/flipslidersand/sentinel-mesh/internal/store"
 )
 
 func TestCheckAuth_NoTokenConfigured(t *testing.T) {
@@ -134,6 +137,73 @@ func TestServerRegister_RejectsInvalidInput(t *testing.T) {
 	}
 	if len(s.reg.List()) != 0 {
 		t.Fatal("invalid registration must not be persisted to the registry")
+	}
+}
+
+// fakeStream is a minimal pb.SentinelCollector_StreamEventsServer that feeds
+// a fixed set of events to StreamEvents and records the EventAcks sent back,
+// so tests can assert on Ack.Ok without a real gRPC connection.
+type fakeStream struct {
+	events []*pb.KernelEvent
+	next   int
+	acks   []*pb.EventAck
+}
+
+func (f *fakeStream) Recv() (*pb.KernelEvent, error) {
+	if f.next >= len(f.events) {
+		return nil, io.EOF
+	}
+	e := f.events[f.next]
+	f.next++
+	return e, nil
+}
+
+func (f *fakeStream) Send(ack *pb.EventAck) error {
+	f.acks = append(f.acks, ack)
+	return nil
+}
+
+func (f *fakeStream) Context() context.Context     { return context.Background() }
+func (f *fakeStream) SetHeader(metadata.MD) error  { return nil }
+func (f *fakeStream) SendHeader(metadata.MD) error { return nil }
+func (f *fakeStream) SetTrailer(metadata.MD)       {}
+func (f *fakeStream) SendMsg(m any) error          { return nil }
+func (f *fakeStream) RecvMsg(m any) error          { return nil }
+
+// TestStreamEvents_AckReflectsSaveFailure covers #103: when the store fails
+// to persist an event, StreamEvents must no longer silently ack Ok: true —
+// the failure must be surfaced to the caller (and counted).
+func TestStreamEvents_AckReflectsSaveFailure(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "badger")
+	st, err := store.New(dir)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	// Close the store immediately so any subsequent SaveEvent call fails —
+	// simulating a persistent storage outage (disk full, corruption, ...).
+	if err := st.Close(); err != nil {
+		t.Fatalf("store.Close: %v", err)
+	}
+
+	s := &server{
+		st:  st,
+		reg: registry.New(),
+		log: zap.NewNop(),
+	}
+
+	stream := &fakeStream{events: []*pb.KernelEvent{
+		{NodeId: "node-1", Type: pb.EventType_EXEC, Timestamp: time.Now().UnixNano()},
+	}}
+
+	if err := s.StreamEvents(stream); err != nil {
+		t.Fatalf("StreamEvents: %v", err)
+	}
+
+	if len(stream.acks) != 1 {
+		t.Fatalf("expected 1 ack, got %d", len(stream.acks))
+	}
+	if stream.acks[0].Ok {
+		t.Fatal("expected Ack.Ok=false when the store write fails, got true")
 	}
 }
 

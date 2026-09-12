@@ -192,8 +192,13 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 			Payload:   s.eventPayload(event),
 		}
 
+		saveOk := true
 		if storeErr := s.st.SaveEvent(storedEvent); storeErr != nil {
 			s.log.Error("save event", zap.Error(storeErr))
+			saveOk = false
+			if s.metrics != nil {
+				s.metrics.RecordStoreWriteFailure("event")
+			}
 		}
 
 		// Phase 6: record event metric
@@ -220,6 +225,10 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 			for _, alert := range allAlerts {
 				if err := s.st.SaveAlert(alert); err != nil {
 					s.log.Error("save alert", zap.Error(err))
+					saveOk = false
+					if s.metrics != nil {
+						s.metrics.RecordStoreWriteFailure("alert")
+					}
 				}
 
 				// Phase 6: record alert metric and trace
@@ -244,7 +253,7 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 			span.End()
 		}
 
-		if err := stream.Send(&pb.EventAck{Ok: true}); err != nil {
+		if err := stream.Send(&pb.EventAck{Ok: saveOk}); err != nil {
 			return err
 		}
 	}
