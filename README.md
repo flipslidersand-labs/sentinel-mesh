@@ -316,11 +316,13 @@ open http://192.0.2.10:8081
 
 ### Node Layout
 
-| Role      | Host            | IP            | SSH alias      |
-| --------- | --------------- | ------------- | -------------- |
-| Collector | MINIPC          | 192.0.2.10 | `minipc`       |
-| Agent     | agent-node-1 | 192.0.2.11 | `yuki-private` |
-| Agent     | agent-node-2     | 192.0.2.12 | `ds1`          |
+Example layout for a 3-node home-lab deployment (substitute your own hosts/IPs):
+
+| Role      | Host            | IP           | SSH alias      |
+| --------- | --------------- | ------------ | -------------- |
+| Collector | collector-node  | 192.0.2.10   | `minipc`       |
+| Agent     | agent-node-1    | 192.0.2.11   | `yuki-private` |
+| Agent     | agent-node-2    | 192.0.2.12   | `ds1`          |
 
 ### Deploy Scripts
 

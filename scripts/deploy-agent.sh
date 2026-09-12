@@ -27,6 +27,8 @@
 set -euo pipefail
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
+# No real default collector address is baked in — set $SENTINEL_COLLECTOR or
+# pass --collector explicitly for your own deployment.
 COLLECTOR_ADDR="${SENTINEL_COLLECTOR:-192.0.2.10:50051}"
 MOCK=false
 MOCK_RATE=3

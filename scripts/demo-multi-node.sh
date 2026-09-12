@@ -6,14 +6,14 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPTS="$REPO_ROOT/scripts"
 
-COLLECTOR_HOST="minipc"
-COLLECTOR_IP="192.0.2.10"
+COLLECTOR_HOST="${SENTINEL_COLLECTOR_HOST:-minipc}"
+COLLECTOR_IP="${SENTINEL_COLLECTOR_IP:-192.0.2.10}"
 COLLECTOR_ADDR="$COLLECTOR_IP:50051"
 
 declare -A AGENTS=(
-  ["minipc"]="minipc"          # MINIPC self-agent for local events
-  ["yuki-private"]="yuki"      # agent-node-1
-  ["ds1"]="ds1"                # agent-node-2 (skipped if offline)
+  ["minipc"]="minipc"          # collector node's own self-agent for local events
+  ["yuki-private"]="yuki"      # (skipped if offline)
+  ["ds1"]="ds1"                # (skipped if offline)
 )
 
 echo "==> Step 1: Build binaries"
