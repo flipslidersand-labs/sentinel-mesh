@@ -3,6 +3,7 @@ import { Nodes } from "./pages/Nodes";
 import { Events } from "./pages/Events";
 import { Alerts } from "./pages/Alerts";
 import { Stats } from "./pages/Stats";
+import { TokenSettings } from "./TokenSettings";
 import "./App.css";
 
 const TABS = ["Nodes", "Events", "Alerts", "Stats"] as const;
@@ -28,6 +29,7 @@ export default function App() {
             </button>
           ))}
         </nav>
+        <TokenSettings />
       </header>
       <main className="app-main">
         {tab === "Nodes" && <Nodes />}
