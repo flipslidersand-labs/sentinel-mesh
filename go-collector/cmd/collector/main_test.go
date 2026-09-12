@@ -36,3 +36,43 @@ func TestNewHTTPServerSetsTimeouts(t *testing.T) {
 		t.Error("one or more timeouts is zero (unbounded) — Slowloris regression")
 	}
 }
+
+func TestRootCmd_HasLong(t *testing.T) {
+	root := rootCmd()
+	if root.Long == "" {
+		t.Error("root command Long description must not be empty")
+	}
+}
+
+func TestServeCmd_HasLongAndExample(t *testing.T) {
+	cmd := serveCmd()
+	if cmd.Long == "" {
+		t.Error("serveCmd Long description must not be empty")
+	}
+	if cmd.Example == "" {
+		t.Error("serveCmd Example must not be empty")
+	}
+}
+
+func TestServeCmd_TLSFlagsRequiredTogether(t *testing.T) {
+	cmd := serveCmd()
+	if err := cmd.Flags().Set("grpc-tls-cert", "/tmp/cert.pem"); err != nil {
+		t.Fatalf("set grpc-tls-cert: %v", err)
+	}
+	// grpc-tls-key intentionally left unset.
+	if err := cmd.ValidateFlagGroups(); err == nil {
+		t.Error("expected error when only --grpc-tls-cert is set without --grpc-tls-key")
+	}
+}
+
+func TestServeCmd_UpstreamsWithoutAggregateRejected(t *testing.T) {
+	cmd := serveCmd()
+	cmd.SetArgs([]string{"--upstreams=us-east=http://example.invalid:8081", "--http-addr=:0"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when --upstreams is set without --aggregate")
+	}
+	if got := err.Error(); got != "--upstreams/--poll-interval require --aggregate" {
+		t.Errorf("unexpected error message: %q", got)
+	}
+}
