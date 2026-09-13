@@ -45,6 +45,35 @@ jobs:
     # 注: agent-ebpf は nightly + bpf-linker + bpfel target が必要なため CI 対象外。
     #     実 eBPF 経路の検証は別 Issue で環境整備後に追加する。
 
+  integration:
+    name: Integration Test (Collector + Agent)
+    needs: [go-collector, rust-agent]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust-agent
+      # build.rs (tonic-build) が proto をコンパイルするため protoc が必要
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      # self-hosted (linux-general) の actions-runner:latest イメージに cc が無く
+      # リンクに失敗するため build-essential を明示インストール。
+      - run: sudo apt-get update && sudo apt-get install -y build-essential
+      # test-integration.sh は release バイナリを
+      # target/x86_64-unknown-linux-gnu/release/sentinel-agent から起動するため、
+      # ターゲットを明示して release ビルドする。
+      - run: cargo build --release --target x86_64-unknown-linux-gnu -p sentinel-agent
+        working-directory: rust-agent
+      - run: ./test-integration.sh
+    # 注: agent-ebpf(--features ebpf) は nightly + bpf-linker + bpfel target が必要なため
+    #     ここでは対象外。mock モード (--mock) での REST API/gRPC 結合検証のみ行う。
+
   web:
     uses: flipslidersand-labs/qa-workflows/.github/workflows/node-test.yml@main
     with:
