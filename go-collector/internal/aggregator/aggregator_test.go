@@ -68,7 +68,7 @@ func TestAggregator_DoesNotFollowRedirect(t *testing.T) {
 	}))
 	t.Cleanup(redirecting.Close)
 
-	agg := New([]Upstream{{Region: "sus", URL: redirecting.URL}}, 0, nil)
+	agg := New([]Upstream{{Region: "sus", URL: redirecting.URL}}, 0, "", nil)
 	agg.PollOnce(context.Background())
 
 	if redirectTargetHit {
@@ -101,12 +101,42 @@ func TestAggregator_LimitsResponseSize(t *testing.T) {
 	}))
 	t.Cleanup(huge.Close)
 
-	agg := New([]Upstream{{Region: "big", URL: huge.URL}}, 0, nil)
+	agg := New([]Upstream{{Region: "big", URL: huge.URL}}, 0, "", nil)
 	agg.PollOnce(context.Background())
 
 	regions := agg.Regions()
 	if len(regions) != 1 || regions[0].Reachable {
 		t.Errorf("oversized response should fail (truncated JSON) and mark unreachable, got %+v", regions)
+	}
+}
+
+// TestAggregator_SendsBearerTokenToUpstream covers #176: when the collector
+// is configured with SENTINEL_API_TOKEN, the aggregator must send it as an
+// Authorization: Bearer header on every upstream request — those endpoints
+// are gated by the same httpauth.BearerAuth as the aggregator's own REST
+// API, so without this the aggregator gets 401s and marks every region
+// unreachable the moment an operator sets that token.
+func TestAggregator_SendsBearerTokenToUpstream(t *testing.T) {
+	var gotAuth string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		if gotAuth != "Bearer s3cr3t" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_ = json.NewEncoder(w).Encode([]registry.AgentNode{})
+	}))
+	t.Cleanup(upstream.Close)
+
+	agg := New([]Upstream{{Region: "us-east", URL: upstream.URL}}, 0, "s3cr3t", nil)
+	agg.PollOnce(context.Background())
+
+	if gotAuth != "Bearer s3cr3t" {
+		t.Errorf("Authorization header = %q, want %q", gotAuth, "Bearer s3cr3t")
+	}
+	regions := agg.Regions()
+	if len(regions) != 1 || !regions[0].Reachable {
+		t.Errorf("expected region reachable once bearer token is sent, got %+v", regions)
 	}
 }
 
@@ -129,7 +159,7 @@ func TestAggregator_MergeAndReachability(t *testing.T) {
 		{Region: "us-east", URL: east.URL},
 		{Region: "eu-west", URL: downURL},
 	}
-	agg := New(ups, 0, nil)
+	agg := New(ups, 0, "", nil)
 	agg.PollOnce(context.Background())
 
 	// Merged nodes only include the reachable region.
@@ -168,7 +198,7 @@ func TestAggregator_RouterServesMergedData(t *testing.T) {
 		[]store.Event{{EventID: "e1", NodeID: "a1", Type: "exec"}},
 		nil,
 	)
-	agg := New([]Upstream{{Region: "us-east", URL: east.URL}}, 0, nil)
+	agg := New([]Upstream{{Region: "us-east", URL: east.URL}}, 0, "", nil)
 	agg.PollOnce(context.Background())
 
 	r := Router(agg, t.TempDir(), nil, "")

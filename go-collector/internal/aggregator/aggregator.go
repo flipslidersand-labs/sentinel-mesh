@@ -87,6 +87,7 @@ type Aggregator struct {
 	client     *http.Client
 	interval   time.Duration
 	eventLimit int
+	apiToken   string
 	log        *zap.Logger
 
 	mu    sync.RWMutex
@@ -94,7 +95,13 @@ type Aggregator struct {
 }
 
 // New creates an Aggregator. A nil logger is replaced with a no-op logger.
-func New(upstreams []Upstream, interval time.Duration, log *zap.Logger) *Aggregator {
+// apiToken, when non-empty, is sent as an `Authorization: Bearer` header on
+// every request to an upstream region collector's REST API — those
+// endpoints are gated by the same SENTINEL_API_TOKEN-based bearer auth the
+// aggregator's own REST API uses (see httpauth.BearerAuth), so without this
+// the aggregator gets 401s and marks every region unreachable the moment an
+// operator follows the project's own guidance to set that token (#176).
+func New(upstreams []Upstream, interval time.Duration, apiToken string, log *zap.Logger) *Aggregator {
 	if log == nil {
 		log = zap.NewNop()
 	}
@@ -107,6 +114,7 @@ func New(upstreams []Upstream, interval time.Duration, log *zap.Logger) *Aggrega
 	}
 	return &Aggregator{
 		upstreams: upstreams,
+		apiToken:  apiToken,
 		client: &http.Client{
 			Timeout: 5 * time.Second,
 			// Never follow redirects: a compromised/malicious upstream could
@@ -189,6 +197,9 @@ func (a *Aggregator) fetchJSON(ctx context.Context, url string, target any) erro
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
+	}
+	if a.apiToken != "" {
+		req.Header.Set("Authorization", "Bearer "+a.apiToken)
 	}
 	resp, err := a.client.Do(req)
 	if err != nil {
