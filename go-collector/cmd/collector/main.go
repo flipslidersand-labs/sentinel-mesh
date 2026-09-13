@@ -166,6 +166,9 @@ TLS for the gRPC server is optional but, when enabled, both
 
 			// Phase 4: mark agents inactive after 60s of silence, check every 30s
 			heartbeatTimeout, _ := cmd.Flags().GetDuration("heartbeat-timeout")
+			if heartbeatTimeout <= 0 {
+				return fmt.Errorf("--heartbeat-timeout must be positive, got %s", heartbeatTimeout)
+			}
 			reg.StartHeartbeatChecker(ctx, heartbeatTimeout, heartbeatTimeout/2, registry.DefaultEvictAfter)
 			logger.Info("heartbeat checker started", zap.Duration("timeout", heartbeatTimeout))
 

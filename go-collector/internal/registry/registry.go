@@ -143,11 +143,29 @@ func (r *Registry) MarshalJSON() ([]byte, error) {
 // from the registry, if StartHeartbeatChecker is not given an explicit value.
 const DefaultEvictAfter = 24 * time.Hour
 
+// DefaultHeartbeatTimeout and DefaultHeartbeatInterval are the safe fallback
+// values StartHeartbeatChecker uses when called with a non-positive timeout
+// or interval, mirroring the guard in aggregator.New.
+const (
+	DefaultHeartbeatTimeout  = 60 * time.Second
+	DefaultHeartbeatInterval = 30 * time.Second
+)
+
 // StartHeartbeatChecker runs a background goroutine that marks agents inactive
 // when their LastSeen is older than timeout, and evicts (removes from the
 // registry) any node that has stayed inactive for longer than evictAfter.
 // It ticks every interval. The goroutine stops when ctx is cancelled.
+//
+// A non-positive timeout or interval would make time.NewTicker panic, so both
+// are defensively replaced with safe defaults instead of propagating that
+// panic to callers that don't validate their own input.
 func (r *Registry) StartHeartbeatChecker(ctx context.Context, timeout, interval, evictAfter time.Duration) {
+	if timeout <= 0 {
+		timeout = DefaultHeartbeatTimeout
+	}
+	if interval <= 0 {
+		interval = DefaultHeartbeatInterval
+	}
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
