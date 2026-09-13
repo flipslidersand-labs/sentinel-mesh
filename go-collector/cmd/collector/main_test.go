@@ -2,7 +2,12 @@ package main
 
 import (
 	"net/http"
+	"strings"
 	"testing"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 // TestNewHTTPServerSetsTimeouts guards against a regression to the
@@ -101,5 +106,59 @@ func TestServeCmd_NonPositiveHeartbeatTimeoutRejected(t *testing.T) {
 		if want := "--heartbeat-timeout must be positive, got " + c.wantDuration; err.Error() != want {
 			t.Errorf("--heartbeat-timeout=%s: unexpected error message: %q, want %q", c.flag, err.Error(), want)
 		}
+	}
+}
+
+// TestWarnIgnoredNormalModeFlags guards against #152: --aggregate mode must
+// warn (not silently ignore) when a normal-mode-only flag is explicitly set.
+func TestWarnIgnoredNormalModeFlags(t *testing.T) {
+	cmd := serveCmd()
+	for _, name := range []string{"rules", "grpc-tls-cert", "grpc-tls-key", "region", "data-dir"} {
+		if err := cmd.Flags().Set(name, "custom-value"); err != nil {
+			t.Fatalf("set %s: %v", name, err)
+		}
+	}
+	if err := cmd.Flags().Set("grpc-addr", ":9999"); err != nil {
+		t.Fatalf("set grpc-addr: %v", err)
+	}
+
+	core, logs := observer.New(zapcore.WarnLevel)
+	logger := zap.New(core)
+
+	warnIgnoredNormalModeFlags(cmd, ":9999", logger)
+
+	wantSubstrings := []string{
+		"--grpc-addr",
+		"--data-dir",
+		"--rules",
+		"--grpc-tls-cert",
+		"--grpc-tls-key",
+		"--region",
+	}
+	for _, want := range wantSubstrings {
+		found := false
+		for _, entry := range logs.All() {
+			if entry.Level == zapcore.WarnLevel && strings.Contains(entry.Message, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected a warning mentioning %q, got: %v", want, logs.All())
+		}
+	}
+}
+
+// TestWarnIgnoredNormalModeFlags_NoWarningsWhenUnset ensures no false
+// positives when normal-mode flags are left at their defaults.
+func TestWarnIgnoredNormalModeFlags_NoWarningsWhenUnset(t *testing.T) {
+	cmd := serveCmd()
+	core, logs := observer.New(zapcore.WarnLevel)
+	logger := zap.New(core)
+
+	warnIgnoredNormalModeFlags(cmd, ":50051", logger)
+
+	if logs.Len() != 0 {
+		t.Errorf("expected no warnings, got: %v", logs.All())
 	}
 }

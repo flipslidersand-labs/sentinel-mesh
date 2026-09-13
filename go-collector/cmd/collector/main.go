@@ -150,6 +150,7 @@ TLS for the gRPC server is optional but, when enabled, both
 			// Aggregate mode: no gRPC/store — poll upstream region collectors and
 			// serve a merged read-only view.
 			if aggregate {
+				warnIgnoredNormalModeFlags(cmd, grpcAddr, logger)
 				return runAggregate(cmd, logger)
 			}
 
@@ -264,6 +265,20 @@ TLS for the gRPC server is optional but, when enabled, both
 	cmd.Flags().Duration("poll-interval", 10*time.Second, "aggregate mode: how often to poll upstreams")
 	cmd.MarkFlagsRequiredTogether("grpc-tls-cert", "grpc-tls-key")
 	return cmd
+}
+
+// warnIgnoredNormalModeFlags logs a warning for each normal-mode-only flag
+// that was explicitly set by the caller but is ignored in --aggregate mode
+// (#152), so a mistaken flag (e.g. --grpc-tls-cert) doesn't silently no-op.
+func warnIgnoredNormalModeFlags(cmd *cobra.Command, grpcAddr string, logger *zap.Logger) {
+	if cmd.Flags().Changed("grpc-addr") && grpcAddr != ":50051" {
+		logger.Warn("--aggregate mode ignores --grpc-addr")
+	}
+	for _, name := range []string{"data-dir", "rules", "grpc-tls-cert", "grpc-tls-key", "region"} {
+		if cmd.Flags().Changed(name) {
+			logger.Warn("--aggregate mode ignores --" + name)
+		}
+	}
 }
 
 // runAggregate starts the cross-region aggregator: it polls upstream region
