@@ -155,6 +155,12 @@ A region whose collector is unreachable is **isolated**: it is reported with `"r
   curl -H "Authorization: Bearer $SENTINEL_API_TOKEN" http://localhost:8081/api/nodes
   ```
 
+  **If you set `SENTINEL_API_TOKEN`, you must also enter it in the bundled UI**: open the
+  "API Token" widget in the top-right corner of the dashboard header and paste the same value.
+  The UI stores it in the browser's `localStorage` and sends it as `Authorization: Bearer
+  <token>` on every `/api/*` request; without this step the dashboard itself gets `401`s from
+  every endpoint it calls.
+
 - **CORS**: cross-origin access is **denied by default**. The bundled UI is served same-origin, so
   no CORS is needed in production. Pass `--cors-origins https://example.com` only when a separate
   front-end origin must call the API.
