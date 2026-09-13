@@ -129,6 +129,97 @@ func TestValidateRegisterRequest_RejectsInvalidIP(t *testing.T) {
 	}
 }
 
+func TestValidateKernelEvent_ValidExecPasses(t *testing.T) {
+	e := &pb.KernelEvent{NodeId: "node-1", EventId: "evt-1", Type: pb.EventType_EXEC,
+		Payload: &pb.KernelEvent_Exec{Exec: &pb.ExecEvent{Comm: "sh", Cmdline: "sh -c ls", Cwd: "/tmp"}}}
+	if err := validateKernelEvent(e); err != nil {
+		t.Fatalf("expected valid exec event to pass, got %v", err)
+	}
+}
+
+func TestValidateKernelEvent_RejectsOversizedNodeId(t *testing.T) {
+	e := &pb.KernelEvent{NodeId: strings.Repeat("a", maxRegisterFieldLength+1), EventId: "evt-1", Type: pb.EventType_EXEC}
+	if err := validateKernelEvent(e); err == nil {
+		t.Fatal("expected oversized node_id to be rejected")
+	}
+}
+
+func TestValidateKernelEvent_RejectsControlCharInEventId(t *testing.T) {
+	e := &pb.KernelEvent{NodeId: "node-1", EventId: "evt-1\x00", Type: pb.EventType_EXEC}
+	if err := validateKernelEvent(e); err == nil {
+		t.Fatal("expected control character in event_id to be rejected")
+	}
+}
+
+func TestValidateKernelEvent_RejectsControlCharInExecCmdline(t *testing.T) {
+	e := &pb.KernelEvent{NodeId: "node-1", EventId: "evt-1", Type: pb.EventType_EXEC,
+		Payload: &pb.KernelEvent_Exec{Exec: &pb.ExecEvent{Comm: "sh", Cmdline: "sh -c \x00rm -rf /", Cwd: "/tmp"}}}
+	if err := validateKernelEvent(e); err == nil {
+		t.Fatal("expected control character in exec cmdline to be rejected")
+	}
+}
+
+func TestValidateKernelEvent_RejectsInvalidPathInFileEvent(t *testing.T) {
+	e := &pb.KernelEvent{NodeId: "node-1", EventId: "evt-1", Type: pb.EventType_FILE,
+		Payload: &pb.KernelEvent_File{File: &pb.FileEvent{Comm: "sh", Path: "/etc/passwd\nInjected: 1", Op: "open"}}}
+	if err := validateKernelEvent(e); err == nil {
+		t.Fatal("expected newline in file path to be rejected")
+	}
+}
+
+func TestValidateKernelEvent_RejectsInvalidSrcIpInTcpEvent(t *testing.T) {
+	e := &pb.KernelEvent{NodeId: "node-1", EventId: "evt-1", Type: pb.EventType_TCP,
+		Payload: &pb.KernelEvent_Tcp{Tcp: &pb.TcpEvent{Comm: "sh", SrcIp: "not-an-ip", DstIp: "10.0.0.1", Direction: "out"}}}
+	if err := validateKernelEvent(e); err == nil {
+		t.Fatal("expected invalid src_ip to be rejected")
+	}
+}
+
+func TestValidateKernelEvent_ValidTcpPasses(t *testing.T) {
+	e := &pb.KernelEvent{NodeId: "node-1", EventId: "evt-1", Type: pb.EventType_TCP,
+		Payload: &pb.KernelEvent_Tcp{Tcp: &pb.TcpEvent{Comm: "sh", SrcIp: "10.0.0.1", DstIp: "10.0.0.2", Direction: "out"}}}
+	if err := validateKernelEvent(e); err != nil {
+		t.Fatalf("expected valid tcp event to pass, got %v", err)
+	}
+}
+
+// TestStreamEvents_RejectsInvalidEventWithoutPersisting covers #154: an
+// invalid node_id/event_id/payload string must be rejected with
+// EventAck{Ok:false} before it is ever handed to the registry or the store.
+func TestStreamEvents_RejectsInvalidEventWithoutPersisting(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "badger")
+	st, err := store.New(dir)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	reg := registry.New()
+	s := &server{st: st, reg: reg, log: zap.NewNop()}
+
+	stream := &fakeStream{events: []*pb.KernelEvent{
+		{NodeId: "node-1\x00evil", EventId: "evt-1", Type: pb.EventType_EXEC, Timestamp: time.Now().UnixNano()},
+	}}
+
+	if err := s.StreamEvents(stream); err != nil {
+		t.Fatalf("StreamEvents: %v", err)
+	}
+
+	if len(stream.acks) != 1 || stream.acks[0].Ok {
+		t.Fatalf("expected a single Ack.Ok=false, got %+v", stream.acks)
+	}
+	if len(reg.List()) != 0 {
+		t.Fatal("invalid node_id must not reach the registry (no heartbeat)")
+	}
+	events, err := st.ListEvents("node-1\x00evil", 10)
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatal("invalid event must not be persisted to the store")
+	}
+}
+
 func TestServerRegister_RejectsInvalidInput(t *testing.T) {
 	s := &server{reg: registry.New(), log: zap.NewNop()}
 	resp, err := s.Register(context.Background(), &pb.RegisterRequest{NodeId: "node-1\x00", Hostname: "h", Ip: "", Version: "v1", Region: ""})
