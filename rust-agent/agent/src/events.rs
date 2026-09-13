@@ -130,41 +130,98 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
         }
     };
 
-    // Attach exec tracepoint (sys_enter_execve)
-    let exec_prog: &mut TracePoint = bpf
-        .program_mut("sentinel_exec")
-        .unwrap()
-        .try_into()
-        .unwrap();
-    exec_prog.load().unwrap();
-    exec_prog.attach("syscalls", "sys_enter_execve").unwrap();
+    // Attach exec tracepoint (sys_enter_execve). This program is required —
+    // without it there is nothing left to collect, so any failure here
+    // (missing BPF object section, permission denial, unsupported kernel,
+    // LSM rejection, ...) is fatal for this source and we return instead of
+    // panicking the whole agent process.
+    let exec_prog = match bpf.program_mut("sentinel_exec") {
+        Some(prog) => prog,
+        None => {
+            eprintln!("error: eBPF object has no \"sentinel_exec\" program");
+            return;
+        }
+    };
+    let exec_prog: &mut TracePoint = match exec_prog.try_into() {
+        Ok(tp) => tp,
+        Err(e) => {
+            eprintln!("error: \"sentinel_exec\" is not a tracepoint program: {e}");
+            return;
+        }
+    };
+    if let Err(e) = exec_prog.load() {
+        eprintln!("error: failed to load sentinel_exec tracepoint: {e}");
+        return;
+    }
+    if let Err(e) = exec_prog.attach("syscalls", "sys_enter_execve") {
+        eprintln!("error: failed to attach sentinel_exec to sys_enter_execve: {e}");
+        return;
+    }
 
-    // Attach openat tracepoint (sys_enter_openat) — best-effort
+    // Attach openat tracepoint (sys_enter_openat) — best-effort: this program
+    // is optional and a failure here should not prevent exec/tcp collection.
     if let Some(prog) = bpf.program_mut("sentinel_openat") {
-        let tp: &mut TracePoint = prog.try_into().unwrap();
-        if let Err(e) = tp.load().and_then(|_| tp.attach("syscalls", "sys_enter_openat")) {
-            eprintln!("warn: openat tracepoint: {e}");
+        match TryInto::<&mut TracePoint>::try_into(prog) {
+            Ok(tp) => {
+                if let Err(e) = tp.load().and_then(|_| tp.attach("syscalls", "sys_enter_openat")) {
+                    eprintln!("warn: openat tracepoint: {e}");
+                }
+            }
+            Err(e) => eprintln!("warn: \"sentinel_openat\" is not a tracepoint program: {e}"),
         }
     }
 
-    // Attach tcp_connect kprobe — best-effort
+    // Attach tcp_connect kprobe — best-effort, same rationale as openat above.
     if let Some(prog) = bpf.program_mut("sentinel_tcp_connect") {
         use aya::programs::KProbe;
-        let kp: &mut KProbe = prog.try_into().unwrap();
-        if let Err(e) = kp.load().and_then(|_| kp.attach("tcp_connect", 0)) {
-            eprintln!("warn: tcp_connect kprobe: {e}");
+        match TryInto::<&mut KProbe>::try_into(prog) {
+            Ok(kp) => {
+                if let Err(e) = kp.load().and_then(|_| kp.attach("tcp_connect", 0)) {
+                    eprintln!("warn: tcp_connect kprobe: {e}");
+                }
+            }
+            Err(e) => eprintln!("warn: \"sentinel_tcp_connect\" is not a kprobe program: {e}"),
         }
     }
 
-    let ring_buf = RingBuf::try_from(bpf.map_mut("EVENTS").unwrap()).unwrap();
-    let mut async_fd = tokio::io::unix::AsyncFd::new(ring_buf).unwrap();
+    let events_map = match bpf.map_mut("EVENTS") {
+        Some(m) => m,
+        None => {
+            eprintln!("error: eBPF object has no \"EVENTS\" map");
+            return;
+        }
+    };
+    let ring_buf = match RingBuf::try_from(events_map) {
+        Ok(rb) => rb,
+        Err(e) => {
+            eprintln!("error: \"EVENTS\" map is not a ring buffer: {e}");
+            return;
+        }
+    };
+    let mut async_fd = match tokio::io::unix::AsyncFd::new(ring_buf) {
+        Ok(fd) => fd,
+        Err(e) => {
+            eprintln!("error: failed to register EVENTS ring buffer with the async runtime: {e}");
+            return;
+        }
+    };
 
     // Total events dropped because the channel to grpc::stream_to_collector
     // was full (collector unreachable/slow). Logged, not silent (#70).
     let mut dropped: u64 = 0;
 
     loop {
-        let mut guard = async_fd.readable_mut().await.unwrap();
+        let mut guard = match async_fd.readable_mut().await {
+            Ok(g) => g,
+            Err(e) => {
+                // The ring buffer fd itself failed (e.g. the underlying epoll
+                // registration broke). There is nothing to recover from here,
+                // so log and end this source rather than looping forever or
+                // panicking the whole agent process.
+                eprintln!("error: EVENTS ring buffer became unreadable, stopping eBPF source: {e}");
+                return;
+            }
+        };
         let rb = guard.get_inner_mut();
         while let Some(item) = rb.next() {
             let data: &[u8] = &item;
