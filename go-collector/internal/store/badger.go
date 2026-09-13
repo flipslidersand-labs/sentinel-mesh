@@ -22,6 +22,18 @@ const vlogGCInterval = 5 * time.Minute
 // rewritten if this fraction of it is estimated to be discardable.
 const vlogGCDiscardRatio = 0.5
 
+// maxNodeFilterScan bounds how many keys ListEvents/ListAlerts will read
+// while looking for matches to a node filter. Without this cap, a node
+// filter that matches few (or zero) records forces a full scan of the
+// retention window on every request — a client-controlled "limit=1" query
+// could otherwise force reading the store's entire contents (#153). This is
+// a short-term mitigation; the proper fix is a secondary index keyed by
+// node so a node-filtered lookup is O(matches) instead of O(scanned), which
+// is tracked separately as it's a larger structural change.
+// A var, not a const, so tests can shrink it rather than saving 10000+
+// records to exercise the cap.
+var maxNodeFilterScan = 10000
+
 // Event is the normalized form stored in BadgerDB.
 type Event struct {
 	EventID   string          `json:"event_id"`
@@ -144,7 +156,9 @@ func (s *Store) SaveEvent(e Event) error {
 }
 
 // ListEvents returns up to limit events, newest first.
-// If node is non-empty, only events with matching NodeID are returned.
+// If node is non-empty, only events with matching NodeID are returned, and
+// the scan for matches stops after maxNodeFilterScan records even if fewer
+// than limit matches were found (#153).
 func (s *Store) ListEvents(node string, limit int) ([]Event, error) {
 	var events []Event
 	err := s.db.View(func(tx *badger.Txn) error {
@@ -155,7 +169,15 @@ func (s *Store) ListEvents(node string, limit int) ([]Event, error) {
 
 		prefix := []byte("event:")
 		it.Seek(append(prefix, 0xFF))
+		scanned := 0
 		for ; it.ValidForPrefix(prefix) && len(events) < limit; it.Next() {
+			// A node filter can match rarely (or never); without a scan cap
+			// this loop would otherwise keep reading until it exhausts the
+			// whole "event:" prefix (#153).
+			if node != "" && scanned >= maxNodeFilterScan {
+				break
+			}
+			scanned++
 			var e Event
 			if err := it.Item().Value(func(v []byte) error {
 				return json.Unmarshal(v, &e)
@@ -208,7 +230,9 @@ func (s *Store) SaveAlert(a Alert) error {
 }
 
 // ListAlerts returns up to limit alerts, newest first.
-// If node is non-empty, only alerts with matching NodeID are returned.
+// If node is non-empty, only alerts with matching NodeID are returned, and
+// the scan for matches stops after maxNodeFilterScan records even if fewer
+// than limit matches were found (#153).
 func (s *Store) ListAlerts(node string, limit int) ([]Alert, error) {
 	var alerts []Alert
 	err := s.db.View(func(tx *badger.Txn) error {
@@ -219,7 +243,15 @@ func (s *Store) ListAlerts(node string, limit int) ([]Alert, error) {
 
 		prefix := []byte("alert:")
 		it.Seek(append(prefix, 0xFF))
+		scanned := 0
 		for ; it.ValidForPrefix(prefix) && len(alerts) < limit; it.Next() {
+			// See the matching comment in ListEvents: cap the scan so a
+			// rarely (or never) matching node filter can't force a full
+			// walk of the "alert:" prefix (#153).
+			if node != "" && scanned >= maxNodeFilterScan {
+				break
+			}
+			scanned++
 			var a Alert
 			if err := it.Item().Value(func(v []byte) error {
 				return json.Unmarshal(v, &a)

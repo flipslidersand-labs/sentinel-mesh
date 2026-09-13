@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"strconv"
 	"testing"
 	"time"
 
@@ -73,6 +74,57 @@ func TestClose_StopsValueLogGCGoroutine(t *testing.T) {
 	case <-st.gcDone:
 	default:
 		t.Error("gcDone not closed after Close returned")
+	}
+}
+
+// TestListEvents_NodeFilterScanCap verifies a node filter that matches
+// nothing stops after maxNodeFilterScan records instead of scanning the
+// whole "event:" prefix (#153). Without the cap, a limit=1 query for a
+// nonexistent/rarely-seen node forces reading every retained event.
+func TestListEvents_NodeFilterScanCap(t *testing.T) {
+	st, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { st.Close() }) //nolint:errcheck
+
+	origCap := maxNodeFilterScan
+	maxNodeFilterScan = 5
+	t.Cleanup(func() { maxNodeFilterScan = origCap })
+
+	// 20 events, none for "node-x": more than the shrunk scan cap.
+	for i := 0; i < 20; i++ {
+		e := Event{
+			EventID:   strconv.Itoa(i),
+			NodeID:    "node-a",
+			Timestamp: time.Now(),
+			Type:      "exec",
+			Payload:   json.RawMessage(`{}`),
+		}
+		if err := st.SaveEvent(e); err != nil {
+			t.Fatalf("SaveEvent: %v", err)
+		}
+	}
+
+	got, err := st.ListEvents("node-x", 100)
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("want 0 matches for node-x, got %d", len(got))
+	}
+
+	// A match that falls within the cap is still found.
+	e := Event{EventID: "match-1", NodeID: "node-x", Timestamp: time.Now(), Type: "exec", Payload: json.RawMessage(`{}`)}
+	if err := st.SaveEvent(e); err != nil {
+		t.Fatalf("SaveEvent: %v", err)
+	}
+	got, err = st.ListEvents("node-x", 100)
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if len(got) != 1 || got[0].EventID != "match-1" {
+		t.Errorf("want [match-1] (newest, within scan cap), got %+v", got)
 	}
 }
 
