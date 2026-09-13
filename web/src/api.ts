@@ -48,11 +48,26 @@ export function asRecord(v: unknown): Record<string, number> {
 import { authHeaders } from "./auth";
 
 const BASE = "/api";
+const TIMEOUT_MS = 8000;
 
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(BASE + path, { headers: authHeaders() });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  return res.json();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const res = await fetch(BASE + path, {
+      headers: authHeaders(),
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return await res.json();
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "AbortError") {
+      throw new Error(`Request timed out after ${TIMEOUT_MS}ms: ${path}`);
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export const api = {
