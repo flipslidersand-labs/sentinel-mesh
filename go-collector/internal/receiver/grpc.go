@@ -19,6 +19,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
 	"github.com/flipslidersand/sentinel-mesh/internal/alerting"
@@ -215,8 +216,25 @@ func validateKernelEvent(e *pb.KernelEvent) error {
 	return validateFields(fields)
 }
 
+// peerIP extracts the caller's address from the gRPC peer connection and
+// strips the port. Register derives the agent's IP this way rather than
+// trusting req.Ip (#175): the real agent never populates that field (it's
+// always sent empty), and even if it did, a client-supplied IP could be
+// spoofed by anything not going through mTLS client-cert verification.
+func peerIP(ctx context.Context) string {
+	p, ok := peer.FromContext(ctx)
+	if !ok || p.Addr == nil {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(p.Addr.String())
+	if err != nil {
+		return p.Addr.String()
+	}
+	return host
+}
+
 // Register handles agent registration (unary RPC).
-func (s *server) Register(_ context.Context, req *pb.RegisterRequest) (*pb.RegisterResponse, error) {
+func (s *server) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.RegisterResponse, error) {
 	if err := validateRegisterRequest(req); err != nil {
 		return &pb.RegisterResponse{Ok: false, Message: err.Error()}, nil
 	}
@@ -224,7 +242,7 @@ func (s *server) Register(_ context.Context, req *pb.RegisterRequest) (*pb.Regis
 	if region == "" {
 		region = s.defaultRegion // fall back to the collector's default region
 	}
-	if err := s.reg.Register(req.NodeId, req.Hostname, req.Ip, req.Version, region); err != nil {
+	if err := s.reg.Register(req.NodeId, req.Hostname, peerIP(ctx), req.Version, region); err != nil {
 		return &pb.RegisterResponse{Ok: false, Message: err.Error()}, nil
 	}
 	s.log.Info("agent registered",
