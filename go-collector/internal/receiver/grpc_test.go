@@ -8,11 +8,14 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/flipslidersand/sentinel-mesh/internal/anomaly"
+	"github.com/flipslidersand/sentinel-mesh/internal/notify"
 	"github.com/flipslidersand/sentinel-mesh/internal/pb"
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
 	"github.com/flipslidersand/sentinel-mesh/internal/store"
@@ -204,6 +207,52 @@ func TestStreamEvents_AckReflectsSaveFailure(t *testing.T) {
 	}
 	if stream.acks[0].Ok {
 		t.Fatal("expected Ack.Ok=false when the store write fails, got true")
+	}
+}
+
+// TestStreamEvents_DetectorRunsWithoutEngine covers #150: the anomaly
+// detector must record events (and raise alerts) even when no alerting
+// engine is configured, instead of being silently skipped because it was
+// nested inside `if s.engine != nil`.
+func TestStreamEvents_DetectorRunsWithoutEngine(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "badger")
+	st, err := store.New(dir)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	// Threshold of 1 within a long window means the very first event of a
+	// given (node, type) pair triggers an anomaly alert.
+	detector := anomaly.New([]anomaly.WindowConfig{{Duration: time.Minute, Threshold: 1}})
+
+	s := &server{
+		st:       st,
+		reg:      registry.New(),
+		engine:   nil, // no alerting engine configured
+		detector: detector,
+		notifier: &notify.Dispatcher{},
+		tracer:   otel.Tracer("test"),
+		log:      zap.NewNop(),
+	}
+
+	// Two events within the window exceed Threshold:1, triggering an alert
+	// on the second one.
+	stream := &fakeStream{events: []*pb.KernelEvent{
+		{NodeId: "node-1", Type: pb.EventType_EXEC, Timestamp: time.Now().UnixNano()},
+		{NodeId: "node-1", Type: pb.EventType_EXEC, Timestamp: time.Now().UnixNano()},
+	}}
+
+	if err := s.StreamEvents(stream); err != nil {
+		t.Fatalf("StreamEvents: %v", err)
+	}
+
+	alerts, err := st.ListAlerts("node-1", 10)
+	if err != nil {
+		t.Fatalf("ListAlerts: %v", err)
+	}
+	if len(alerts) == 0 {
+		t.Fatal("expected the detector to raise an anomaly alert even with a nil engine")
 	}
 }
 

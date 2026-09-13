@@ -207,8 +207,11 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 			s.metrics.RecordEvent(storedEvent.Type, storedEvent.NodeID)
 		}
 
-		// Phase 5: evaluate alerts
-		if s.engine != nil {
+		// Phase 5: evaluate alerts. engine and detector run independently of
+		// each other so that a nil engine (e.g. a future "anomaly detection
+		// only" configuration) never silently disables the detector, or vice
+		// versa (#150).
+		if s.engine != nil || s.detector != nil {
 			_, span := s.tracer.Start(stream.Context(), "evaluate_alerts",
 				trace.WithAttributes(
 					attribute.String("event.id", storedEvent.EventID),
@@ -216,7 +219,11 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 					attribute.String("node.id", storedEvent.NodeID),
 				),
 			)
-			allAlerts := s.engine.Evaluate(storedEvent)
+
+			var allAlerts []alerting.Alert
+			if s.engine != nil {
+				allAlerts = append(allAlerts, s.engine.Evaluate(storedEvent)...)
+			}
 
 			// Phase 7: frequency-based anomaly detection
 			if s.detector != nil {
