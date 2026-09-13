@@ -76,3 +76,30 @@ func TestServeCmd_UpstreamsWithoutAggregateRejected(t *testing.T) {
 		t.Errorf("unexpected error message: %q", got)
 	}
 }
+
+// TestServeCmd_NonPositiveHeartbeatTimeoutRejected guards against #147: a
+// zero or negative --heartbeat-timeout used to reach time.NewTicker
+// unvalidated and panic, crashing the whole CLI. It must now be rejected
+// with a plain error before the heartbeat checker ever starts.
+func TestServeCmd_NonPositiveHeartbeatTimeoutRejected(t *testing.T) {
+	cases := []struct{ flag, wantDuration string }{
+		{"0", "0s"},
+		{"-5s", "-5s"},
+	}
+	for _, c := range cases {
+		cmd := serveCmd()
+		cmd.SetArgs([]string{
+			"--heartbeat-timeout=" + c.flag,
+			"--data-dir=" + t.TempDir(),
+			"--http-addr=:0",
+			"--grpc-addr=:0",
+		})
+		err := cmd.Execute()
+		if err == nil {
+			t.Fatalf("--heartbeat-timeout=%s: expected error, got nil", c.flag)
+		}
+		if want := "--heartbeat-timeout must be positive, got " + c.wantDuration; err.Error() != want {
+			t.Errorf("--heartbeat-timeout=%s: unexpected error message: %q, want %q", c.flag, err.Error(), want)
+		}
+	}
+}
