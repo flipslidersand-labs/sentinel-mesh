@@ -25,6 +25,9 @@ jobs:
     # 継続発生し dtolnay/rust-toolchain が失敗するため一時的に GitHub-hosted に固定。
     # infra 側で原因調査後に外す（トラッキング: flipslidersand-labs/dev-platform#1065）。
     runs-on: ubuntu-latest
+    # ハング時に GitHub-hosted のデフォルト360分を消費しないよう上限を設定
+    # (実測時間+余裕。トラッキング: flipslidersand-labs/sentinel-mesh#146)
+    timeout-minutes: 10
     # romeovs/lcov-reporter-action が PR にカバレッジコメントを投稿するために必要。
     permissions:
       contents: read
