@@ -16,8 +16,14 @@ export function usePolling<T>(
 
   useEffect(() => {
     let cancelled = false;
+    // Guards against overlapping ticks: if the previous run() hasn't
+    // resolved yet (e.g. the collector is hanging), skip this tick instead
+    // of firing another fetch on top of it and letting requests pile up.
+    let running = false;
 
     const run = async () => {
+      if (running) return;
+      running = true;
       try {
         const result = await fetcherRef.current();
         if (!cancelled) {
@@ -27,6 +33,7 @@ export function usePolling<T>(
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       } finally {
+        running = false;
         if (!cancelled) setLoading(false);
       }
     };
