@@ -305,7 +305,7 @@ func runAggregate(cmd *cobra.Command, logger *zap.Logger) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	agg := aggregator.New(upstreams, interval, logger)
+	agg := aggregator.New(upstreams, interval, apiToken, logger)
 	agg.Start(ctx)
 	logger.Info("aggregator started",
 		zap.Int("upstreams", len(upstreams)), zap.Duration("poll_interval", interval))
