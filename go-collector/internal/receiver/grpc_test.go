@@ -2,7 +2,9 @@ package receiver
 
 import (
 	"context"
+	"errors"
 	"io"
+	"net"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,7 +12,9 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.uber.org/zap"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
@@ -150,6 +154,10 @@ type fakeStream struct {
 	events []*pb.KernelEvent
 	next   int
 	acks   []*pb.EventAck
+	// ctx, when set, is returned by Context() instead of context.Background()
+	// — used to simulate a stream whose context has already been cancelled
+	// (e.g. by a server shutdown).
+	ctx context.Context
 }
 
 func (f *fakeStream) Recv() (*pb.KernelEvent, error) {
@@ -166,7 +174,12 @@ func (f *fakeStream) Send(ack *pb.EventAck) error {
 	return nil
 }
 
-func (f *fakeStream) Context() context.Context     { return context.Background() }
+func (f *fakeStream) Context() context.Context {
+	if f.ctx != nil {
+		return f.ctx
+	}
+	return context.Background()
+}
 func (f *fakeStream) SetHeader(metadata.MD) error  { return nil }
 func (f *fakeStream) SendHeader(metadata.MD) error { return nil }
 func (f *fakeStream) SetTrailer(metadata.MD)       {}
@@ -247,7 +260,7 @@ func TestStreamEvents_DetectorRunsWithoutEngine(t *testing.T) {
 		t.Fatalf("StreamEvents: %v", err)
 	}
 
-	alerts, err := st.ListAlerts("node-1", 10)
+	alerts, err := st.ListAlerts(context.Background(), "node-1", 10)
 	if err != nil {
 		t.Fatalf("ListAlerts: %v", err)
 	}
@@ -279,6 +292,87 @@ func TestServe_StopsGracefullyWhenContextCancelled(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Serve did not return within 5s of context cancellation")
+	}
+}
+
+// TestStreamEvents_ReturnsWhenStreamContextDone covers #155: StreamEvents
+// must not attempt another Recv() once its stream context is already done
+// (e.g. the server force-stopped it during shutdown) — it must return the
+// context error promptly instead.
+func TestStreamEvents_ReturnsWhenStreamContextDone(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already done before StreamEvents is even called
+
+	s := &server{reg: registry.New(), log: zap.NewNop()}
+	stream := &fakeStream{
+		ctx: ctx,
+		// If the context check were missing, StreamEvents would instead
+		// consume this event and return nil via io.EOF on the next Recv.
+		events: []*pb.KernelEvent{
+			{NodeId: "node-1", Type: pb.EventType_EXEC, Timestamp: time.Now().UnixNano()},
+		},
+	}
+
+	err := s.StreamEvents(stream)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	if len(stream.acks) != 0 {
+		t.Fatalf("expected no events to be processed once the stream context is done, got %d acks", len(stream.acks))
+	}
+}
+
+// TestGracefulStopWithTimeout_FallsBackToStopOnHungStream covers #155:
+// GracefulStop alone blocks until every RPC ends, and a StreamEvents
+// connection whose agent neither sends nor disconnects never ends on its
+// own. gracefulStopWithTimeout must fall back to srv.Stop() once the grace
+// period elapses, rather than blocking forever.
+func TestGracefulStopWithTimeout_FallsBackToStopOnHungStream(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	srv := grpc.NewServer()
+	pb.RegisterSentinelCollectorServer(srv, &server{reg: registry.New(), log: zap.NewNop()})
+	go srv.Serve(lis) //nolint:errcheck
+
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	client := pb.NewSentinelCollectorClient(conn)
+	stream, err := client.StreamEvents(context.Background())
+	if err != nil {
+		t.Fatalf("StreamEvents: %v", err)
+	}
+
+	// Give the server a moment to register the stream as an in-flight RPC,
+	// then never send or close — simulating an agent that connected and
+	// went quiet without disconnecting.
+	time.Sleep(100 * time.Millisecond)
+
+	done := make(chan struct{})
+	start := time.Now()
+	go func() {
+		gracefulStopWithTimeout(srv, 200*time.Millisecond, zap.NewNop())
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("gracefulStopWithTimeout did not return — GracefulStop hung on the live stream despite the timeout")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("gracefulStopWithTimeout took %v, want close to its 200ms grace period", elapsed)
+	}
+
+	// The forced Stop() must actually have torn the stream down.
+	if _, err := stream.Recv(); err == nil {
+		t.Error("expected stream.Recv() to fail after the forced stop, got nil error")
 	}
 }
 

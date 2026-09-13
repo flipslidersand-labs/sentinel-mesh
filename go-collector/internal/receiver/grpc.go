@@ -42,6 +42,22 @@ const (
 	// against a flood of connections or oversized messages (#75).
 	maxConcurrentStreams uint32 = 256
 	maxRecvMsgSize       int    = 4 * 1024 * 1024 // 4MB
+
+	// grpcShutdownGracePeriod bounds how long Serve's shutdown goroutine
+	// waits for srv.GracefulStop() before falling back to the forceful
+	// srv.Stop(). GracefulStop only waits for in-flight *RPCs*, not for a
+	// live StreamEvents connection whose agent has gone quiet without
+	// disconnecting — without this fallback, one such connection would hang
+	// the whole graceful shutdown forever (#155). Matches
+	// cmd/collector/main.go's httpShutdownTimeout for the REST API.
+	grpcShutdownGracePeriod = 10 * time.Second
+
+	// storeOpTimeout bounds how long a single StreamEvents iteration may
+	// wait on a store write. BadgerDB value-log GC/compaction/disk I/O can
+	// stall db.Update for an unbounded time; without a cap, that stall
+	// blocks the goroutine handling this stream — and, during shutdown,
+	// GracefulStop along with it (#155).
+	storeOpTimeout = 5 * time.Second
 )
 
 // tokenBucket is a minimal, dependency-free rate limiter (events/sec with a
@@ -162,6 +178,17 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 	var throttled uint64
 
 	for {
+		// Bail out promptly once the stream's context is done (e.g. the
+		// server is shutting down and srv.GracefulStop()/srv.Stop() has
+		// cancelled it). Without this check, an agent that neither sends
+		// nor disconnects leaves stream.Recv() below blocked forever, and
+		// GracefulStop waits for this RPC indefinitely (#155).
+		select {
+		case <-stream.Context().Done():
+			return stream.Context().Err()
+		default:
+		}
+
 		event, err := stream.Recv()
 		if err == io.EOF {
 			return nil
@@ -194,7 +221,10 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 		}
 
 		saveOk := true
-		if storeErr := s.st.SaveEvent(storedEvent); storeErr != nil {
+		saveCtx, saveCancel := context.WithTimeout(stream.Context(), storeOpTimeout)
+		storeErr := s.st.SaveEvent(saveCtx, storedEvent)
+		saveCancel()
+		if storeErr != nil {
 			s.log.Error("save event", zap.Error(storeErr))
 			saveOk = false
 			if s.metrics != nil {
@@ -231,8 +261,11 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 			}
 
 			for _, alert := range allAlerts {
-				if err := s.st.SaveAlert(alert); err != nil {
-					s.log.Error("save alert", zap.Error(err))
+				alertCtx, alertCancel := context.WithTimeout(stream.Context(), storeOpTimeout)
+				alertErr := s.st.SaveAlert(alertCtx, alert)
+				alertCancel()
+				if alertErr != nil {
+					s.log.Error("save alert", zap.Error(alertErr))
 					saveOk = false
 					if s.metrics != nil {
 						s.metrics.RecordStoreWriteFailure("alert")
@@ -302,6 +335,28 @@ func (s *server) eventPayload(e *pb.KernelEvent) json.RawMessage {
 	return raw
 }
 
+// gracefulStopWithTimeout calls srv.GracefulStop() and waits up to
+// gracePeriod for it to return. GracefulStop only returns once every
+// in-flight RPC has ended, and a StreamEvents connection whose agent has
+// gone quiet without disconnecting never ends on its own — so without this
+// bound, GracefulStop (and therefore the whole graceful shutdown sequence)
+// can hang forever. If gracePeriod elapses first, it falls back to
+// srv.Stop(), which forcibly cancels every stream's context and closes the
+// underlying connections (#155).
+func gracefulStopWithTimeout(srv *grpc.Server, gracePeriod time.Duration, log *zap.Logger) {
+	done := make(chan struct{})
+	go func() {
+		srv.GracefulStop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(gracePeriod):
+		log.Warn("gRPC graceful stop timed out, forcing stop")
+		srv.Stop()
+	}
+}
+
 // Serve starts the gRPC server on addr. If tlsCertFile/tlsKeyFile are both
 // set, the server requires TLS; otherwise it serves in plaintext (caller is
 // expected to warn). If token is non-empty, every RPC must present a matching
@@ -350,12 +405,20 @@ func Serve(ctx context.Context, addr string, st *store.Store, reg *registry.Regi
 	// srv.Serve (#117). GracefulStop waits for pending RPCs to finish;
 	// srv.Serve returns grpc.ErrServerStopped once it does, which is not
 	// a real failure and is swallowed below.
+	//
+	// GracefulStop alone can block indefinitely: it only returns once every
+	// RPC has ended, and a StreamEvents connection whose agent has gone
+	// quiet without disconnecting never ends on its own. So GracefulStop is
+	// bounded by grpcShutdownGracePeriod; if it hasn't finished by then, we
+	// fall back to srv.Stop(), which forcibly cancels every stream's context
+	// and closes the underlying connections (#155). This mirrors
+	// cmd/collector/main.go's http.Server.Shutdown timeout for the REST API.
 	stopped := make(chan struct{})
 	go func() {
 		select {
 		case <-ctx.Done():
 			log.Info("gRPC server shutting down")
-			srv.GracefulStop()
+			gracefulStopWithTimeout(srv, grpcShutdownGracePeriod, log)
 		case <-stopped:
 		}
 	}()

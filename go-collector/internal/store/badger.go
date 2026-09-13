@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -119,7 +120,29 @@ func (s *Store) loadCounters() error {
 	})
 }
 
-func (s *Store) SaveEvent(e Event) error {
+// runWithContext runs fn on its own goroutine and returns as soon as either
+// fn completes or ctx is cancelled — whichever comes first. If ctx is
+// cancelled first, ctx.Err() is returned immediately and fn keeps running in
+// the background until BadgerDB finishes (or fails) on its own; the result is
+// discarded. This bounds how long a caller (e.g. the StreamEvents goroutine
+// handling a request during shutdown) can be blocked by a slow db.Update/View
+// — a BadgerDB value-log GC pause or disk I/O stall no longer wedges the
+// caller, and therefore the whole graceful-shutdown sequence, indefinitely
+// (#155). It does not abort the underlying BadgerDB transaction — Badger has
+// no such primitive — so this is a "don't block the caller" fix, not true
+// cancellation.
+func runWithContext(ctx context.Context, fn func() error) error {
+	errCh := make(chan error, 1)
+	go func() { errCh <- fn() }()
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *Store) SaveEvent(ctx context.Context, e Event) error {
 	val, err := json.Marshal(e)
 	if err != nil {
 		return err
@@ -132,8 +155,10 @@ func (s *Store) SaveEvent(e Event) error {
 	// display; it's just no longer trusted for ordering/storage identity.
 	received := time.Now().UTC()
 	key := []byte(fmt.Sprintf("event:%s:%s", received.Format(time.RFC3339Nano), e.EventID))
-	if err := s.db.Update(func(tx *badger.Txn) error {
-		return tx.SetEntry(badger.NewEntry(key, val).WithTTL(s.retention))
+	if err := runWithContext(ctx, func() error {
+		return s.db.Update(func(tx *badger.Txn) error {
+			return tx.SetEntry(badger.NewEntry(key, val).WithTTL(s.retention))
+		})
 	}); err != nil {
 		return err
 	}
@@ -145,29 +170,31 @@ func (s *Store) SaveEvent(e Event) error {
 
 // ListEvents returns up to limit events, newest first.
 // If node is non-empty, only events with matching NodeID are returned.
-func (s *Store) ListEvents(node string, limit int) ([]Event, error) {
+func (s *Store) ListEvents(ctx context.Context, node string, limit int) ([]Event, error) {
 	var events []Event
-	err := s.db.View(func(tx *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		opts.Reverse = true
-		it := tx.NewIterator(opts)
-		defer it.Close()
+	err := runWithContext(ctx, func() error {
+		return s.db.View(func(tx *badger.Txn) error {
+			opts := badger.DefaultIteratorOptions
+			opts.Reverse = true
+			it := tx.NewIterator(opts)
+			defer it.Close()
 
-		prefix := []byte("event:")
-		it.Seek(append(prefix, 0xFF))
-		for ; it.ValidForPrefix(prefix) && len(events) < limit; it.Next() {
-			var e Event
-			if err := it.Item().Value(func(v []byte) error {
-				return json.Unmarshal(v, &e)
-			}); err != nil {
-				return err
+			prefix := []byte("event:")
+			it.Seek(append(prefix, 0xFF))
+			for ; it.ValidForPrefix(prefix) && len(events) < limit; it.Next() {
+				var e Event
+				if err := it.Item().Value(func(v []byte) error {
+					return json.Unmarshal(v, &e)
+				}); err != nil {
+					return err
+				}
+				if node != "" && e.NodeID != node {
+					continue
+				}
+				events = append(events, e)
 			}
-			if node != "" && e.NodeID != node {
-				continue
-			}
-			events = append(events, e)
-		}
-		return nil
+			return nil
+		})
 	})
 	return events, err
 }
@@ -196,42 +223,46 @@ type Alert struct {
 }
 
 // SaveAlert persists an alert to the store.
-func (s *Store) SaveAlert(a Alert) error {
+func (s *Store) SaveAlert(ctx context.Context, a Alert) error {
 	val, err := json.Marshal(a)
 	if err != nil {
 		return err
 	}
 	key := []byte(fmt.Sprintf("alert:%s:%s", a.Timestamp.Format(time.RFC3339Nano), a.AlertID))
-	return s.db.Update(func(tx *badger.Txn) error {
-		return tx.SetEntry(badger.NewEntry(key, val).WithTTL(s.retention))
+	return runWithContext(ctx, func() error {
+		return s.db.Update(func(tx *badger.Txn) error {
+			return tx.SetEntry(badger.NewEntry(key, val).WithTTL(s.retention))
+		})
 	})
 }
 
 // ListAlerts returns up to limit alerts, newest first.
 // If node is non-empty, only alerts with matching NodeID are returned.
-func (s *Store) ListAlerts(node string, limit int) ([]Alert, error) {
+func (s *Store) ListAlerts(ctx context.Context, node string, limit int) ([]Alert, error) {
 	var alerts []Alert
-	err := s.db.View(func(tx *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		opts.Reverse = true
-		it := tx.NewIterator(opts)
-		defer it.Close()
+	err := runWithContext(ctx, func() error {
+		return s.db.View(func(tx *badger.Txn) error {
+			opts := badger.DefaultIteratorOptions
+			opts.Reverse = true
+			it := tx.NewIterator(opts)
+			defer it.Close()
 
-		prefix := []byte("alert:")
-		it.Seek(append(prefix, 0xFF))
-		for ; it.ValidForPrefix(prefix) && len(alerts) < limit; it.Next() {
-			var a Alert
-			if err := it.Item().Value(func(v []byte) error {
-				return json.Unmarshal(v, &a)
-			}); err != nil {
-				return err
+			prefix := []byte("alert:")
+			it.Seek(append(prefix, 0xFF))
+			for ; it.ValidForPrefix(prefix) && len(alerts) < limit; it.Next() {
+				var a Alert
+				if err := it.Item().Value(func(v []byte) error {
+					return json.Unmarshal(v, &a)
+				}); err != nil {
+					return err
+				}
+				if node != "" && a.NodeID != node {
+					continue
+				}
+				alerts = append(alerts, a)
 			}
-			if node != "" && a.NodeID != node {
-				continue
-			}
-			alerts = append(alerts, a)
-		}
-		return nil
+			return nil
+		})
 	})
 	return alerts, err
 }

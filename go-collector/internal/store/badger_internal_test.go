@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -19,7 +20,7 @@ func TestSaveEvent_SetsTTL(t *testing.T) {
 	t.Cleanup(func() { st.Close() }) //nolint:errcheck
 
 	e := Event{EventID: "e1", NodeID: "n1", Timestamp: time.Now(), Type: "exec", Payload: json.RawMessage(`{}`)}
-	if err := st.SaveEvent(e); err != nil {
+	if err := st.SaveEvent(context.Background(), e); err != nil {
 		t.Fatalf("SaveEvent: %v", err)
 	}
 
@@ -74,6 +75,47 @@ func TestClose_StopsValueLogGCGoroutine(t *testing.T) {
 	default:
 		t.Error("gcDone not closed after Close returned")
 	}
+}
+
+// TestRunWithContext_ReturnsOnContextCancelNotFnCompletion covers #155: a
+// caller blocked on a store operation (db.Update/View) must not be stuck
+// waiting on it past the caller's own context — e.g. BadgerDB value-log GC
+// or a disk stall should no longer be able to wedge the StreamEvents
+// goroutine (and, during shutdown, GracefulStop) indefinitely.
+func TestRunWithContext_ReturnsOnContextCancelNotFnCompletion(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	fnDone := make(chan struct{})
+	unblockFn := make(chan struct{})
+	err := make(chan error, 1)
+
+	go func() {
+		err <- runWithContext(ctx, func() error {
+			<-unblockFn // never closed during this test — simulates a stalled db call
+			close(fnDone)
+			return nil
+		})
+	}()
+
+	// Give the goroutine a moment to start fn, then cancel before it finishes.
+	time.Sleep(10 * time.Millisecond)
+	cancel()
+
+	select {
+	case gotErr := <-err:
+		if gotErr != context.Canceled {
+			t.Fatalf("expected context.Canceled, got %v", gotErr)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("runWithContext did not return promptly after ctx was cancelled")
+	}
+
+	select {
+	case <-fnDone:
+		t.Fatal("fn must not have completed yet — this test only proves the caller isn't blocked on it")
+	default:
+	}
+	close(unblockFn) // let the background goroutine exit cleanly
 }
 
 // TestRunValueLogGC_ReclaimsSpace verifies RunValueLogGC is actually wired up

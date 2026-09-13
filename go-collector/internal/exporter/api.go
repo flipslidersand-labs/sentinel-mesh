@@ -100,7 +100,7 @@ func Router(st *store.Store, reg *registry.Registry, detector *anomaly.Detector,
 			if !ok {
 				return
 			}
-			events, err := st.ListEvents(c.Query("node"), limit)
+			events, err := st.ListEvents(c.Request.Context(), c.Query("node"), limit)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
@@ -162,7 +162,7 @@ func Router(st *store.Store, reg *registry.Registry, detector *anomaly.Detector,
 			if !ok {
 				return
 			}
-			alerts, err := st.ListAlerts(c.Query("node"), limit)
+			alerts, err := st.ListAlerts(c.Request.Context(), c.Query("node"), limit)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
