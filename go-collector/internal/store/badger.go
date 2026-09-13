@@ -13,6 +13,15 @@ import (
 // expires them. Without a TTL the store grows without limit (#77).
 const DefaultRetention = 7 * 24 * time.Hour
 
+// vlogGCInterval is how often the background goroutine invokes
+// db.RunValueLogGC. TTL-expired entries are only excluded from reads until
+// value log GC actually reclaims the disk space they occupy (#149).
+const vlogGCInterval = 5 * time.Minute
+
+// vlogGCDiscardRatio is the ratio passed to RunValueLogGC: a file is
+// rewritten if this fraction of it is estimated to be discardable.
+const vlogGCDiscardRatio = 0.5
+
 // Event is the normalized form stored in BadgerDB.
 type Event struct {
 	EventID   string          `json:"event_id"`
@@ -33,6 +42,9 @@ type Store struct {
 	// TTL expires old events; loadCounters corrects this on next restart.
 	countersMu sync.Mutex
 	counters   map[string]int
+
+	gcStop chan struct{}
+	gcDone chan struct{}
 }
 
 func New(dir string) (*Store, error) {
@@ -45,12 +57,44 @@ func New(dir string) (*Store, error) {
 		db:        db,
 		retention: DefaultRetention,
 		counters:  map[string]int{"exec": 0, "tcp": 0, "file": 0},
+		gcStop:    make(chan struct{}),
+		gcDone:    make(chan struct{}),
 	}
 	if err := s.loadCounters(); err != nil {
 		db.Close() //nolint:errcheck
 		return nil, err
 	}
+	go s.runValueLogGC()
 	return s, nil
+}
+
+// runValueLogGC periodically reclaims value log disk space for entries whose
+// TTL has expired. Without this, RunValueLogGC is never called and expired
+// entries are merely excluded from reads while their data stays on disk
+// forever (#149). It stops when Close() closes gcStop.
+func (s *Store) runValueLogGC() {
+	defer close(s.gcDone)
+	ticker := time.NewTicker(vlogGCInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.gcStop:
+			return
+		case <-ticker.C:
+			for {
+				err := s.db.RunValueLogGC(vlogGCDiscardRatio)
+				if err != nil {
+					// badger.ErrNoRewrite / badger.ErrRejected are expected:
+					// either nothing left worth rewriting right now, or GC
+					// is already running/DB is closing. Anything else we
+					// treat the same way — just stop this round; the next
+					// tick tries again.
+					break
+				}
+			}
+		}
+	}
 }
 
 // loadCounters scans existing events once, at startup, to seed the in-memory
@@ -193,5 +237,7 @@ func (s *Store) ListAlerts(node string, limit int) ([]Alert, error) {
 }
 
 func (s *Store) Close() error {
+	close(s.gcStop)
+	<-s.gcDone
 	return s.db.Close()
 }
