@@ -264,6 +264,26 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 			return err
 		}
 
+		// Apply the rate limit before validation, not after: validation
+		// failures must consume the same per-stream token budget as valid
+		// events, otherwise a stream of trivially-invalid messages bypasses
+		// the limiter entirely and reintroduces the unbounded per-agent
+		// resource consumption #75 closed (#170) — just via the validation
+		// path (protobuf deserialize + field checks + Ack) instead of the
+		// storage path.
+		if !limiter.allow() {
+			throttled++
+			if throttled == 1 || throttled%1000 == 0 {
+				s.log.Warn("StreamEvents rate limit exceeded, dropping event",
+					zap.String("node_id", event.NodeId),
+					zap.Uint64("throttled_total", throttled))
+			}
+			if err := stream.Send(&pb.EventAck{Ok: false}); err != nil {
+				return err
+			}
+			continue
+		}
+
 		// Reject invalid node_id/event_id/payload strings before they ever
 		// reach the registry or the store — an unauthenticated/compromised
 		// agent must not be able to persist or heartbeat under a
@@ -278,19 +298,6 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 		}
 
 		s.reg.Heartbeat(event.NodeId)
-
-		if !limiter.allow() {
-			throttled++
-			if throttled == 1 || throttled%1000 == 0 {
-				s.log.Warn("StreamEvents rate limit exceeded, dropping event",
-					zap.String("node_id", event.NodeId),
-					zap.Uint64("throttled_total", throttled))
-			}
-			if err := stream.Send(&pb.EventAck{Ok: false}); err != nil {
-				return err
-			}
-			continue
-		}
 
 		storedEvent := store.Event{
 			EventID:   event.EventId,
