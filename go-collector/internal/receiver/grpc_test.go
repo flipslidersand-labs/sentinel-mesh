@@ -224,6 +224,64 @@ func TestStreamEvents_RejectsInvalidEventWithoutPersisting(t *testing.T) {
 	}
 }
 
+// TestStreamEvents_InvalidEventsConsumeRateLimit covers #170: invalid events
+// must consume the same per-stream rate-limit budget as valid ones, so a
+// flood of trivially-invalid messages can't bypass the limiter entirely (the
+// bug: validation ran before limiter.allow(), so rejected events never
+// touched the token bucket). Exhaust the burst with invalid events, then
+// confirm a subsequent *valid* event on the same stream is throttled rather
+// than accepted — which only happens if the invalid events already spent
+// the bucket.
+func TestStreamEvents_InvalidEventsConsumeRateLimit(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "badger")
+	st, err := store.New(dir)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	reg := registry.New()
+	s := &server{st: st, reg: reg, log: zap.NewNop()}
+
+	// Send well beyond the burst size, not exactly the burst size: the
+	// limiter refills a little (at streamEventsRateLimit/sec) over the
+	// wall-clock time this loop takes to run, so sending exactly `burst`
+	// events can leave just enough replenished budget for the trailing
+	// valid event to slip through and make the test flaky.
+	const floodMargin = 2000
+	events := make([]*pb.KernelEvent, 0, int(streamEventsRateBurst)+floodMargin+1)
+	for i := 0; i < int(streamEventsRateBurst)+floodMargin; i++ {
+		events = append(events, &pb.KernelEvent{
+			NodeId: "node-1\x00evil", EventId: "evt-invalid", Type: pb.EventType_EXEC,
+			Timestamp: time.Now().UnixNano(),
+		})
+	}
+	events = append(events, &pb.KernelEvent{
+		NodeId: "node-1", EventId: "evt-valid", Type: pb.EventType_EXEC,
+		Timestamp: time.Now().UnixNano(),
+	})
+	stream := &fakeStream{events: events}
+
+	if err := s.StreamEvents(stream); err != nil {
+		t.Fatalf("StreamEvents: %v", err)
+	}
+
+	if len(stream.acks) != len(events) {
+		t.Fatalf("expected %d acks, got %d", len(events), len(stream.acks))
+	}
+	last := stream.acks[len(stream.acks)-1]
+	if last.Ok {
+		t.Fatal("expected the trailing valid event to be throttled (Ok=false) because the preceding invalid flood already spent the rate-limit budget")
+	}
+	got, err := st.ListEvents(context.Background(), "node-1", 10)
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatal("throttled valid event must not be persisted to the store")
+	}
+}
+
 func TestServerRegister_RejectsInvalidInput(t *testing.T) {
 	s := &server{reg: registry.New(), log: zap.NewNop()}
 	resp, err := s.Register(context.Background(), &pb.RegisterRequest{NodeId: "node-1\x00", Hostname: "h", Ip: "", Version: "v1", Region: ""})
