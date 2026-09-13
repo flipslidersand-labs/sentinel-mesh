@@ -85,11 +85,12 @@ type server struct {
 	log           *zap.Logger
 }
 
-// maxRegisterFieldLength bounds node_id/hostname/ip/version/region on
-// Register so an unauthenticated client (gRPC often runs without a Bearer
-// token configured) can't push oversized or control-character strings that
-// get persisted to BadgerDB and rendered verbatim on the /api/nodes
-// dashboard (#106).
+// maxRegisterFieldLength bounds free-form string fields accepted from
+// agents over gRPC (which often runs without a Bearer token configured), so
+// an unauthenticated or compromised agent can't push oversized or
+// control-character strings that get persisted to BadgerDB and rendered
+// verbatim on the dashboard (#106, #154). It is shared by Register and
+// StreamEvents validation.
 const maxRegisterFieldLength = 256
 
 // isPrintableASCII reports whether s contains only printable ASCII
@@ -103,16 +104,14 @@ func isPrintableASCII(s string) bool {
 	return true
 }
 
-// validateRegisterRequest enforces a length cap and an ASCII-printable
-// charset on node_id/hostname/version/region, and validates ip (when set)
-// as a real IP address (#106).
-func validateRegisterRequest(req *pb.RegisterRequest) error {
-	fields := []struct{ name, value string }{
-		{"node_id", req.NodeId},
-		{"hostname", req.Hostname},
-		{"version", req.Version},
-		{"region", req.Region},
-	}
+// namedField pairs a field name (used in error messages) with its value, so
+// validateFields can report which field failed.
+type namedField struct{ name, value string }
+
+// validateFields enforces a length cap and an ASCII-printable charset on
+// each field in order, returning the first violation found. It is the
+// common validation core for both Register and StreamEvents (#106, #154).
+func validateFields(fields []namedField) error {
 	for _, f := range fields {
 		if len(f.value) > maxRegisterFieldLength {
 			return fmt.Errorf("%s exceeds max length of %d bytes", f.name, maxRegisterFieldLength)
@@ -121,15 +120,83 @@ func validateRegisterRequest(req *pb.RegisterRequest) error {
 			return fmt.Errorf("%s must contain only printable ASCII characters", f.name)
 		}
 	}
-	if req.Ip != "" {
-		if len(req.Ip) > maxRegisterFieldLength {
-			return fmt.Errorf("ip exceeds max length of %d bytes", maxRegisterFieldLength)
-		}
-		if net.ParseIP(req.Ip) == nil {
-			return fmt.Errorf("ip is not a valid IP address")
-		}
+	return nil
+}
+
+// validateIP enforces a length cap and requires value (when non-empty) to
+// parse as a real IP address.
+func validateIP(name, value string) error {
+	if value == "" {
+		return nil
+	}
+	if len(value) > maxRegisterFieldLength {
+		return fmt.Errorf("%s exceeds max length of %d bytes", name, maxRegisterFieldLength)
+	}
+	if net.ParseIP(value) == nil {
+		return fmt.Errorf("%s is not a valid IP address", name)
 	}
 	return nil
+}
+
+// validateRegisterRequest enforces a length cap and an ASCII-printable
+// charset on node_id/hostname/version/region, and validates ip (when set)
+// as a real IP address (#106).
+func validateRegisterRequest(req *pb.RegisterRequest) error {
+	if err := validateFields([]namedField{
+		{"node_id", req.NodeId},
+		{"hostname", req.Hostname},
+		{"version", req.Version},
+		{"region", req.Region},
+	}); err != nil {
+		return err
+	}
+	return validateIP("ip", req.Ip)
+}
+
+// validateKernelEvent applies the same length-cap/ASCII-printable
+// validation Register uses to StreamEvents' NodeId/EventId and the
+// free-form string fields of the event's payload (Exec/Tcp/File), so an
+// unauthenticated or compromised agent can't smuggle control characters,
+// NULs, or oversized strings into BadgerDB and the /api/events and
+// /api/alerts dashboards (#154).
+func validateKernelEvent(e *pb.KernelEvent) error {
+	fields := []namedField{
+		{"node_id", e.NodeId},
+		{"event_id", e.EventId},
+	}
+	switch e.Type {
+	case pb.EventType_EXEC:
+		if ex := e.GetExec(); ex != nil {
+			fields = append(fields,
+				namedField{"comm", ex.Comm},
+				namedField{"cmdline", ex.Cmdline},
+				namedField{"cwd", ex.Cwd},
+			)
+		}
+	case pb.EventType_TCP:
+		if t := e.GetTcp(); t != nil {
+			fields = append(fields,
+				namedField{"comm", t.Comm},
+				namedField{"direction", t.Direction},
+			)
+			if err := validateFields(fields); err != nil {
+				return err
+			}
+			if err := validateIP("src_ip", t.SrcIp); err != nil {
+				return err
+			}
+			return validateIP("dst_ip", t.DstIp)
+		}
+	case pb.EventType_FILE:
+		if f := e.GetFile(); f != nil {
+			fields = append(fields,
+				namedField{"comm", f.Comm},
+				namedField{"path", f.Path},
+				namedField{"op", f.Op},
+			)
+		}
+	}
+	return validateFields(fields)
 }
 
 // Register handles agent registration (unary RPC).
@@ -168,6 +235,19 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 		}
 		if err != nil {
 			return err
+		}
+
+		// Reject invalid node_id/event_id/payload strings before they ever
+		// reach the registry or the store — an unauthenticated/compromised
+		// agent must not be able to persist or heartbeat under a
+		// control-character or oversized identifier (#154). The rejected
+		// value itself is never logged, since it is by definition unvalidated.
+		if err := validateKernelEvent(event); err != nil {
+			s.log.Warn("StreamEvents rejected invalid event", zap.Error(err))
+			if sendErr := stream.Send(&pb.EventAck{Ok: false}); sendErr != nil {
+				return sendErr
+			}
+			continue
 		}
 
 		s.reg.Heartbeat(event.NodeId)
