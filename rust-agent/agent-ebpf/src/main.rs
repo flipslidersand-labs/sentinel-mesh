@@ -99,8 +99,12 @@ fn try_openat(ctx: TracePointContext) -> Result<(), i64> {
     let uid = (bpf_get_current_uid_gid() & 0xffff_ffff) as u32;
     let raw_comm = bpf_get_current_comm()?;
 
-    // sys_enter_openat tracepoint args: dfd(8), filename ptr(16), flags(24), mode(32)
-    let filename_ptr: u64 = unsafe { ctx.read_at(16) }.map_err(|_| 1i64)?;
+    // sys_enter_openat tracepoint args: dfd@16, filename ptr@24, flags@32, mode@40
+    // (common fields occupy 0-7, __syscall_nr is padded to 8 bytes at 8-15).
+    // Offset 16 is dfd, not the filename pointer (#169) — reading it here
+    // fed dfd's bit pattern to bpf_probe_read_user_str_bytes as a bogus
+    // userspace address, so `path` was silently always empty.
+    let filename_ptr: u64 = unsafe { ctx.read_at(24) }.map_err(|_| 1i64)?;
 
     let mut entry = unsafe { EVENTS.reserve::<FileEvent>(0) }.ok_or(1i64)?;
     let ev = entry.as_mut_ptr();
