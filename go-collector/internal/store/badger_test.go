@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -37,12 +38,12 @@ func TestListEvents_NoFilter(t *testing.T) {
 		{"node-b", "tcp"},
 		{"node-a", "file"},
 	} {
-		if err := st.SaveEvent(makeEvent(args[0], args[1], i)); err != nil {
+		if err := st.SaveEvent(context.Background(), makeEvent(args[0], args[1], i)); err != nil {
 			t.Fatalf("SaveEvent: %v", err)
 		}
 	}
 
-	got, err := st.ListEvents("", 100)
+	got, err := st.ListEvents(context.Background(), "", 100)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
@@ -61,12 +62,12 @@ func TestListEvents_NodeFilter(t *testing.T) {
 		{"node-b", "tcp"},
 	}
 	for i, args := range saves {
-		if err := st.SaveEvent(makeEvent(args[0], args[1], i)); err != nil {
+		if err := st.SaveEvent(context.Background(), makeEvent(args[0], args[1], i)); err != nil {
 			t.Fatalf("SaveEvent: %v", err)
 		}
 	}
 
-	gotA, err := st.ListEvents("node-a", 100)
+	gotA, err := st.ListEvents(context.Background(), "node-a", 100)
 	if err != nil {
 		t.Fatalf("ListEvents node-a: %v", err)
 	}
@@ -79,7 +80,7 @@ func TestListEvents_NodeFilter(t *testing.T) {
 		}
 	}
 
-	gotB, err := st.ListEvents("node-b", 100)
+	gotB, err := st.ListEvents(context.Background(), "node-b", 100)
 	if err != nil {
 		t.Fatalf("ListEvents node-b: %v", err)
 	}
@@ -90,11 +91,11 @@ func TestListEvents_NodeFilter(t *testing.T) {
 
 func TestListEvents_NodeFilter_Unknown(t *testing.T) {
 	st := newTempStore(t)
-	if err := st.SaveEvent(makeEvent("node-a", "exec", 0)); err != nil {
+	if err := st.SaveEvent(context.Background(), makeEvent("node-a", "exec", 0)); err != nil {
 		t.Fatalf("SaveEvent: %v", err)
 	}
 
-	got, err := st.ListEvents("node-x", 100)
+	got, err := st.ListEvents(context.Background(), "node-x", 100)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
@@ -119,7 +120,7 @@ func TestSaveEvent_AgentTimestampCannotPinOrdering(t *testing.T) {
 		Type:      "exec",
 		Payload:   json.RawMessage(`{}`),
 	}
-	if err := st.SaveEvent(honest); err != nil {
+	if err := st.SaveEvent(context.Background(), honest); err != nil {
 		t.Fatalf("SaveEvent(honest): %v", err)
 	}
 
@@ -130,11 +131,11 @@ func TestSaveEvent_AgentTimestampCannotPinOrdering(t *testing.T) {
 		Type:      "exec",
 		Payload:   json.RawMessage(`{}`),
 	}
-	if err := st.SaveEvent(malicious); err != nil {
+	if err := st.SaveEvent(context.Background(), malicious); err != nil {
 		t.Fatalf("SaveEvent(malicious): %v", err)
 	}
 
-	got, err := st.ListEvents("", 100)
+	got, err := st.ListEvents(context.Background(), "", 100)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
@@ -156,12 +157,12 @@ func TestSaveEvent_AgentTimestampCannotPinOrdering(t *testing.T) {
 func TestListEvents_Limit_WithFilter(t *testing.T) {
 	st := newTempStore(t)
 	for i := 0; i < 5; i++ {
-		if err := st.SaveEvent(makeEvent("node-a", "exec", i)); err != nil {
+		if err := st.SaveEvent(context.Background(), makeEvent("node-a", "exec", i)); err != nil {
 			t.Fatalf("SaveEvent: %v", err)
 		}
 	}
 
-	got, err := st.ListEvents("node-a", 3)
+	got, err := st.ListEvents(context.Background(), "node-a", 3)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
@@ -175,7 +176,7 @@ func TestListEvents_Limit_WithFilter(t *testing.T) {
 func TestStats_MatchesSavedEvents(t *testing.T) {
 	st := newTempStore(t)
 	for i, typ := range []string{"exec", "exec", "tcp", "file", "file", "file"} {
-		if err := st.SaveEvent(makeEvent("node-a", typ, i)); err != nil {
+		if err := st.SaveEvent(context.Background(), makeEvent("node-a", typ, i)); err != nil {
 			t.Fatalf("SaveEvent: %v", err)
 		}
 	}
@@ -203,7 +204,7 @@ func TestStats_SurvivesRestart(t *testing.T) {
 		t.Fatalf("store.New: %v", err)
 	}
 	for i, typ := range []string{"exec", "tcp", "tcp"} {
-		if err := st1.SaveEvent(makeEvent("node-a", typ, i)); err != nil {
+		if err := st1.SaveEvent(context.Background(), makeEvent("node-a", typ, i)); err != nil {
 			t.Fatalf("SaveEvent: %v", err)
 		}
 	}
