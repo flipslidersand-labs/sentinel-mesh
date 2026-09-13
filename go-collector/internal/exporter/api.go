@@ -61,7 +61,8 @@ type regionSummary struct {
 // staticDir must be an absolute path or relative to the process CWD.
 // corsOrigins restricts cross-origin access; when empty, no cross-origin
 // requests are allowed (the UI is served same-origin, so this is the safe
-// default). apiToken, when non-empty, gates /api/* behind bearer auth.
+// default). apiToken, when non-empty, gates /api/* and /metrics behind
+// bearer auth (/healthz stays open for unauthenticated liveness probes).
 func Router(st *store.Store, reg *registry.Registry, detector *anomaly.Detector, staticDir string, corsOrigins []string, apiToken string) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
@@ -91,7 +92,11 @@ func Router(st *store.Store, reg *registry.Registry, detector *anomaly.Detector,
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
-	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
+	// Gated behind the same bearer auth as /api/* (#177): the exposed
+	// Prometheus counters carry node/rule/severity labels (internal/otel),
+	// the same category of data /api/stats protects, so leaving /metrics
+	// outside the auth group let it bypass that protection entirely.
+	r.GET("/metrics", httpauth.BearerAuth(apiToken), gin.WrapH(promhttp.Handler()))
 
 	api := r.Group("/api", httpauth.BearerAuth(apiToken))
 	{

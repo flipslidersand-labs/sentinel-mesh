@@ -36,6 +36,45 @@ func doGET(t *testing.T, st *store.Store, reg *registry.Registry, path string, o
 	return w.Code
 }
 
+// TestMetrics_RequiresBearerTokenWhenConfigured covers #177: /metrics must
+// be gated by the same bearer auth as /api/* when SENTINEL_API_TOKEN is
+// set — the exposed Prometheus counters carry node/rule/severity labels,
+// the same category of data /api/stats protects.
+func TestMetrics_RequiresBearerTokenWhenConfigured(t *testing.T) {
+	st, reg := testRouter(t)
+	r := Router(st, reg, nil, t.TempDir(), nil, "s3cr3t")
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("GET /metrics without token = %d, want 401", w.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req.Header.Set("Authorization", "Bearer s3cr3t")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("GET /metrics with correct token = %d, want 200", w.Code)
+	}
+}
+
+// TestHealthz_StaysOpenWhenTokenConfigured verifies the liveness probe
+// endpoint is unaffected by bearer auth even when a token is configured —
+// only /api/* and /metrics are gated.
+func TestHealthz_StaysOpenWhenTokenConfigured(t *testing.T) {
+	st, reg := testRouter(t)
+	r := Router(st, reg, nil, t.TempDir(), nil, "s3cr3t")
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("GET /healthz = %d, want 200 (must stay open for probes)", w.Code)
+	}
+}
+
 func TestNodes_RegionFilter(t *testing.T) {
 	st, reg := testRouter(t)
 	_ = reg.Register("a1", "h", "ip", "v1", "us-east")
