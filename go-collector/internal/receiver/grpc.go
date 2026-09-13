@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -298,7 +299,11 @@ func (s *server) eventPayload(e *pb.KernelEvent) json.RawMessage {
 // set, the server requires TLS; otherwise it serves in plaintext (caller is
 // expected to warn). If token is non-empty, every RPC must present a matching
 // `authorization: Bearer <token>` metadata entry.
-func Serve(addr string, st *store.Store, reg *registry.Registry, engine *alerting.Engine,
+//
+// Serve blocks until either the server stops on its own (e.g. a listener
+// error) or ctx is done, in which case it gracefully stops the server
+// (waiting for in-flight RPCs to finish) before returning.
+func Serve(ctx context.Context, addr string, st *store.Store, reg *registry.Registry, engine *alerting.Engine,
 	detector *anomaly.Detector, notifier *notify.Dispatcher, metrics *otel.MetricsProvider,
 	tracer trace.Tracer, defaultRegion string, log *zap.Logger,
 	tlsCertFile, tlsKeyFile, token string) error {
@@ -333,8 +338,28 @@ func Serve(addr string, st *store.Store, reg *registry.Registry, engine *alertin
 	s := &server{st: st, reg: reg, engine: engine, detector: detector, notifier: notifier, metrics: metrics, tracer: tracer, defaultRegion: defaultRegion, log: log}
 	pb.RegisterSentinelCollectorServer(srv, s)
 
+	// Stop the server when ctx is cancelled (e.g. SIGINT/SIGTERM) so the
+	// process can shut down gracefully instead of blocking forever on
+	// srv.Serve (#117). GracefulStop waits for pending RPCs to finish;
+	// srv.Serve returns grpc.ErrServerStopped once it does, which is not
+	// a real failure and is swallowed below.
+	stopped := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			log.Info("gRPC server shutting down")
+			srv.GracefulStop()
+		case <-stopped:
+		}
+	}()
+
 	log.Info("gRPC server listening", zap.String("addr", addr))
-	return srv.Serve(lis)
+	err = srv.Serve(lis)
+	close(stopped)
+	if err != nil && errors.Is(err, grpc.ErrServerStopped) {
+		return nil
+	}
+	return err
 }
 
 // checkAuth validates the `authorization: Bearer <token>` metadata entry in

@@ -33,7 +33,39 @@ const (
 	httpReadTimeout       = 15 * time.Second
 	httpWriteTimeout      = 30 * time.Second
 	httpIdleTimeout       = 60 * time.Second
+
+	// httpShutdownTimeout bounds how long a graceful REST API shutdown
+	// waits for in-flight requests to finish before forcibly closing
+	// remaining connections (#117).
+	httpShutdownTimeout = 10 * time.Second
 )
+
+// runHTTPServerUntilDone starts srv in the background and blocks until ctx
+// is cancelled, at which point it gracefully shuts srv down (bounded by
+// httpShutdownTimeout) so callers don't hang on SIGINT/SIGTERM (#117). Any
+// ListenAndServe error other than the expected http.ErrServerClosed is
+// logged as an error.
+func runHTTPServerUntilDone(ctx context.Context, srv *http.Server, name string, logger *zap.Logger) {
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.ListenAndServe()
+	}()
+
+	select {
+	case err := <-errCh:
+		if err != nil && err != http.ErrServerClosed {
+			logger.Error(name+" stopped", zap.Error(err))
+		}
+	case <-ctx.Done():
+		logger.Info(name + " shutting down")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), httpShutdownTimeout)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			logger.Error(name+" graceful shutdown failed", zap.Error(err))
+		}
+		<-errCh
+	}
+}
 
 // newHTTPServer builds an http.Server with explicit read/write/idle
 // timeouts for the given address and handler.
@@ -191,17 +223,16 @@ TLS for the gRPC server is optional but, when enabled, both
 				logger.Warn("REST API is UNAUTHENTICATED — set " + httpauth.EnvAPIToken + " to require a bearer token")
 			}
 
-			// REST API in background
+			// REST API in background, tied to ctx for graceful shutdown (#117).
 			router := exporter.Router(st, reg, detector, staticDir, corsOrigins, apiToken)
 			httpServer := newHTTPServer(httpAddr, router)
 			go func() {
 				logger.Info("REST API listening", zap.String("addr", httpAddr))
-				if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-					logger.Error("REST API stopped", zap.Error(err))
-				}
+				runHTTPServerUntilDone(ctx, httpServer, "REST API", logger)
 			}()
 
-			// gRPC server (blocking)
+			// gRPC server (blocking, but ctx-aware so SIGINT/SIGTERM gracefully
+			// stops it instead of hanging forever — #117).
 			grpcTLSCert, _ := cmd.Flags().GetString("grpc-tls-cert")
 			grpcTLSKey, _ := cmd.Flags().GetString("grpc-tls-key")
 			if grpcTLSCert == "" || grpcTLSKey == "" {
@@ -210,7 +241,7 @@ TLS for the gRPC server is optional but, when enabled, both
 			if apiToken == "" {
 				logger.Warn("gRPC server is UNAUTHENTICATED — set " + httpauth.EnvAPIToken + " to require a bearer token")
 			}
-			return receiver.Serve(grpcAddr, st, reg, engine, detector, notifier, metricsProvider, tracesProvider.Tracer(), defaultRegion, logger,
+			return receiver.Serve(ctx, grpcAddr, st, reg, engine, detector, notifier, metricsProvider, tracesProvider.Tracer(), defaultRegion, logger,
 				grpcTLSCert, grpcTLSKey, apiToken)
 		},
 	}
@@ -262,5 +293,7 @@ func runAggregate(cmd *cobra.Command, logger *zap.Logger) error {
 		zap.Int("upstreams", len(upstreams)), zap.Duration("poll_interval", interval))
 
 	httpServer := newHTTPServer(httpAddr, aggregator.Router(agg, staticDir, corsOrigins, apiToken))
-	return httpServer.ListenAndServe()
+	logger.Info("aggregator REST API listening", zap.String("addr", httpAddr))
+	runHTTPServerUntilDone(ctx, httpServer, "aggregator REST API", logger)
+	return nil
 }

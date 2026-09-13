@@ -207,6 +207,32 @@ func TestStreamEvents_AckReflectsSaveFailure(t *testing.T) {
 	}
 }
 
+// TestServe_StopsGracefullyWhenContextCancelled covers #117: Serve must
+// stop (and return) when its ctx is cancelled, instead of blocking on
+// srv.Serve forever — otherwise SIGINT/SIGTERM never lets the process exit.
+func TestServe_StopsGracefullyWhenContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- Serve(ctx, "127.0.0.1:0", nil, registry.New(), nil, nil, nil, nil, nil, "default", zap.NewNop(), "", "", "")
+	}()
+
+	// Give the server a moment to start listening before cancelling —
+	// cancelling immediately would race the listener setup.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("expected graceful shutdown to return nil, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return within 5s of context cancellation")
+	}
+}
+
 func assertUnauthenticated(t *testing.T, err error) {
 	t.Helper()
 	if err == nil {
