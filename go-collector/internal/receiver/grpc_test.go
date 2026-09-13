@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
 	"github.com/flipslidersand/sentinel-mesh/internal/anomaly"
@@ -279,6 +280,58 @@ func TestStreamEvents_InvalidEventsConsumeRateLimit(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatal("throttled valid event must not be persisted to the store")
+	}
+}
+
+// TestServerRegister_DerivesIPFromPeerNotRequest covers #175: Register must
+// take the agent's IP from the gRPC peer connection, not the client-supplied
+// req.Ip field — the real agent always sends that field empty, and even a
+// non-empty value would be spoofable by anything not verified via mTLS.
+func TestServerRegister_DerivesIPFromPeerNotRequest(t *testing.T) {
+	reg := registry.New()
+	s := &server{reg: reg, log: zap.NewNop()}
+
+	ctx := peer.NewContext(context.Background(), &peer.Peer{
+		Addr: &net.TCPAddr{IP: net.ParseIP("203.0.113.5"), Port: 54321},
+	})
+	resp, err := s.Register(ctx, &pb.RegisterRequest{
+		NodeId: "node-1", Hostname: "h", Ip: "10.0.0.99", Version: "v1",
+	})
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if !resp.Ok {
+		t.Fatalf("expected Ok=true, got %+v", resp)
+	}
+
+	nodes := reg.List()
+	if len(nodes) != 1 {
+		t.Fatalf("expected 1 registered node, got %d", len(nodes))
+	}
+	if nodes[0].IP != "203.0.113.5" {
+		t.Errorf("IP = %q, want the peer address 203.0.113.5 (req.Ip=%q must be ignored)", nodes[0].IP, "10.0.0.99")
+	}
+}
+
+// TestServerRegister_NoPeerInContextYieldsEmptyIP covers the fallback path:
+// when the context carries no peer info (e.g. in a unit test calling
+// Register directly), IP is empty rather than panicking or falling back to
+// the untrusted req.Ip.
+func TestServerRegister_NoPeerInContextYieldsEmptyIP(t *testing.T) {
+	reg := registry.New()
+	s := &server{reg: reg, log: zap.NewNop()}
+
+	resp, err := s.Register(context.Background(), &pb.RegisterRequest{
+		NodeId: "node-1", Hostname: "h", Ip: "10.0.0.99", Version: "v1",
+	})
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if !resp.Ok {
+		t.Fatalf("expected Ok=true, got %+v", resp)
+	}
+	if got := reg.List()[0].IP; got != "" {
+		t.Errorf("IP = %q, want empty (no peer in context, req.Ip must not be used as a fallback)", got)
 	}
 }
 
