@@ -17,7 +17,9 @@
 #
 # TLS/auth options:
 #   --tls              connect via https:// (collector must have --grpc-tls-cert/--grpc-tls-key set)
-#   --grpc-token TOKEN bearer token sent with every RPC (default: $SENTINEL_API_TOKEN)
+#   --grpc-token TOKEN bearer token sent with every RPC (default: $SENTINEL_API_TOKEN).
+#                       Deployed as a root-only (mode 600) env file, not a
+#                       CLI arg, so it isn't visible via the unit file or `ps`.
 #   --grpc-ca-cert PATH CA cert (PEM) to verify a self-signed collector TLS cert
 #
 # Requirements:
@@ -42,6 +44,11 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BINARY="$REPO_ROOT/dist/sentinel-agent"
 REMOTE_BIN="/usr/local/bin/sentinel-agent"
 SYSTEMD_DIR="/etc/systemd/system"
+# Root-only (mode 600) file holding SENTINEL_API_TOKEN, loaded via the unit's
+# EnvironmentFile= instead of embedding the token in ExecStart (#171) — a
+# CLI arg would be world-readable via the unit file itself and visible in
+# `ps`/`/proc/<pid>/cmdline` for the running process.
+REMOTE_TOKEN_ENV="/etc/sentinel-agent-token.env"
 
 # ── Arg parsing ───────────────────────────────────────────────────────────────
 HOSTS=()
@@ -106,9 +113,6 @@ make_unit() {
   if [[ -n "${REGION:-}" ]]; then
     extra_flags="${extra_flags} --region ${REGION}"
   fi
-  if [[ -n "${GRPC_TOKEN:-}" ]]; then
-    extra_flags="${extra_flags} --grpc-token ${GRPC_TOKEN}"
-  fi
   if [[ -n "${GRPC_CA_CERT:-}" ]]; then
     extra_flags="${extra_flags} --grpc-ca-cert ${GRPC_CA_CERT}"
   fi
@@ -126,6 +130,10 @@ Wants=network.target
 
 [Service]
 Type=simple
+# Optional (leading '-'): absent when no --grpc-token/\$SENTINEL_API_TOKEN was
+# given, so mock/unauthenticated deployments don't fail unit start. The
+# agent's clap arg reads \$SENTINEL_API_TOKEN itself (#171).
+EnvironmentFile=-${REMOTE_TOKEN_ENV}
 ExecStart=${REMOTE_BIN} --collector ${scheme}://${COLLECTOR_ADDR} --node-id ${node_id}${extra_flags}
 Restart=on-failure
 RestartSec=5s
@@ -163,6 +171,18 @@ set -euo pipefail
 sudo install -m 755 /tmp/sentinel-agent "$1"
 rm -f /tmp/sentinel-agent
 REMOTE
+
+  echo "[${host}] installing gRPC token env file ..."
+  if [[ -n "${GRPC_TOKEN:-}" ]]; then
+    # `sudo install -m 600` creates the file with root-only permissions
+    # atomically, rather than a default-umask create + separate chmod
+    # (#171). The token travels over stdin, never as a command-line arg, so
+    # it doesn't appear in this host's process listing either.
+    printf 'SENTINEL_API_TOKEN=%s\n' "$GRPC_TOKEN" |
+      ssh -- "$host" "sudo install -m 600 /dev/stdin ${REMOTE_TOKEN_ENV}"
+  else
+    ssh -- "$host" "sudo rm -f ${REMOTE_TOKEN_ENV}"
+  fi
 
   echo "[${host}] installing systemd unit ..."
   make_unit "$node_id" | ssh -- "$host" "sudo tee ${SYSTEMD_DIR}/sentinel-agent.service > /dev/null"
