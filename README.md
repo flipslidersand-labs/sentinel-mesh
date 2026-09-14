@@ -22,7 +22,7 @@ A **Rust Agent** collects kernel events via eBPF and streams them over gRPC to a
 ## Requirements
 
 - Rust 1.82+ (`cargo`)
-- Go 1.22+ (`go`)
+- Go 1.25+ (`go`)
 - `CAP_BPF` capability for real eBPF mode; mock mode works without it
 
 ## Build
@@ -287,7 +287,7 @@ Deploy Collector on one node and Agents on multiple nodes in a local network.
 
 - SSH access to target nodes (passwordless key auth)
 - Rust toolchain with `x86_64-unknown-linux-gnu` target (`rustup target add x86_64-unknown-linux-gnu`)
-- Go 1.22+
+- Go 1.25+
 
 ### Quick Start (3 nodes)
 
@@ -298,10 +298,10 @@ bash scripts/build.sh
 # 2. Deploy Collector to MINIPC (systemd service)
 bash scripts/install-collector.sh minipc
 
-# 3. Deploy Agents to each node (mock mode, 3 events/sec)
-bash scripts/deploy-agent.sh minipc  minipc  192.0.2.10:50051
-bash scripts/deploy-agent.sh yuki    yuki    192.0.2.10:50051
-bash scripts/deploy-agent.sh ds1     ds1     192.0.2.10:50051
+# 3. Deploy Agents to each node (mock mode)
+bash scripts/deploy-agent.sh --mock --collector 192.0.2.10:50051 minipc
+bash scripts/deploy-agent.sh --mock --collector 192.0.2.10:50051 yuki-private
+bash scripts/deploy-agent.sh --mock --collector 192.0.2.10:50051 ds1
 
 # Or run everything at once (skips unreachable nodes automatically)
 bash scripts/demo-multi-node.sh
@@ -346,30 +346,35 @@ bash scripts/build.sh
 Deploys the collector binary to a remote host and installs as a systemd service.
 
 ```bash
-bash scripts/install-collector.sh <SSH_ALIAS> [collector_addr] [http_addr]
+bash scripts/install-collector.sh <SSH_HOST> [OPTIONS]
+# Options: --region, --grpc-addr, --http-addr, --data-dir, --grpc-tls-cert, --grpc-tls-key
 # Example:
-bash scripts/install-collector.sh minipc :50051 :8081
+bash scripts/install-collector.sh minipc --grpc-addr :50051 --http-addr :8081
 ```
 
 #### `scripts/deploy-agent.sh`
 
-Deploys an agent to a remote host, registers with the collector, and starts as a systemd service. Runs in mock mode by default.
+Deploys an agent to one or more remote hosts, registers with the collector, and starts as a
+systemd service. Real eBPF mode is the default; pass `--mock` for a quick smoke test or hosts
+without `CAP_BPF`. See `bash scripts/deploy-agent.sh --help` for the full option list.
 
 ```bash
-bash scripts/deploy-agent.sh <SSH_ALIAS> <NODE_ID> <COLLECTOR_ADDR> [--ebpf]
-# Example:
-bash scripts/deploy-agent.sh yuki    yuki    192.0.2.10:50051
-bash scripts/deploy-agent.sh ds1     ds1     192.0.2.10:50051 --ebpf
+bash scripts/deploy-agent.sh [OPTIONS] HOST...
+# Example (real eBPF mode, node_id defaults to each host's own `hostname -s`):
+bash scripts/deploy-agent.sh --collector 192.0.2.10:50051 yuki-private ds1
+# Example (mock mode, explicit node_id — requires a single host):
+bash scripts/deploy-agent.sh --mock --node-id web-01 --collector 192.0.2.10:50051 minipc
 ```
 
 ### Switching to real eBPF mode
 
+Real eBPF mode is `deploy-agent.sh`'s default (`--mock` opts *into* mock mode, not out of it).
+The systemd unit it installs runs as root, so no separate `CAP_BPF` grant is needed. To switch an
+already-deployed `--mock` host to real eBPF, redeploy without `--mock` — this overwrites the
+`sentinel-agent.service` unit and restarts it:
+
 ```bash
-# On each agent host, replace --mock with CAP_BPF capability:
-sudo setcap cap_bpf+eip /usr/local/bin/sentinel-agent
-# Edit the systemd service to remove --mock and --mock-rate flags
-sudo systemctl edit sentinel-agent-<NODE_ID>
-sudo systemctl restart sentinel-agent-<NODE_ID>
+bash scripts/deploy-agent.sh --collector 192.0.2.10:50051 <host>
 ```
 
 ## Status
