@@ -83,6 +83,7 @@ func newHTTPServer(addr string, handler http.Handler) *http.Server {
 func main() {
 	root := rootCmd()
 	root.AddCommand(serveCmd())
+	root.AddCommand(tokenCmd())
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
