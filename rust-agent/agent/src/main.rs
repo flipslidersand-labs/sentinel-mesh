@@ -32,7 +32,10 @@ struct Args {
     #[arg(long, env = "SENTINEL_REGION")]
     region: Option<String>,
 
-    /// Bearer token sent with every RPC (falls back to $SENTINEL_API_TOKEN, none = unauthenticated)
+    /// Bearer token sent with every RPC (falls back to $SENTINEL_API_TOKEN, none = unauthenticated).
+    /// Must be a per-agent token issued via `sentinel-collector token issue <node_id>` matching
+    /// this agent's --node-id, not the collector's REST API token — the gRPC channel's per-agent
+    /// token store doesn't recognize that one and will reject it (#183/#190, per ADR-005).
     #[arg(long, env = "SENTINEL_API_TOKEN")]
     grpc_token: Option<String>,
 
