@@ -3,6 +3,7 @@ package exporter
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -206,5 +207,81 @@ func TestAlerts_InvalidLimit(t *testing.T) {
 
 	if code := doGET(t, st, reg, "/api/alerts?limit=abc", nil); code != http.StatusBadRequest {
 		t.Errorf("limit=abc: code=%d, want %d", code, http.StatusBadRequest)
+	}
+}
+
+// TestEvents_EmptyDataset_ReturnsEmptyArrayNotNull and its alerts sibling
+// verify the JSON body for an empty result is "[]" rather than "null" — a
+// client that does events.map(...) on the parsed body would throw on null.
+func TestEvents_EmptyDataset_ReturnsEmptyArrayNotNull(t *testing.T) {
+	st, reg := testRouter(t)
+	r := Router(st, reg, nil, t.TempDir(), nil, "")
+	req := httptest.NewRequest(http.MethodGet, "/api/events", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if got := w.Body.String(); got != "[]" {
+		t.Errorf("body = %q, want %q", got, "[]")
+	}
+}
+
+func TestAlerts_EmptyDataset_ReturnsEmptyArrayNotNull(t *testing.T) {
+	st, reg := testRouter(t)
+	r := Router(st, reg, nil, t.TempDir(), nil, "")
+	req := httptest.NewRequest(http.MethodGet, "/api/alerts", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if got := w.Body.String(); got != "[]" {
+		t.Errorf("body = %q, want %q", got, "[]")
+	}
+}
+
+// TestAlerts_RegionFilter mirrors TestEvents_RegionFilter for the /api/alerts
+// post-fetch region filter branch, which was previously untested.
+func TestAlerts_RegionFilter(t *testing.T) {
+	st, reg := testRouter(t)
+	_ = reg.Register("node-a", "h", "ip", "v1", "us-east")
+	_ = reg.Register("node-b", "h", "ip", "v1", "eu-west")
+
+	for i, nodeID := range []string{"node-a", "node-b"} {
+		alert := store.Alert{
+			AlertID:   fmt.Sprintf("alert-%d", i),
+			RuleID:    "rule-1",
+			NodeID:    nodeID,
+			EventID:   fmt.Sprintf("event-%d", i),
+			Timestamp: time.Now(),
+			Message:   "test",
+			Severity:  "high",
+		}
+		if err := st.SaveAlert(context.Background(), alert); err != nil {
+			t.Fatalf("SaveAlert: %v", err)
+		}
+	}
+
+	var got []store.Alert
+	if code := doGET(t, st, reg, "/api/alerts?region=us-east", &got); code != http.StatusOK {
+		t.Fatalf("code=%d, want %d", code, http.StatusOK)
+	}
+	if len(got) != 1 || got[0].NodeID != "node-a" {
+		t.Errorf("region=us-east: got %+v, want 1 alert from node-a", got)
+	}
+}
+
+// TestRouter_CORS_AllowsConfiguredOrigin exercises Router's corsOrigins != ""
+// branch (previously untested — all other tests pass nil), which installs
+// the cors middleware so a configured cross-origin request gets an
+// Access-Control-Allow-Origin response header.
+func TestRouter_CORS_AllowsConfiguredOrigin(t *testing.T) {
+	st, reg := testRouter(t)
+	r := Router(st, reg, nil, t.TempDir(), []string{"https://ui.example.com"}, "")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
+	req.Header.Set("Origin", "https://ui.example.com")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "https://ui.example.com" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want %q", got, "https://ui.example.com")
 	}
 }
