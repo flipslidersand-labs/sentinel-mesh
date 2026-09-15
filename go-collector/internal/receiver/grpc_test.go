@@ -26,43 +26,89 @@ import (
 	"github.com/flipslidersand/sentinel-mesh/internal/store"
 )
 
-func TestCheckAuth_NoTokenConfigured(t *testing.T) {
-	// Auth disabled: any context (even with no metadata) passes.
-	if err := checkAuth(context.Background(), ""); err != nil {
+// newAuthTestStore returns a temp *store.Store for checkAuth tests.
+func newAuthTestStore(t *testing.T) *store.Store {
+	t.Helper()
+	st, err := store.New(filepath.Join(t.TempDir(), "badger"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	return st
+}
+
+func TestCheckAuth_AuthDisabled(t *testing.T) {
+	// Auth disabled: any context (even with no metadata) passes, and no
+	// node_id is resolved.
+	nodeID, err := checkAuth(context.Background(), newAuthTestStore(t), false)
+	if err != nil {
 		t.Fatalf("expected no-op pass, got %v", err)
+	}
+	if nodeID != "" {
+		t.Errorf("nodeID = %q, want empty when auth disabled", nodeID)
 	}
 }
 
 func TestCheckAuth_MissingMetadata(t *testing.T) {
-	err := checkAuth(context.Background(), "secret")
+	_, err := checkAuth(context.Background(), newAuthTestStore(t), true)
 	assertUnauthenticated(t, err)
 }
 
 func TestCheckAuth_MissingAuthorizationHeader(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.MD{})
-	err := checkAuth(ctx, "secret")
+	_, err := checkAuth(ctx, newAuthTestStore(t), true)
 	assertUnauthenticated(t, err)
 }
 
 func TestCheckAuth_WrongScheme(t *testing.T) {
 	md := metadata.Pairs("authorization", "Basic secret")
 	ctx := metadata.NewIncomingContext(context.Background(), md)
-	err := checkAuth(ctx, "secret")
+	_, err := checkAuth(ctx, newAuthTestStore(t), true)
 	assertUnauthenticated(t, err)
 }
 
-func TestCheckAuth_WrongToken(t *testing.T) {
+func TestCheckAuth_UnknownToken(t *testing.T) {
 	md := metadata.Pairs("authorization", "Bearer wrong")
 	ctx := metadata.NewIncomingContext(context.Background(), md)
-	err := checkAuth(ctx, "secret")
+	st := newAuthTestStore(t)
+	if _, err := st.IssueToken(context.Background(), "node-a"); err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	_, err := checkAuth(ctx, st, true)
 	assertUnauthenticated(t, err)
 }
 
-func TestCheckAuth_ValidToken(t *testing.T) {
-	md := metadata.Pairs("authorization", "Bearer secret")
+func TestCheckAuth_RevokedToken(t *testing.T) {
+	st := newAuthTestStore(t)
+	token, err := st.IssueToken(context.Background(), "node-a")
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	if err := st.RevokeToken(context.Background(), "node-a"); err != nil {
+		t.Fatalf("RevokeToken: %v", err)
+	}
+
+	md := metadata.Pairs("authorization", "Bearer "+token)
 	ctx := metadata.NewIncomingContext(context.Background(), md)
-	if err := checkAuth(ctx, "secret"); err != nil {
+	_, err = checkAuth(ctx, st, true)
+	assertUnauthenticated(t, err)
+}
+
+func TestCheckAuth_ValidToken_ResolvesNodeID(t *testing.T) {
+	st := newAuthTestStore(t)
+	token, err := st.IssueToken(context.Background(), "node-a")
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+
+	md := metadata.Pairs("authorization", "Bearer "+token)
+	ctx := metadata.NewIncomingContext(context.Background(), md)
+	nodeID, err := checkAuth(ctx, st, true)
+	if err != nil {
 		t.Fatalf("expected valid token to pass, got %v", err)
+	}
+	if nodeID != "node-a" {
+		t.Errorf("nodeID = %q, want node-a", nodeID)
 	}
 }
 
@@ -222,6 +268,108 @@ func TestStreamEvents_RejectsInvalidEventWithoutPersisting(t *testing.T) {
 	}
 	if len(events) != 0 {
 		t.Fatal("invalid event must not be persisted to the store")
+	}
+}
+
+// TestStreamEvents_RejectsNodeIDNotMatchingAuthenticatedIdentity covers
+// #183/#190 (per ADR-005): once a stream has authenticated as one node_id
+// (via the interceptor setting authedNodeIDKey), an event claiming a
+// different node_id must be rejected — an agent authenticated as node-a
+// must not be able to write events as node-b.
+func TestStreamEvents_RejectsNodeIDNotMatchingAuthenticatedIdentity(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "badger")
+	st, err := store.New(dir)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	reg := registry.New()
+	s := &server{st: st, reg: reg, log: zap.NewNop()}
+
+	authedCtx := context.WithValue(context.Background(), authedNodeIDKey{}, "node-a")
+	stream := &fakeStream{
+		ctx: authedCtx,
+		events: []*pb.KernelEvent{
+			{NodeId: "node-b", EventId: "evt-1", Type: pb.EventType_EXEC,
+				Payload: &pb.KernelEvent_Exec{Exec: &pb.ExecEvent{Comm: "sh", Cmdline: "sh -c ls", Cwd: "/tmp"}}},
+		},
+	}
+
+	if err := s.StreamEvents(stream); err != nil {
+		t.Fatalf("StreamEvents: %v", err)
+	}
+
+	if len(stream.acks) != 1 || stream.acks[0].Ok {
+		t.Fatalf("expected a single Ack.Ok=false, got %+v", stream.acks)
+	}
+	if len(reg.List()) != 0 {
+		t.Fatal("mismatched node_id must not reach the registry (no heartbeat)")
+	}
+	events, err := st.ListEvents(context.Background(), "node-b", 10)
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatal("mismatched node_id event must not be persisted")
+	}
+}
+
+// TestStreamEvents_AllowsMatchingAuthenticatedIdentity is the positive
+// counterpart: an event whose node_id matches the authenticated identity
+// must be accepted as usual.
+func TestStreamEvents_AllowsMatchingAuthenticatedIdentity(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "badger")
+	st, err := store.New(dir)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	reg := registry.New()
+	s := &server{st: st, reg: reg, log: zap.NewNop()}
+
+	authedCtx := context.WithValue(context.Background(), authedNodeIDKey{}, "node-a")
+	stream := &fakeStream{
+		ctx: authedCtx,
+		events: []*pb.KernelEvent{
+			{NodeId: "node-a", EventId: "evt-1", Type: pb.EventType_EXEC,
+				Payload: &pb.KernelEvent_Exec{Exec: &pb.ExecEvent{Comm: "sh", Cmdline: "sh -c ls", Cwd: "/tmp"}}},
+		},
+	}
+
+	if err := s.StreamEvents(stream); err != nil {
+		t.Fatalf("StreamEvents: %v", err)
+	}
+
+	if len(stream.acks) != 1 || !stream.acks[0].Ok {
+		t.Fatalf("expected a single Ack.Ok=true, got %+v", stream.acks)
+	}
+	events, err := st.ListEvents(context.Background(), "node-a", 10)
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatal("matching node_id event should be persisted")
+	}
+}
+
+// TestRegister_RejectsNodeIDNotMatchingAuthenticatedIdentity mirrors the
+// StreamEvents case above for the unary Register RPC.
+func TestRegister_RejectsNodeIDNotMatchingAuthenticatedIdentity(t *testing.T) {
+	reg := registry.New()
+	s := &server{reg: reg, log: zap.NewNop()}
+
+	authedCtx := context.WithValue(context.Background(), authedNodeIDKey{}, "node-a")
+	resp, err := s.Register(authedCtx, &pb.RegisterRequest{NodeId: "node-b", Hostname: "h", Version: "v1", Region: "us-east"})
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if resp.Ok {
+		t.Fatal("expected Register to reject a node_id not matching the authenticated identity")
+	}
+	if len(reg.List()) != 0 {
+		t.Fatal("mismatched node_id must not reach the registry")
 	}
 }
 
@@ -479,7 +627,7 @@ func TestServe_StopsGracefullyWhenContextCancelled(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Serve(ctx, "127.0.0.1:0", nil, registry.New(), nil, nil, nil, nil, nil, "default", zap.NewNop(), "", "", "")
+		errCh <- Serve(ctx, "127.0.0.1:0", nil, registry.New(), nil, nil, nil, nil, nil, "default", zap.NewNop(), "", "", false)
 	}()
 
 	// Give the server a moment to start listening before cancelling —
