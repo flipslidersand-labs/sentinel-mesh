@@ -13,13 +13,22 @@
 #   ./scripts/deploy-agent.sh --mock --collector 192.0.2.10:50051 minipc
 #   ./scripts/deploy-agent.sh --node-id web-01 --collector 192.0.2.10:50051 minipc
 #   ./scripts/deploy-agent.sh --region tokyo --collector 192.0.2.10:50051 yuki-private
-#   ./scripts/deploy-agent.sh --tls --grpc-token "$SENTINEL_API_TOKEN" --collector 192.0.2.10:50051 minipc
+#
+#   # Per-agent gRPC auth (#183, per ADR-005: docs/adr/ADR-005-agent-auth-strategy.md):
+#   TOKEN=$(sentinel-collector token issue web-01 --data-dir /path/to/collector/data)
+#   ./scripts/deploy-agent.sh --tls --node-id web-01 --grpc-token "$TOKEN" --collector 192.0.2.10:50051 minipc
 #
 # TLS/auth options:
 #   --tls              connect via https:// (collector must have --grpc-tls-cert/--grpc-tls-key set)
-#   --grpc-token TOKEN bearer token sent with every RPC (default: $SENTINEL_API_TOKEN).
-#                       Deployed as a root-only (mode 600) env file, not a
-#                       CLI arg, so it isn't visible via the unit file or `ps`.
+#   --grpc-token TOKEN bearer token sent with every RPC. Must be a per-agent
+#                       token issued via `sentinel-collector token issue
+#                       <node_id>` (#189/#191) for the SAME node_id this host
+#                       will register as — NOT the REST API's shared
+#                       $SENTINEL_API_TOKEN, which the gRPC channel's
+#                       per-agent token store doesn't recognize (#190) and
+#                       will reject. Deployed as a root-only (mode 600) env
+#                       file, not a CLI arg, so it isn't visible via the unit
+#                       file or `ps`.
 #   --grpc-ca-cert PATH CA cert (PEM) to verify a self-signed collector TLS cert
 #
 # Requirements:
@@ -37,7 +46,11 @@ MOCK_RATE=3
 NODE_ID_OVERRIDE=""
 REGION="${SENTINEL_REGION:-}"
 TLS=false
-GRPC_TOKEN="${SENTINEL_API_TOKEN:-}"
+# No $SENTINEL_API_TOKEN fallback here (unlike REST) — that shared secret is
+# not a valid per-agent gRPC token post-#190, and silently sending it would
+# just get every RPC rejected as "invalid token" instead of failing loudly
+# at deploy time. --grpc-token must be passed explicitly, per-host.
+GRPC_TOKEN=""
 GRPC_CA_CERT=""
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -79,6 +92,28 @@ fi
 
 if [[ -n "$NODE_ID_OVERRIDE" && ${#HOSTS[@]} -gt 1 ]]; then
   echo "Error: --node-id can only be used with a single host" >&2
+  exit 1
+fi
+
+# A per-agent token (#183/#189, per ADR-005) is bound to exactly one
+# node_id in the collector's token store — reusing it across multiple hosts
+# would make them share the same identity, defeating the reason per-agent
+# tokens exist (revoking one host would revoke them all). Run this script
+# once per host, each with its own `token issue <node_id>` output, instead.
+if [[ -n "$GRPC_TOKEN" && ${#HOSTS[@]} -gt 1 ]]; then
+  echo "Error: --grpc-token can only be used with a single host (each agent needs its own per-agent token — run this script once per host)" >&2
+  exit 1
+fi
+
+# A per-agent token is issued for one specific node_id up front (`token
+# issue <node_id>`). Without --node-id, this script derives node_id from
+# the remote host's own `hostname -s` *after* connecting — if that guessed
+# value doesn't exactly match what the token was issued for, the collector
+# rejects every RPC as an identity mismatch (#190) and the failure only
+# surfaces after deploying. Require --node-id explicitly instead of leaving
+# that to chance.
+if [[ -n "$GRPC_TOKEN" && -z "$NODE_ID_OVERRIDE" ]]; then
+  echo "Error: --grpc-token requires --node-id (the token is bound to the exact node_id it was issued for)" >&2
   exit 1
 fi
 
@@ -178,6 +213,13 @@ REMOTE
     # atomically, rather than a default-umask create + separate chmod
     # (#171). The token travels over stdin, never as a command-line arg, so
     # it doesn't appear in this host's process listing either.
+    #
+    # The env var name is SENTINEL_API_TOKEN because that's the agent
+    # binary's clap arg name (rust-agent/agent/src/main.rs) — it predates
+    # per-agent tokens and is unrelated to the REST API's own
+    # SENTINEL_API_TOKEN despite the name collision. $GRPC_TOKEN here is
+    # always a per-agent token from `token issue`, never the shared one
+    # (enforced by the --grpc-token/--node-id checks above).
     printf 'SENTINEL_API_TOKEN=%s\n' "$GRPC_TOKEN" |
       ssh -- "$host" "sudo install -m 600 /dev/stdin ${REMOTE_TOKEN_ENV}"
   else
