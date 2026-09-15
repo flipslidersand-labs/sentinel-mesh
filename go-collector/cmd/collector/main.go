@@ -242,11 +242,18 @@ TLS for the gRPC server is optional but, when enabled, both
 			if grpcTLSCert == "" || grpcTLSKey == "" {
 				logger.Warn("gRPC server is running WITHOUT TLS — set --grpc-tls-cert/--grpc-tls-key to require it")
 			}
-			if apiToken == "" {
-				logger.Warn("gRPC server is UNAUTHENTICATED — set " + httpauth.EnvAPIToken + " to require a bearer token")
+			// gRPC auth is gated by the same "did the operator configure any
+			// credentials at all" signal as REST (apiToken != ""), but each
+			// agent now authenticates with its own per-agent token (#189)
+			// issued via `token issue <node_id>` (#191), not apiToken itself
+			// — apiToken only continues to gate the REST API directly
+			// (#183, per ADR-005).
+			grpcAuthEnabled := apiToken != ""
+			if !grpcAuthEnabled {
+				logger.Warn("gRPC server is UNAUTHENTICATED — set " + httpauth.EnvAPIToken + " to require per-agent tokens")
 			}
 			return receiver.Serve(ctx, grpcAddr, st, reg, engine, detector, notifier, metricsProvider, tracesProvider.Tracer(), defaultRegion, logger,
-				grpcTLSCert, grpcTLSKey, apiToken)
+				grpcTLSCert, grpcTLSKey, grpcAuthEnabled)
 		},
 	}
 	cmd.Flags().String("grpc-addr", ":50051", "gRPC listen address")

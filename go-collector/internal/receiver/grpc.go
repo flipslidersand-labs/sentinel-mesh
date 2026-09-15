@@ -2,7 +2,6 @@ package receiver
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -238,6 +237,12 @@ func (s *server) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.Reg
 	if err := validateRegisterRequest(req); err != nil {
 		return &pb.RegisterResponse{Ok: false, Message: err.Error()}, nil
 	}
+	// Same reasoning as StreamEvents below: when auth is enabled, an agent
+	// must not be able to register under a node_id other than the one its
+	// token resolved to (#183/#190, per ADR-005).
+	if authedNodeID := authedNodeIDFromContext(ctx); authedNodeID != "" && req.NodeId != authedNodeID {
+		return &pb.RegisterResponse{Ok: false, Message: "node_id does not match authenticated identity"}, nil
+	}
 	region := req.Region
 	if region == "" {
 		region = s.defaultRegion // fall back to the collector's default region
@@ -261,6 +266,11 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 	// only by this goroutine, needs no locking.
 	limiter := newTokenBucket(streamEventsRateLimit, streamEventsRateBurst)
 	var throttled uint64
+
+	// Resolved once per stream by the auth interceptor (#183/#190, per
+	// ADR-005) — "" when auth is disabled. Non-empty for the lifetime of
+	// this stream, so it's safe to read once here rather than per event.
+	authedNodeID := authedNodeIDFromContext(stream.Context())
 
 	for {
 		// Bail out promptly once the stream's context is done (e.g. the
@@ -309,6 +319,20 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 		// value itself is never logged, since it is by definition unvalidated.
 		if err := validateKernelEvent(event); err != nil {
 			s.log.Warn("StreamEvents rejected invalid event", zap.Error(err))
+			if sendErr := stream.Send(&pb.EventAck{Ok: false}); sendErr != nil {
+				return sendErr
+			}
+			continue
+		}
+
+		// When auth is enabled, trust the node_id the token store resolved
+		// at connection time, not the client-supplied field on each event —
+		// same reasoning as deriving agent IP from the gRPC peer instead of
+		// a client-supplied field (#178). An agent authenticated as one
+		// node_id must not be able to write/heartbeat as another.
+		if authedNodeID != "" && event.NodeId != authedNodeID {
+			s.log.Warn("StreamEvents event node_id does not match authenticated identity",
+				zap.String("authed_node_id", authedNodeID))
 			if sendErr := stream.Send(&pb.EventAck{Ok: false}); sendErr != nil {
 				return sendErr
 			}
@@ -464,8 +488,11 @@ func gracefulStopWithTimeout(srv *grpc.Server, gracePeriod time.Duration, log *z
 
 // Serve starts the gRPC server on addr. If tlsCertFile/tlsKeyFile are both
 // set, the server requires TLS; otherwise it serves in plaintext (caller is
-// expected to warn). If token is non-empty, every RPC must present a matching
-// `authorization: Bearer <token>` metadata entry.
+// expected to warn). If authEnabled, every RPC must present an
+// `authorization: Bearer <token>` metadata entry naming a token issued via
+// st.IssueToken (#189) — unlike the REST API's single shared
+// SENTINEL_API_TOKEN, each agent authenticates with its own per-agent
+// token (#183, per ADR-005).
 //
 // Serve blocks until either the server stops on its own (e.g. a listener
 // error) or ctx is done, in which case it gracefully stops the server
@@ -473,7 +500,7 @@ func gracefulStopWithTimeout(srv *grpc.Server, gracePeriod time.Duration, log *z
 func Serve(ctx context.Context, addr string, st *store.Store, reg *registry.Registry, engine *alerting.Engine,
 	detector *anomaly.Detector, notifier *notify.Dispatcher, metrics *otel.MetricsProvider,
 	tracer trace.Tracer, defaultRegion string, log *zap.Logger,
-	tlsCertFile, tlsKeyFile, token string) error {
+	tlsCertFile, tlsKeyFile string, authEnabled bool) error {
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", addr, err)
@@ -488,8 +515,8 @@ func Serve(ctx context.Context, addr string, st *store.Store, reg *registry.Regi
 		opts = append(opts, grpc.Creds(creds))
 	}
 	opts = append(opts,
-		grpc.ChainUnaryInterceptor(unaryAuthInterceptor(token)),
-		grpc.ChainStreamInterceptor(streamAuthInterceptor(token)),
+		grpc.ChainUnaryInterceptor(unaryAuthInterceptor(st, authEnabled)),
+		grpc.ChainStreamInterceptor(streamAuthInterceptor(st, authEnabled)),
 		// A single agent could otherwise open unbounded concurrent
 		// StreamEvents connections or send oversized messages, exhausting
 		// collector resources (#75).
@@ -537,41 +564,83 @@ func Serve(ctx context.Context, addr string, st *store.Store, reg *registry.Regi
 	return err
 }
 
+// authedNodeIDKey is the context key StreamEvents/Register read the
+// caller's authenticated node_id from (#183/#190, per ADR-005) — set by
+// checkAuth via the interceptors below, never by a handler itself.
+type authedNodeIDKey struct{}
+
+// authedNodeIDFromContext returns the node_id checkAuth resolved for this
+// RPC/stream, or "" if auth is disabled (authEnabled=false) or the identity
+// couldn't be determined for some other reason. Callers must not treat ""
+// as "authenticated as the empty node_id".
+func authedNodeIDFromContext(ctx context.Context) string {
+	nodeID, _ := ctx.Value(authedNodeIDKey{}).(string)
+	return nodeID
+}
+
 // checkAuth validates the `authorization: Bearer <token>` metadata entry in
-// ctx against the expected token. A no-op (always ok) if token is empty.
-func checkAuth(ctx context.Context, token string) error {
-	if token == "" {
-		return nil
+// ctx against st's per-agent token store (#189) and returns the resolved
+// node_id. A no-op (nodeID="", err=nil) if authEnabled is false — this is
+// the same "unauthenticated dev mode" escape hatch the old single shared
+// token had, just gated by a separate flag now that there's no longer one
+// token whose emptiness could signal it.
+func checkAuth(ctx context.Context, st *store.Store, authEnabled bool) (nodeID string, err error) {
+	if !authEnabled {
+		return "", nil
 	}
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
-		return status.Error(codes.Unauthenticated, "missing metadata")
+		return "", status.Error(codes.Unauthenticated, "missing metadata")
 	}
 	values := md.Get("authorization")
 	if len(values) == 0 {
-		return status.Error(codes.Unauthenticated, "missing authorization metadata")
+		return "", status.Error(codes.Unauthenticated, "missing authorization metadata")
 	}
 	got, ok := strings.CutPrefix(values[0], "Bearer ")
-	if !ok || subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
-		return status.Error(codes.Unauthenticated, "invalid token")
+	if !ok {
+		return "", status.Error(codes.Unauthenticated, "invalid token")
 	}
-	return nil
+	nodeID, ok, err = st.LookupNodeID(ctx, got)
+	if err != nil {
+		return "", status.Error(codes.Internal, "auth lookup failed")
+	}
+	if !ok {
+		return "", status.Error(codes.Unauthenticated, "invalid token")
+	}
+	return nodeID, nil
 }
 
-func unaryAuthInterceptor(token string) grpc.UnaryServerInterceptor {
+func unaryAuthInterceptor(st *store.Store, authEnabled bool) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		if err := checkAuth(ctx, token); err != nil {
+		nodeID, err := checkAuth(ctx, st, authEnabled)
+		if err != nil {
 			return nil, err
 		}
-		return handler(ctx, req)
+		return handler(context.WithValue(ctx, authedNodeIDKey{}, nodeID), req)
 	}
 }
 
-func streamAuthInterceptor(token string) grpc.StreamServerInterceptor {
+// authedServerStream wraps a grpc.ServerStream to override Context(), the
+// only way to thread the authenticated node_id (resolved once, at stream
+// setup) down to the per-message loop in StreamEvents — grpc.ServerStream
+// has no other per-stream value-passing mechanism.
+type authedServerStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (s *authedServerStream) Context() context.Context { return s.ctx }
+
+func streamAuthInterceptor(st *store.Store, authEnabled bool) grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		if err := checkAuth(ss.Context(), token); err != nil {
+		nodeID, err := checkAuth(ss.Context(), st, authEnabled)
+		if err != nil {
 			return err
 		}
-		return handler(srv, ss)
+		wrapped := &authedServerStream{
+			ServerStream: ss,
+			ctx:          context.WithValue(ss.Context(), authedNodeIDKey{}, nodeID),
+		}
+		return handler(srv, wrapped)
 	}
 }
