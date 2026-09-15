@@ -17,7 +17,9 @@ const DefaultRetention = 7 * 24 * time.Hour
 // vlogGCInterval is how often the background goroutine invokes
 // db.RunValueLogGC. TTL-expired entries are only excluded from reads until
 // value log GC actually reclaims the disk space they occupy (#149).
-const vlogGCInterval = 5 * time.Minute
+// A var, not a const, so tests can shrink it to exercise the ticker branch
+// of runValueLogGC without waiting 5 real minutes.
+var vlogGCInterval = 5 * time.Minute
 
 // vlogGCDiscardRatio is the ratio passed to RunValueLogGC: a file is
 // rewritten if this fraction of it is estimated to be discardable.
@@ -185,7 +187,9 @@ func (s *Store) SaveEvent(ctx context.Context, e Event) error {
 // the scan for matches stops after maxNodeFilterScan records even if fewer
 // than limit matches were found (#153).
 func (s *Store) ListEvents(ctx context.Context, node string, limit int) ([]Event, error) {
-	var events []Event
+	// Non-nil so callers that JSON-marshal the result (the /api/events
+	// handler) return "[]" rather than "null" when there are no matches.
+	events := make([]Event, 0)
 	err := runWithContext(ctx, func() error {
 		return s.db.View(func(tx *badger.Txn) error {
 			opts := badger.DefaultIteratorOptions
@@ -263,7 +267,9 @@ func (s *Store) SaveAlert(ctx context.Context, a Alert) error {
 // the scan for matches stops after maxNodeFilterScan records even if fewer
 // than limit matches were found (#153).
 func (s *Store) ListAlerts(ctx context.Context, node string, limit int) ([]Alert, error) {
-	var alerts []Alert
+	// Non-nil so callers that JSON-marshal the result (the /api/alerts
+	// handler) return "[]" rather than "null" when there are no matches.
+	alerts := make([]Alert, 0)
 	err := runWithContext(ctx, func() error {
 		return s.db.View(func(tx *badger.Txn) error {
 			opts := badger.DefaultIteratorOptions
