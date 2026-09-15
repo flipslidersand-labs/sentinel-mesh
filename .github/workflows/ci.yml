@@ -15,7 +15,13 @@ jobs:
       go-version: "1.25"
       working-directory: go-collector
       # 引き上げ追跡: flipslidersand-labs/sentinel-mesh#141 (段階的引き上げの運用ルールを規定)
-      coverage-threshold: 40   # 現状実測 43.0% に合わせた初期値。段階的に引き上げる（閾値変更時は本コメントの実測値も更新すること）
+      # 2026-09-14: CI実測 57.9% (go test -race -covermode=atomic ./... 、qa-workflows/go-test.yml
+      # と同一コマンド)に対する引き上げ値（実測値-5pt程度）。internal/pb(生成コード)・internal/otel
+      # がテストファイル無しでもcoverage.outに0%として算入されるため、これらを除外したローカル
+      # `go tool cover`集計(72.9%)より低く出る。閾値変更時は必ずCI実測値で検証すること
+      # （ローカル環境がcovdataツール欠如でpb/otelを暗黙に除外し得るため:
+      # errors/tooling/go-toolchain-missing-covdata-local-coverage-mismatch.md）。
+      coverage-threshold: 52
       # self-hosted (linux-general) の actions-runner:latest イメージに build-essential が
       # 無く cgo(-race) が失敗するため一時的に GitHub-hosted に固定。
       # infra 側でランナーイメージ修正後に外す（トラッキング: flipslidersand-labs/sentinel-mesh#112）。
