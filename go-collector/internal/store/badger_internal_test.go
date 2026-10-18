@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"strconv"
 	"testing"
 	"time"
@@ -186,5 +187,49 @@ func TestRunValueLogGC_ReclaimsSpace(t *testing.T) {
 	err = st.db.RunValueLogGC(vlogGCDiscardRatio)
 	if err != nil && err != badger.ErrNoRewrite && err != badger.ErrRejected {
 		t.Errorf("RunValueLogGC returned unexpected error: %v", err)
+	}
+}
+
+// TestRunValueLogGC_TickerFiresAndKeepsRunning exercises the background
+// goroutine's ticker branch directly (as opposed to
+// TestRunValueLogGC_ReclaimsSpace, which only calls db.RunValueLogGC
+// synchronously without going through the goroutine's select loop at all).
+// vlogGCInterval is shrunk so the ticker fires during the test instead of
+// waiting the real 5-minute interval.
+func TestRunValueLogGC_TickerFiresAndKeepsRunning(t *testing.T) {
+	orig := vlogGCInterval
+	vlogGCInterval = 10 * time.Millisecond
+	t.Cleanup(func() { vlogGCInterval = orig })
+
+	st, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Give the background goroutine several ticks to run through its
+	// select loop's ticker.C case (and the inner for/break on
+	// ErrNoRewrite/ErrRejected) before we close it.
+	time.Sleep(50 * time.Millisecond)
+
+	if err := st.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+// TestNew_ReturnsErrorForInvalidDir verifies New surfaces badger.Open's
+// error (via the first error-return branch) rather than panicking or
+// silently returning a broken Store, when given a path that cannot be
+// opened as a database directory.
+func TestNew_ReturnsErrorForInvalidDir(t *testing.T) {
+	// A regular file cannot be opened as a Badger directory.
+	dir := t.TempDir()
+	filePath := dir + "/not-a-dir"
+	if err := os.WriteFile(filePath, []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := New(filePath)
+	if err == nil {
+		t.Error("New(regular file path) = nil error, want non-nil")
 	}
 }

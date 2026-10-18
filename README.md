@@ -22,7 +22,7 @@ A **Rust Agent** collects kernel events via eBPF and streams them over gRPC to a
 ## Requirements
 
 - Rust 1.82+ (`cargo`)
-- Go 1.22+ (`go`)
+- Go 1.25+ (`go`)
 - `CAP_BPF` capability for real eBPF mode; mock mode works without it
 
 ## Build
@@ -109,6 +109,23 @@ Options:
   --poll-interval <DUR>      How often to poll upstreams [default: 10s]
 ```
 
+```text
+sentinel-collector token <issue|revoke|list> [OPTIONS]
+
+Manages per-agent gRPC authentication tokens (see gRPC TLS & Authentication
+below). Requires the collector to be stopped first — BadgerDB takes an
+exclusive lock on --data-dir, so `token` subcommands can't run alongside
+`serve` against the same directory.
+
+Options:
+  --data-dir <PATH>  BadgerDB data directory (must match the collector's --data-dir)
+                     [default: /tmp/sentinel-data]
+
+token issue <node_id>    Issue a new token, printed once (never stored in plaintext)
+token revoke <node_id>   Revoke a token; prompts for confirmation unless --yes
+token list               List every node_id with issued time and active/revoked status
+```
+
 ## Multi-Region Aggregation
 
 For geographically distributed deployments, run one collector per region (each with its own agents), then run a **cross-region aggregator** on top. The aggregator periodically polls each region collector's REST API and serves a unified, read-only view. Region collectors need no changes.
@@ -174,20 +191,46 @@ fully trust, enable both:
 - **TLS**: pass `--grpc-tls-cert`/`--grpc-tls-key` (PEM) on the collector; agents connect with
   `--collector https://<host>:50051`, adding `--grpc-ca-cert <path>` if the cert isn't from a
   publicly trusted CA (e.g. self-signed).
-- **Authentication**: set `SENTINEL_API_TOKEN` on the collector (the same variable used by the
-  REST API above) and pass the matching `--grpc-token`/`$SENTINEL_API_TOKEN` on each agent. Every
-  RPC (`Register`, `StreamEvents`) must carry a matching `authorization: Bearer <token>` metadata
-  entry, compared in constant time; without it the collector rejects the call with
-  `Unauthenticated`.
+- **Authentication**: each agent authenticates with its own **per-agent token**, not the REST
+  API's shared `SENTINEL_API_TOKEN` (see [ADR-005](docs/adr/ADR-005-agent-auth-strategy.md) for
+  why mTLS and a shared secret were both rejected in favor of this). Every RPC (`Register`,
+  `StreamEvents`) must carry a matching `authorization: Bearer <token>` metadata entry, resolved
+  against the per-agent token store; without it — or with a revoked/unknown token — the collector
+  rejects the call with `Unauthenticated`. An authenticated agent also can't register or send
+  events under a `node_id` other than the one its token was issued for.
+
+gRPC auth is enabled by the same signal as REST: setting `SENTINEL_API_TOKEN` on the collector
+(it only gates *whether* auth is required, not the credential itself — REST still checks it
+directly, gRPC now checks per-agent tokens instead).
 
 ```bash
-# Collector
-export SENTINEL_API_TOKEN="$(openssl rand -hex 32)"
+# Collector: enable auth, then issue a token for each agent before it can connect.
+# token issue/revoke/list require the collector to be stopped first — BadgerDB
+# takes an exclusive lock on --data-dir, so they can't run alongside `serve`.
+export SENTINEL_API_TOKEN="$(openssl rand -hex 32)"  # gates the REST API and enables gRPC auth
+sentinel-collector token issue web-01 --data-dir /var/lib/sentinel-mesh
+# prints the token once — copy it now, it's never shown again
 sentinel-collector serve --grpc-tls-cert cert.pem --grpc-tls-key key.pem
 
-# Agent
-./sentinel-agent --collector https://collector.internal:50051 \
-  --grpc-ca-cert ca.pem --grpc-token "$SENTINEL_API_TOKEN"
+# Agent: pass the per-agent token from `token issue`, matching --node-id.
+./sentinel-agent --collector https://collector.internal:50051 --node-id web-01 \
+  --grpc-ca-cert ca.pem --grpc-token "<token from 'token issue web-01'>"
+```
+
+Or deploy via `scripts/deploy-agent.sh`, which wires this up for you (see its `--help` for the
+full per-agent-token workflow):
+
+```bash
+TOKEN=$(sentinel-collector token issue web-01 --data-dir /var/lib/sentinel-mesh)
+./scripts/deploy-agent.sh --tls --node-id web-01 --grpc-token "$TOKEN" \
+  --collector collector.internal:50051 web-01-host
+```
+
+To revoke a compromised or decommissioned agent's access:
+
+```bash
+sentinel-collector token revoke web-01 --data-dir /var/lib/sentinel-mesh
+sentinel-collector token list --data-dir /var/lib/sentinel-mesh   # confirm status
 ```
 
 ## Heartbeat Tracking
@@ -287,7 +330,7 @@ Deploy Collector on one node and Agents on multiple nodes in a local network.
 
 - SSH access to target nodes (passwordless key auth)
 - Rust toolchain with `x86_64-unknown-linux-gnu` target (`rustup target add x86_64-unknown-linux-gnu`)
-- Go 1.22+
+- Go 1.25+
 
 ### Quick Start (3 nodes)
 
@@ -298,10 +341,10 @@ bash scripts/build.sh
 # 2. Deploy Collector to MINIPC (systemd service)
 bash scripts/install-collector.sh minipc
 
-# 3. Deploy Agents to each node (mock mode, 3 events/sec)
-bash scripts/deploy-agent.sh minipc  minipc  192.0.2.10:50051
-bash scripts/deploy-agent.sh yuki    yuki    192.0.2.10:50051
-bash scripts/deploy-agent.sh ds1     ds1     192.0.2.10:50051
+# 3. Deploy Agents to each node (mock mode)
+bash scripts/deploy-agent.sh --mock --collector 192.0.2.10:50051 minipc
+bash scripts/deploy-agent.sh --mock --collector 192.0.2.10:50051 yuki-private
+bash scripts/deploy-agent.sh --mock --collector 192.0.2.10:50051 ds1
 
 # Or run everything at once (skips unreachable nodes automatically)
 bash scripts/demo-multi-node.sh
@@ -346,30 +389,35 @@ bash scripts/build.sh
 Deploys the collector binary to a remote host and installs as a systemd service.
 
 ```bash
-bash scripts/install-collector.sh <SSH_ALIAS> [collector_addr] [http_addr]
+bash scripts/install-collector.sh <SSH_HOST> [OPTIONS]
+# Options: --region, --grpc-addr, --http-addr, --data-dir, --grpc-tls-cert, --grpc-tls-key
 # Example:
-bash scripts/install-collector.sh minipc :50051 :8081
+bash scripts/install-collector.sh minipc --grpc-addr :50051 --http-addr :8081
 ```
 
 #### `scripts/deploy-agent.sh`
 
-Deploys an agent to a remote host, registers with the collector, and starts as a systemd service. Runs in mock mode by default.
+Deploys an agent to one or more remote hosts, registers with the collector, and starts as a
+systemd service. Real eBPF mode is the default; pass `--mock` for a quick smoke test or hosts
+without `CAP_BPF`. See `bash scripts/deploy-agent.sh --help` for the full option list.
 
 ```bash
-bash scripts/deploy-agent.sh <SSH_ALIAS> <NODE_ID> <COLLECTOR_ADDR> [--ebpf]
-# Example:
-bash scripts/deploy-agent.sh yuki    yuki    192.0.2.10:50051
-bash scripts/deploy-agent.sh ds1     ds1     192.0.2.10:50051 --ebpf
+bash scripts/deploy-agent.sh [OPTIONS] HOST...
+# Example (real eBPF mode, node_id defaults to each host's own `hostname -s`):
+bash scripts/deploy-agent.sh --collector 192.0.2.10:50051 yuki-private ds1
+# Example (mock mode, explicit node_id — requires a single host):
+bash scripts/deploy-agent.sh --mock --node-id web-01 --collector 192.0.2.10:50051 minipc
 ```
 
 ### Switching to real eBPF mode
 
+Real eBPF mode is `deploy-agent.sh`'s default (`--mock` opts *into* mock mode, not out of it).
+The systemd unit it installs runs as root, so no separate `CAP_BPF` grant is needed. To switch an
+already-deployed `--mock` host to real eBPF, redeploy without `--mock` — this overwrites the
+`sentinel-agent.service` unit and restarts it:
+
 ```bash
-# On each agent host, replace --mock with CAP_BPF capability:
-sudo setcap cap_bpf+eip /usr/local/bin/sentinel-agent
-# Edit the systemd service to remove --mock and --mock-rate flags
-sudo systemctl edit sentinel-agent-<NODE_ID>
-sudo systemctl restart sentinel-agent-<NODE_ID>
+bash scripts/deploy-agent.sh --collector 192.0.2.10:50051 <host>
 ```
 
 ## Status

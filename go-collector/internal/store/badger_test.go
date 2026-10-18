@@ -226,3 +226,113 @@ func TestStats_SurvivesRestart(t *testing.T) {
 		t.Errorf("counts after reopen = %+v, want exec=1 tcp=2", counts)
 	}
 }
+
+// makeAlert creates an alert with a unique AlertID using the given index.
+func makeAlert(nodeID string, idx int) store.Alert {
+	return store.Alert{
+		AlertID:   fmt.Sprintf("%s-alert-%d", nodeID, idx),
+		RuleID:    "rule-1",
+		NodeID:    nodeID,
+		EventID:   fmt.Sprintf("%s-event-%d", nodeID, idx),
+		Timestamp: time.Now(),
+		Message:   "test alert",
+		Severity:  "high",
+	}
+}
+
+func TestListAlerts_NoFilter(t *testing.T) {
+	st := newTempStore(t)
+	for i, node := range []string{"node-a", "node-b", "node-a"} {
+		if err := st.SaveAlert(context.Background(), makeAlert(node, i)); err != nil {
+			t.Fatalf("SaveAlert: %v", err)
+		}
+	}
+
+	got, err := st.ListAlerts(context.Background(), "", 100)
+	if err != nil {
+		t.Fatalf("ListAlerts: %v", err)
+	}
+	if len(got) != 3 {
+		t.Errorf("want 3 alerts, got %d", len(got))
+	}
+}
+
+func TestListAlerts_NodeFilter(t *testing.T) {
+	st := newTempStore(t)
+	for i, node := range []string{"node-a", "node-a", "node-b"} {
+		if err := st.SaveAlert(context.Background(), makeAlert(node, i)); err != nil {
+			t.Fatalf("SaveAlert: %v", err)
+		}
+	}
+
+	gotA, err := st.ListAlerts(context.Background(), "node-a", 100)
+	if err != nil {
+		t.Fatalf("ListAlerts node-a: %v", err)
+	}
+	if len(gotA) != 2 {
+		t.Errorf("node-a: want 2 alerts, got %d", len(gotA))
+	}
+	for _, a := range gotA {
+		if a.NodeID != "node-a" {
+			t.Errorf("unexpected NodeID %q in node-a result", a.NodeID)
+		}
+	}
+}
+
+func TestListAlerts_NodeFilter_Unknown(t *testing.T) {
+	st := newTempStore(t)
+	if err := st.SaveAlert(context.Background(), makeAlert("node-a", 0)); err != nil {
+		t.Fatalf("SaveAlert: %v", err)
+	}
+
+	got, err := st.ListAlerts(context.Background(), "node-x", 100)
+	if err != nil {
+		t.Fatalf("ListAlerts: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("want 0 alerts for unknown node, got %d", len(got))
+	}
+}
+
+func TestListAlerts_Limit(t *testing.T) {
+	st := newTempStore(t)
+	for i := 0; i < 5; i++ {
+		if err := st.SaveAlert(context.Background(), makeAlert("node-a", i)); err != nil {
+			t.Fatalf("SaveAlert: %v", err)
+		}
+	}
+
+	got, err := st.ListAlerts(context.Background(), "node-a", 3)
+	if err != nil {
+		t.Fatalf("ListAlerts: %v", err)
+	}
+	if len(got) != 3 {
+		t.Errorf("want 3 (limit), got %d", len(got))
+	}
+}
+
+// TestListEvents_EmptyStore_ReturnsNonNilSlice and its ListAlerts sibling
+// verify an empty result is [] rather than nil — callers (the exporter
+// handlers) JSON-marshal the result directly, and a nil slice marshals to
+// "null" instead of "[]", which can break clients that assume an array.
+func TestListEvents_EmptyStore_ReturnsNonNilSlice(t *testing.T) {
+	st := newTempStore(t)
+	got, err := st.ListEvents(context.Background(), "", 100)
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if got == nil {
+		t.Error("ListEvents on empty store returned nil, want non-nil empty slice")
+	}
+}
+
+func TestListAlerts_EmptyStore_ReturnsNonNilSlice(t *testing.T) {
+	st := newTempStore(t)
+	got, err := st.ListAlerts(context.Background(), "", 100)
+	if err != nil {
+		t.Fatalf("ListAlerts: %v", err)
+	}
+	if got == nil {
+		t.Error("ListAlerts on empty store returned nil, want non-nil empty slice")
+	}
+}
