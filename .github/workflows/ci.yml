@@ -22,17 +22,13 @@ jobs:
       # （ローカル環境がcovdataツール欠如でpb/otelを暗黙に除外し得るため:
       # errors/tooling/go-toolchain-missing-covdata-local-coverage-mismatch.md）。
       coverage-threshold: 52
-      # self-hosted (linux-general) の actions-runner:latest イメージに build-essential が
-      # 無く cgo(-race) が失敗するため一時的に GitHub-hosted に固定。
-      # infra 側でランナーイメージ修正後に外す（トラッキング: flipslidersand-labs/sentinel-mesh#112）。
-      runner: ubuntu-latest
+      # 公開リポのため runner はリポ変数 GATE_RUNNER で指定する（ADR-010。既定値なし）。
+      runner: ${{ vars.GATE_RUNNER }}
 
   rust-agent:
     name: Rust Agent (check + test + coverage)
-    # self-hosted (linux-general) の一部 Pod で ~/.cargo/bin の Permission denied が
-    # 継続発生し dtolnay/rust-toolchain が失敗するため一時的に GitHub-hosted に固定。
-    # infra 側で原因調査後に外す（トラッキング: flipslidersand-labs/dev-platform#1065）。
-    runs-on: ubuntu-latest
+    # 公開リポのため runner はリポ変数 GATE_RUNNER で指定する（ADR-010。既定値なし）。
+    runs-on: ${{ vars.GATE_RUNNER }}
     # ハング時に GitHub-hosted のデフォルト360分を消費しないよう上限を設定
     # (実測時間+余裕。トラッキング: flipslidersand-labs/sentinel-mesh#146)
     timeout-minutes: 10
@@ -80,7 +76,7 @@ jobs:
   integration:
     name: Integration Test (Collector + Agent)
     needs: [go-collector, rust-agent]
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.GATE_RUNNER }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
