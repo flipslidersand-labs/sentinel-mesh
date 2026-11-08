@@ -49,3 +49,16 @@ func TestFormatSlackTextEscapes(t *testing.T) {
 		}
 	}
 }
+
+func TestSlackSendBuildErrorOmitsWebhookURL(t *testing.T) {
+	n := NewSlackNotifier("https://hooks.invalid/services/DUMMY/SECRET/path\n", nil)
+	err := n.Send(context.Background(), store.Alert{Timestamp: time.Unix(0, 0)})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	for _, leak := range []string{"SECRET", "/services", "hooks.invalid"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Fatalf("error leaks %q: %v", leak, err)
+		}
+	}
+}

@@ -51,6 +51,16 @@ func formatSlackText(a store.Alert) string {
 	)
 }
 
+// stripURLError drops the request URL from a *url.Error. The URL embeds the
+// secret webhook path, so only the underlying cause is kept.
+func stripURLError(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Err
+	}
+	return err
+}
+
 // Send implements Notifier.
 func (s *SlackNotifier) Send(ctx context.Context, a store.Alert) error {
 	body, err := json.Marshal(slackPayload{Text: formatSlackText(a)})
@@ -60,19 +70,13 @@ func (s *SlackNotifier) Send(ctx context.Context, a store.Alert) error {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.webhookURL, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("build slack request: %w", err)
+		return fmt.Errorf("build slack request: %w", stripURLError(err))
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		// *url.Error embeds the full request URL, which contains the secret
-		// webhook path. Keep only the underlying cause.
-		var ue *url.Error
-		if errors.As(err, &ue) {
-			err = ue.Err
-		}
-		return fmt.Errorf("post to slack: %w", err)
+		return fmt.Errorf("post to slack: %w", stripURLError(err))
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
