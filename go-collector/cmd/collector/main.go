@@ -132,6 +132,14 @@ TLS for the gRPC server is optional but, when enabled, both
     --upstreams=us-east=http://collector-us-east:8081 \
     --upstreams=eu-west=http://collector-eu-west:8081`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Validate --grpc-auth first so a typo exits before the store lock or
+			// any listener is taken (#222).
+			grpcAuthMode, _ := cmd.Flags().GetString("grpc-auth")
+			grpcAuthEnabled, err := parseGRPCAuthMode(grpcAuthMode)
+			if err != nil {
+				return err
+			}
+
 			aggregate, _ := cmd.Flags().GetBool("aggregate")
 			upstreamsSet := cmd.Flags().Changed("upstreams") || cmd.Flags().Changed("poll-interval")
 			if !aggregate && upstreamsSet {
@@ -247,11 +255,6 @@ TLS for the gRPC server is optional but, when enabled, both
 			// of SENTINEL_API_TOKEN (REST only). "required" (default) is
 			// fail-closed: with zero issued per-agent tokens (#189/#191) every
 			// RPC is rejected. Unauthenticated gRPC needs explicit "disabled".
-			grpcAuthMode, _ := cmd.Flags().GetString("grpc-auth")
-			grpcAuthEnabled, err := parseGRPCAuthMode(grpcAuthMode)
-			if err != nil {
-				return err
-			}
 			if !grpcAuthEnabled {
 				logger.Warn("gRPC server is UNAUTHENTICATED (--grpc-auth=disabled) — use --grpc-auth=required and issue per-agent tokens via `token issue`")
 			}
