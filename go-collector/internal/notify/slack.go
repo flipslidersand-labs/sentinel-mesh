@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/flipslidersand/sentinel-mesh/internal/store"
@@ -33,11 +36,17 @@ type slackPayload struct {
 	Text string `json:"text"`
 }
 
+// slackEscaper neutralises Slack mrkdwn control characters: & < > are
+// HTML-escaped (blocking <url|text> links and <!channel> mentions) and
+// backticks are removed (blocking code-span breakout).
+var slackEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "`", "")
+
 // formatSlackText renders a human-readable alert line for Slack.
 func formatSlackText(a store.Alert) string {
+	e := slackEscaper.Replace
 	return fmt.Sprintf(
 		":rotating_light: *[%s]* %s\n> node: `%s`  rule: `%s`  event: `%s`  at %s",
-		a.Severity, a.Message, a.NodeID, a.RuleID, a.EventID,
+		e(a.Severity), e(a.Message), e(a.NodeID), e(a.RuleID), e(a.EventID),
 		a.Timestamp.Format(time.RFC3339),
 	)
 }
@@ -57,6 +66,12 @@ func (s *SlackNotifier) Send(ctx context.Context, a store.Alert) error {
 
 	resp, err := s.client.Do(req)
 	if err != nil {
+		// *url.Error embeds the full request URL, which contains the secret
+		// webhook path. Keep only the underlying cause.
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
 		return fmt.Errorf("post to slack: %w", err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
