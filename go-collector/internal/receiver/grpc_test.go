@@ -735,3 +735,17 @@ func assertUnauthenticated(t *testing.T, err error) {
 		t.Fatalf("expected Unauthenticated, got %v", status.Code(err))
 	}
 }
+
+// #222: auth required with zero issued tokens must fail closed (every RPC
+// rejected), not fall back to unauthenticated.
+func TestCheckAuth_Required_NoTokensIssued_RejectsAll(t *testing.T) {
+	st := newAuthTestStore(t)
+	for _, md := range []metadata.MD{nil, metadata.Pairs("authorization", "Bearer anything")} {
+		ctx := context.Background()
+		if md != nil {
+			ctx = metadata.NewIncomingContext(ctx, md)
+		}
+		_, err := checkAuth(ctx, st, true)
+		assertUnauthenticated(t, err)
+	}
+}

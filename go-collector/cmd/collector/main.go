@@ -243,15 +243,17 @@ TLS for the gRPC server is optional but, when enabled, both
 			if grpcTLSCert == "" || grpcTLSKey == "" {
 				logger.Warn("gRPC server is running WITHOUT TLS — set --grpc-tls-cert/--grpc-tls-key to require it")
 			}
-			// gRPC auth is gated by the same "did the operator configure any
-			// credentials at all" signal as REST (apiToken != ""), but each
-			// agent now authenticates with its own per-agent token (#189)
-			// issued via `token issue <node_id>` (#191), not apiToken itself
-			// — apiToken only continues to gate the REST API directly
-			// (#183, per ADR-005).
-			grpcAuthEnabled := apiToken != ""
+			// gRPC auth is controlled solely by --grpc-auth (#222), independent
+			// of SENTINEL_API_TOKEN (REST only). "required" (default) is
+			// fail-closed: with zero issued per-agent tokens (#189/#191) every
+			// RPC is rejected. Unauthenticated gRPC needs explicit "disabled".
+			grpcAuthMode, _ := cmd.Flags().GetString("grpc-auth")
+			grpcAuthEnabled, err := parseGRPCAuthMode(grpcAuthMode)
+			if err != nil {
+				return err
+			}
 			if !grpcAuthEnabled {
-				logger.Warn("gRPC server is UNAUTHENTICATED — set " + httpauth.EnvAPIToken + " to require per-agent tokens")
+				logger.Warn("gRPC server is UNAUTHENTICATED (--grpc-auth=disabled) — use --grpc-auth=required and issue per-agent tokens via `token issue`")
 			}
 			return receiver.Serve(ctx, grpcAddr, st, reg, engine, detector, notifier, metricsProvider, tracesProvider.Tracer(), defaultRegion, logger,
 				grpcTLSCert, grpcTLSKey, grpcAuthEnabled)
@@ -260,6 +262,7 @@ TLS for the gRPC server is optional but, when enabled, both
 	cmd.Flags().String("grpc-addr", ":50051", "gRPC listen address")
 	cmd.Flags().String("grpc-tls-cert", "", "path to gRPC server TLS certificate (PEM); requires --grpc-tls-key")
 	cmd.Flags().String("grpc-tls-key", "", "path to gRPC server TLS private key (PEM); requires --grpc-tls-cert")
+	cmd.Flags().String("grpc-auth", "required", "gRPC authentication: required (per-agent tokens; rejects all RPCs if none issued) or disabled (unauthenticated, dev only)")
 	cmd.Flags().String("http-addr", ":8081", "REST API listen address")
 	cmd.Flags().String("data-dir", "/tmp/sentinel-data", "BadgerDB data directory")
 	cmd.Flags().Duration("heartbeat-timeout", 60*time.Second, "inactivity duration before agent is marked inactive")
@@ -275,6 +278,19 @@ TLS for the gRPC server is optional but, when enabled, both
 	return cmd
 }
 
+// parseGRPCAuthMode maps the --grpc-auth value to whether gRPC auth is
+// enforced. Only the exact values "required" and "disabled" are accepted so a
+// typo can never silently turn authentication off (#222).
+func parseGRPCAuthMode(v string) (bool, error) {
+	switch v {
+	case "required":
+		return true, nil
+	case "disabled":
+		return false, nil
+	}
+	return false, fmt.Errorf("invalid --grpc-auth %q: must be \"required\" or \"disabled\"", v)
+}
+
 // warnIgnoredNormalModeFlags logs a warning for each normal-mode-only flag
 // that was explicitly set by the caller but is ignored in --aggregate mode
 // (#152), so a mistaken flag (e.g. --grpc-tls-cert) doesn't silently no-op.
@@ -282,7 +298,7 @@ func warnIgnoredNormalModeFlags(cmd *cobra.Command, grpcAddr string, logger *zap
 	if cmd.Flags().Changed("grpc-addr") && grpcAddr != ":50051" {
 		logger.Warn("--aggregate mode ignores --grpc-addr")
 	}
-	for _, name := range []string{"data-dir", "rules", "grpc-tls-cert", "grpc-tls-key", "region"} {
+	for _, name := range []string{"data-dir", "rules", "grpc-tls-cert", "grpc-tls-key", "grpc-auth", "region"} {
 		if cmd.Flags().Changed(name) {
 			logger.Warn("--aggregate mode ignores --" + name)
 		}

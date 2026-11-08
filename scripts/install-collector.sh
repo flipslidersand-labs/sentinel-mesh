@@ -12,8 +12,13 @@
 #   --grpc-tls-cert PATH  path (on SSH_HOST) to gRPC TLS certificate (PEM); requires --grpc-tls-key
 #   --grpc-tls-key PATH   path (on SSH_HOST) to gRPC TLS private key (PEM); requires --grpc-tls-cert
 #
-# gRPC auth: set SENTINEL_API_TOKEN in the remote environment (not handled by
-# this script) to require agents to present a matching bearer token.
+#   --grpc-auth MODE      gRPC auth: required (default) or disabled (#222)
+#
+# gRPC auth: the default (required) rejects every RPC until per-agent tokens
+# are issued on the collector (`sentinel-collector token issue <node_id>`;
+# stop the service first, BadgerDB is exclusively locked). Pass
+# `--grpc-auth disabled` only for dev/trusted networks. SENTINEL_API_TOKEN
+# only gates the REST API and no longer affects gRPC auth.
 set -euo pipefail
 
 SSH_HOST="${1:?Usage: $0 <SSH_HOST> [options]}"
@@ -25,6 +30,7 @@ HTTP_ADDR=":8081"
 DATA_DIR="/var/lib/sentinel"
 GRPC_TLS_CERT=""
 GRPC_TLS_KEY=""
+GRPC_AUTH="required"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -34,11 +40,17 @@ while [[ $# -gt 0 ]]; do
     --data-dir)     DATA_DIR="$2";     shift 2 ;;
     --grpc-tls-cert) GRPC_TLS_CERT="$2"; shift 2 ;;
     --grpc-tls-key)  GRPC_TLS_KEY="$2";  shift 2 ;;
+    --grpc-auth)    GRPC_AUTH="$2";    shift 2 ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib-validate.sh"
+
+if [[ "$GRPC_AUTH" != "required" && "$GRPC_AUTH" != "disabled" ]]; then
+  echo "Error: --grpc-auth must be 'required' or 'disabled', got '${GRPC_AUTH}'" >&2
+  exit 1
+fi
 
 # A leading '-' in SSH_HOST would be interpreted by ssh/scp as an option
 # (e.g. -oProxyCommand=...), letting it run arbitrary local commands (#66).
@@ -107,7 +119,7 @@ Description=SentinelMesh Collector (region=${REGION})
 After=network.target
 
 [Service]
-ExecStart=${REMOTE_BIN} serve --grpc-addr ${GRPC_ADDR} --http-addr ${HTTP_ADDR} --data-dir ${DATA_DIR} --static-dir ${REMOTE_STATIC} --region ${REGION} ${TLS_FLAGS}
+ExecStart=${REMOTE_BIN} serve --grpc-addr ${GRPC_ADDR} --http-addr ${HTTP_ADDR} --data-dir ${DATA_DIR} --static-dir ${REMOTE_STATIC} --region ${REGION} --grpc-auth ${GRPC_AUTH} ${TLS_FLAGS}
 WorkingDirectory=/opt/sentinel-collector
 Restart=always
 RestartSec=5

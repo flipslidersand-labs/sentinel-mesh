@@ -102,6 +102,7 @@ Options:
   --region <NAME>            Default region for agents that register without one [default: default]
   --grpc-tls-cert <PATH>     gRPC server TLS certificate (PEM); requires --grpc-tls-key
   --grpc-tls-key <PATH>      gRPC server TLS private key (PEM); requires --grpc-tls-cert
+  --grpc-auth <MODE>         gRPC auth: required | disabled [default: required]
 
   # Aggregate mode (cross-region, read-only — no gRPC)
   --aggregate                Run as a cross-region aggregator
@@ -199,15 +200,22 @@ fully trust, enable both:
   rejects the call with `Unauthenticated`. An authenticated agent also can't register or send
   events under a `node_id` other than the one its token was issued for.
 
-gRPC auth is enabled by the same signal as REST: setting `SENTINEL_API_TOKEN` on the collector
-(it only gates *whether* auth is required, not the credential itself — REST still checks it
-directly, gRPC now checks per-agent tokens instead).
+gRPC auth is controlled by `--grpc-auth=required|disabled` (default `required`), independent of
+`SENTINEL_API_TOKEN` (which now only gates the REST API). With `required`, the collector starts even
+if no per-agent token has been issued yet, but rejects every RPC until one is (fail-closed).
+Unauthenticated gRPC requires the explicit `--grpc-auth=disabled`.
+
+> **Breaking change (#222):** previously gRPC was unauthenticated unless `SENTINEL_API_TOKEN` was set.
+> The default is now `required`. **Migration:** either issue per-agent tokens (below) and pass them
+> to agents, or keep the old behaviour explicitly with `sentinel-collector serve --grpc-auth=disabled`
+> (`scripts/install-collector.sh <host> --grpc-auth disabled`). Existing deployments that ran without
+> `SENTINEL_API_TOKEN` will otherwise see all agents rejected after upgrading.
 
 ```bash
 # Collector: enable auth, then issue a token for each agent before it can connect.
 # token issue/revoke/list require the collector to be stopped first — BadgerDB
 # takes an exclusive lock on --data-dir, so they can't run alongside `serve`.
-export SENTINEL_API_TOKEN="$(openssl rand -hex 32)"  # gates the REST API and enables gRPC auth
+export SENTINEL_API_TOKEN="$(openssl rand -hex 32)"  # gates the REST API only
 sentinel-collector token issue web-01 --data-dir /var/lib/sentinel-mesh
 # prints the token once — copy it now, it's never shown again
 sentinel-collector serve --grpc-tls-cert cert.pem --grpc-tls-key key.pem
@@ -390,7 +398,7 @@ Deploys the collector binary to a remote host and installs as a systemd service.
 
 ```bash
 bash scripts/install-collector.sh <SSH_HOST> [OPTIONS]
-# Options: --region, --grpc-addr, --http-addr, --data-dir, --grpc-tls-cert, --grpc-tls-key
+# Options: --region, --grpc-addr, --http-addr, --data-dir, --grpc-tls-cert, --grpc-tls-key, --grpc-auth
 # Example:
 bash scripts/install-collector.sh minipc --grpc-addr :50051 --http-addr :8081
 ```
