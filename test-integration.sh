@@ -45,6 +45,7 @@ cd "$PROJECT_ROOT/go-collector"
   --http-addr "$HTTP_ADDR" \
   --data-dir "$DATA_DIR" \
   --rules "$RULES_FILE" \
+  --grpc-auth disabled \
   > /tmp/collector.log 2>&1 &
 COLLECTOR_PID=$!
 

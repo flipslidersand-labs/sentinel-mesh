@@ -5,6 +5,18 @@ All notable changes to SentinelMesh are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **BREAKING (go-collector):** gRPC authentication is now controlled by the new
+  `--grpc-auth=required|disabled` flag (default `required`) instead of being
+  implicitly enabled by `SENTINEL_API_TOKEN` (#222). With `required` and no
+  issued per-agent tokens the collector still starts but rejects every RPC.
+  Migration: issue per-agent tokens (`sentinel-collector token issue <node_id>`)
+  or pass `--grpc-auth=disabled` to keep the previous unauthenticated behaviour.
+  `scripts/install-collector.sh` gained `--grpc-auth`.
+
 ## [0.1.0] - 2026-08-17
 
 First tagged release. End-to-end eBPF-based host monitoring mesh, verified on
