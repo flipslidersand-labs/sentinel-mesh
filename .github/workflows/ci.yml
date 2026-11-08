@@ -77,6 +77,10 @@ jobs:
     name: Integration Test (Collector + Agent)
     needs: [go-collector, rust-agent]
     runs-on: ${{ vars.GATE_RUNNER }}
+    # test-integration.sh はバックグラウンドプロセスを起動して待つため、ハング時に
+    # デフォルトの360分を消費しないよう上限を設定（rust-agent の10分に余裕を足した値。
+    # トラッキング: flipslidersand-labs/sentinel-mesh#216）
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
