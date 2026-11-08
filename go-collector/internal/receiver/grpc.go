@@ -600,11 +600,19 @@ func checkAuth(ctx context.Context, st *store.Store, authEnabled bool) (nodeID s
 	if !ok {
 		return "", status.Error(codes.Unauthenticated, "invalid token")
 	}
+	ip := peerIP(ctx)
+	if ip != "" && authFailures.blocked(ip) {
+		// Reject before the full token scan + JSON decode in LookupNodeID.
+		return "", status.Error(codes.ResourceExhausted, "too many authentication failures")
+	}
 	nodeID, ok, err = st.LookupNodeID(ctx, got)
 	if err != nil {
 		return "", status.Error(codes.Internal, "auth lookup failed")
 	}
 	if !ok {
+		if ip != "" {
+			authFailures.fail(ip)
+		}
 		return "", status.Error(codes.Unauthenticated, "invalid token")
 	}
 	return nodeID, nil
