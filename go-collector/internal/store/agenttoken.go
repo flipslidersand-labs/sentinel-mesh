@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -34,6 +33,11 @@ func agentTokenKey(nodeID string) []byte {
 	return []byte(fmt.Sprintf("agenttoken:%s", nodeID))
 }
 
+// TokenLength is the length of every issued token: hex of 32 random bytes.
+// A presented value of any other length can't match, so callers can reject
+// it before hashing (#232).
+const TokenLength = 64
+
 func hashToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
@@ -56,6 +60,11 @@ func generateToken() (string, error) {
 // credential always leaves an explicit revoke in the record rather than
 // silently overwriting it.
 func (s *Store) IssueToken(ctx context.Context, nodeID string) (string, error) {
+	// Held across read-check-write so concurrent issue/revoke for the same
+	// node can't leave the index disagreeing with what's on disk.
+	s.tokensMu.Lock()
+	defer s.tokensMu.Unlock()
+
 	existing, err := s.getAgentToken(ctx, nodeID)
 	if err != nil {
 		return "", err
@@ -73,9 +82,13 @@ func (s *Store) IssueToken(ctx context.Context, nodeID string) (string, error) {
 		TokenHash: hashToken(token),
 		IssuedAt:  time.Now().UTC(),
 	}
-	if err := s.putAgentToken(ctx, rec); err != nil {
+	// WithoutCancel: the write's result must be known so the index matches
+	// disk (runWithContext would otherwise return on cancel while the write
+	// still commits in the background).
+	if err := s.putAgentToken(context.WithoutCancel(ctx), rec); err != nil {
 		return "", err
 	}
+	s.tokenIndex[rec.TokenHash] = nodeID
 	return token, nil
 }
 
@@ -83,6 +96,9 @@ func (s *Store) IssueToken(ctx context.Context, nodeID string) (string, error) {
 // (returns nil) if nodeID has no token or is already revoked, so callers
 // don't need to check existence first.
 func (s *Store) RevokeToken(ctx context.Context, nodeID string) error {
+	s.tokensMu.Lock()
+	defer s.tokensMu.Unlock()
+
 	rec, err := s.getAgentToken(ctx, nodeID)
 	if err != nil {
 		return err
@@ -92,7 +108,19 @@ func (s *Store) RevokeToken(ctx context.Context, nodeID string) error {
 	}
 	now := time.Now().UTC()
 	rec.RevokedAt = &now
-	return s.putAgentToken(ctx, *rec)
+	// Fail closed: drop the token from the index before writing, and write
+	// with WithoutCancel so a cancelled ctx can't return while the revoke
+	// commits in the background. The index entry is restored only when the
+	// write definitely failed (the record on disk is then still active).
+	activeNodeID, wasActive := s.tokenIndex[rec.TokenHash]
+	delete(s.tokenIndex, rec.TokenHash)
+	if err := s.putAgentToken(context.WithoutCancel(ctx), *rec); err != nil {
+		if wasActive {
+			s.tokenIndex[rec.TokenHash] = activeNodeID
+		}
+		return err
+	}
+	return nil
 }
 
 // ListTokens returns all agent token records (revoked and active), for the
@@ -126,28 +154,48 @@ func (s *Store) ListTokens(ctx context.Context) ([]AgentToken, error) {
 // callers (the gRPC/REST auth paths, #190) can't accidentally branch
 // differently on those two cases and leak which one it was.
 //
-// Every stored hash is compared in constant time via
-// crypto/subtle.ConstantTimeCompare, matching the existing BearerAuth
-// convention — but which record wins (if any) still leaks through timing
-// across the full scan. That's an accepted, tracked tradeoff of the
-// unindexed lookup below, not a masked one.
+// The lookup is a single map access keyed by the token's SHA-256 hash
+// (#232) — no record scan or JSON decode — so it's cheap enough to run
+// before any rate limiting. Map lookup isn't constant time, but it compares
+// hashes, not the secret: timing can at most reveal a prefix of the
+// presented token's own SHA-256, which doesn't help recover a stored token
+// (preimage resistance). The plaintext token is never held in memory
+// beyond this call.
 func (s *Store) LookupNodeID(ctx context.Context, token string) (nodeID string, ok bool, err error) {
-	want := []byte(hashToken(token))
-
-	tokens, err := s.ListTokens(ctx)
-	if err != nil {
+	if err := ctx.Err(); err != nil {
 		return "", false, err
 	}
-	for _, rec := range tokens {
-		if rec.RevokedAt != nil {
-			continue
-		}
-		if subtle.ConstantTimeCompare([]byte(rec.TokenHash), want) == 1 {
-			nodeID = rec.NodeID
-			ok = true
+	if len(token) != TokenLength {
+		return "", false, nil
+	}
+	want := hashToken(token)
+
+	s.tokensMu.RLock()
+	defer s.tokensMu.RUnlock()
+	if s.tokenIndexErr != nil {
+		return "", false, s.tokenIndexErr
+	}
+	nodeID, ok = s.tokenIndex[want]
+	return nodeID, ok, nil
+}
+
+// loadTokenIndex seeds tokenIndex from disk at startup. A load failure is
+// kept in tokenIndexErr rather than failing New, so `token list`/`revoke`
+// can still open the store to inspect or repair it, while auth fails closed.
+func (s *Store) loadTokenIndex() {
+	idx := make(map[string]string)
+	tokens, err := s.ListTokens(context.Background())
+	if err == nil {
+		for _, rec := range tokens {
+			if rec.RevokedAt == nil {
+				idx[rec.TokenHash] = rec.NodeID
+			}
 		}
 	}
-	return nodeID, ok, nil
+	s.tokensMu.Lock()
+	s.tokenIndex = idx
+	s.tokenIndexErr = err
+	s.tokensMu.Unlock()
 }
 
 func (s *Store) getAgentToken(ctx context.Context, nodeID string) (*AgentToken, error) {

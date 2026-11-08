@@ -599,7 +599,7 @@ func checkAuth(ctx context.Context, st *store.Store, authEnabled bool) (nodeID s
 }
 
 // checkAuthLimited is checkAuth plus per-source-IP throttling via lim (nil
-// disables throttling). See authfail.go for the known shared-IP limitation.
+// disables throttling of failed attempts; valid tokens are never throttled).
 func checkAuthLimited(ctx context.Context, st *store.Store, authEnabled bool, lim *authFailLimiter) (nodeID string, err error) {
 	if !authEnabled {
 		return "", nil
@@ -616,25 +616,33 @@ func checkAuthLimited(ctx context.Context, st *store.Store, authEnabled bool, li
 	if !ok {
 		return "", status.Error(codes.Unauthenticated, "invalid token")
 	}
-	ip := peerIP(ctx)
-	if ip != "" && !lim.reserve(ip) {
-		// Reject before the full token scan + JSON decode in LookupNodeID.
-		return "", status.Error(codes.ResourceExhausted, "too many authentication failures")
+	// A value that can't be a token is a failure, counted before any
+	// hashing so oversized Bearer values can't burn CPU unthrottled.
+	if len(got) != store.TokenLength {
+		return "", authFailure(ctx, lim)
 	}
+	// The lookup is an O(1) index hit (#232), so it runs first: a valid
+	// token always succeeds regardless of the source IP's failure budget —
+	// one misbehaving client behind a shared proxy/LB IP can't lock out the
+	// rest. Only failed attempts are counted against the source.
 	nodeID, ok, err = st.LookupNodeID(ctx, got)
 	if err != nil {
-		if ip != "" {
-			lim.release(ip) // store error is not the caller's failure
-		}
-		return "", status.Error(codes.Internal, "auth lookup failed")
+		return "", status.Error(codes.Internal, "auth lookup failed") // store error is not the caller's failure
 	}
-	if !ok {
-		return "", status.Error(codes.Unauthenticated, "invalid token")
+	if ok {
+		return nodeID, nil
 	}
-	if ip != "" {
-		lim.release(ip)
+	return "", authFailure(ctx, lim)
+}
+
+// authFailure counts a failed attempt against the caller's source and
+// returns the matching status: ResourceExhausted once its budget is spent,
+// Unauthenticated otherwise.
+func authFailure(ctx context.Context, lim *authFailLimiter) error {
+	if ip := peerIP(ctx); ip != "" && !lim.reserve(ip) {
+		return status.Error(codes.ResourceExhausted, "too many authentication failures")
 	}
-	return nodeID, nil
+	return status.Error(codes.Unauthenticated, "invalid token")
 }
 
 func unaryAuthInterceptor(st *store.Store, authEnabled bool, lim *authFailLimiter) grpc.UnaryServerInterceptor {
