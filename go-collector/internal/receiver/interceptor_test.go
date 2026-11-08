@@ -29,12 +29,18 @@ type spyCollector struct {
 }
 
 func (s *spyCollector) Register(ctx context.Context, _ *pb.RegisterRequest) (*pb.RegisterResponse, error) {
-	s.registerCalls <- authedNodeIDFromContext(ctx)
+	select {
+	case s.registerCalls <- authedNodeIDFromContext(ctx):
+	default: // never block a server goroutine if a test stops draining
+	}
 	return &pb.RegisterResponse{Ok: true}, nil
 }
 
 func (s *spyCollector) StreamEvents(stream grpc.BidiStreamingServer[pb.KernelEvent, pb.EventAck]) error {
-	s.streamCalls <- authedNodeIDFromContext(stream.Context())
+	select {
+	case s.streamCalls <- authedNodeIDFromContext(stream.Context()):
+	default:
+	}
 	return nil
 }
 
@@ -48,7 +54,7 @@ func newInterceptorClient(t *testing.T, st *store.Store, authEnabled bool) (pb.S
 		grpc.ChainUnaryInterceptor(unaryAuthInterceptor(st, authEnabled, lim)),
 		grpc.ChainStreamInterceptor(streamAuthInterceptor(st, authEnabled, lim)),
 	)
-	spy := &spyCollector{registerCalls: make(chan string, 4), streamCalls: make(chan string, 4)}
+	spy := &spyCollector{registerCalls: make(chan string, 16), streamCalls: make(chan string, 16)}
 	pb.RegisterSentinelCollectorServer(srv, spy)
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(srv.Stop)
@@ -115,8 +121,11 @@ func TestAuthInterceptors_RejectBadCredentialsWithoutCallingHandler(t *testing.T
 	}
 	c, spy := newInterceptorClient(t, st, true)
 
-	// Right length but never issued. Only length/lookup failures count
-	// against the per-IP budget (authFailBurst=5); this test stays under it.
+	// Right length but never issued. Over bufconn peerIP is the constant
+	// "bufconn", so all cases share one limiter key. Only the "wrong length"
+	// and "unknown token" cases count as failures (the others return before
+	// authFailure): 2 cases x (Register+StreamEvents) = 4 < authFailBurst (5).
+	// Adding a counted case here would trip ResourceExhausted.
 	unknown := strings.Repeat("0", store.TokenLength)
 	cases := map[string]func(context.Context) context.Context{
 		"no token":      func(ctx context.Context) context.Context { return ctx },
@@ -128,6 +137,7 @@ func TestAuthInterceptors_RejectBadCredentialsWithoutCallingHandler(t *testing.T
 	}
 	for name, mk := range cases {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		t.Cleanup(cancel)
 		_, err := c.Register(mk(ctx), &pb.RegisterRequest{NodeId: "node-a"})
 		if status.Code(err) != codes.Unauthenticated {
 			t.Errorf("%s: Register code = %v, want Unauthenticated", name, status.Code(err))
@@ -136,7 +146,6 @@ func TestAuthInterceptors_RejectBadCredentialsWithoutCallingHandler(t *testing.T
 		if status.Code(err) != codes.Unauthenticated {
 			t.Errorf("%s: StreamEvents code = %v, want Unauthenticated", name, status.Code(err))
 		}
-		cancel()
 	}
 	expectNoCall(t, spy.registerCalls, "Register")
 	expectNoCall(t, spy.streamCalls, "StreamEvents")
@@ -158,7 +167,10 @@ func TestAuthInterceptors_ValidTokenPropagatesIssuedNodeID(t *testing.T) {
 
 	for _, tc := range []struct{ token, node string }{{tokA, "node-a"}, {tokB, "node-b"}} {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if _, err := c.Register(bearer(ctx, tc.token), &pb.RegisterRequest{NodeId: tc.node}); err != nil {
+		t.Cleanup(cancel)
+		// Body NodeId deliberately differs from the token's node: the handler
+		// must see the token-derived identity, not the request body.
+		if _, err := c.Register(bearer(ctx, tc.token), &pb.RegisterRequest{NodeId: "someone-else"}); err != nil {
 			t.Fatalf("Register(%s): %v", tc.node, err)
 		}
 		expectCall(t, spy.registerCalls, tc.node, "Register")
@@ -166,7 +178,6 @@ func TestAuthInterceptors_ValidTokenPropagatesIssuedNodeID(t *testing.T) {
 			t.Fatalf("StreamEvents(%s): %v", tc.node, err)
 		}
 		expectCall(t, spy.streamCalls, tc.node, "StreamEvents")
-		cancel()
 	}
 }
 
