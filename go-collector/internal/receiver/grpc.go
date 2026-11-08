@@ -268,6 +268,14 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 	limiter := newTokenBucket(streamEventsRateLimit, streamEventsRateBurst)
 	var throttled uint64
 
+	// Flush response headers before the first Recv (auth already passed in
+	// the interceptor). The agent's client awaits headers before it starts
+	// feeding events; without this, no header goes out until the first Ack,
+	// which needs the first event: a deadlock until RPC_TIMEOUT (#231).
+	if err := stream.SendHeader(metadata.MD{}); err != nil {
+		return err
+	}
+
 	// Resolved once per stream by the auth interceptor (#183/#190, per
 	// ADR-005) — "" when auth is disabled. Non-empty for the lifetime of
 	// this stream, so it's safe to read once here rather than per event.
