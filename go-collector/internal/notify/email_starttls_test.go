@@ -27,6 +27,7 @@ type fakeSMTP struct {
 	startedTLS  bool
 	gotData     bool
 	authPlainOK bool
+	authOverTLS bool
 }
 
 func newTestCert(t *testing.T) (tls.Certificate, *x509.CertPool) {
@@ -128,6 +129,7 @@ func (s *fakeSMTP) serve(c net.Conn) {
 		case strings.HasPrefix(up, "AUTH"):
 			s.mu.Lock()
 			s.authPlainOK = true
+			s.authOverTLS = s.startedTLS
 			s.mu.Unlock()
 			send(conn, "235 ok")
 		case strings.HasPrefix(up, "MAIL"), strings.HasPrefix(up, "RCPT"):
@@ -162,6 +164,9 @@ func TestSendMail_STARTTLSUpgrade(t *testing.T) {
 	if !s.authPlainOK || !s.gotData {
 		t.Fatalf("auth=%v data=%v", s.authPlainOK, s.gotData)
 	}
+	if !s.authOverTLS {
+		t.Fatal("AUTH was not performed over TLS")
+	}
 }
 
 func TestSendMail_RejectsAuthWithoutSTARTTLSOnNonLoopback(t *testing.T) {
@@ -172,6 +177,9 @@ func TestSendMail_RejectsAuthWithoutSTARTTLSOnNonLoopback(t *testing.T) {
 	err := sendMailWithOptions(context.Background(), s.ln.Addr().String(), plainAnyAuth{}, "a@x", []string{"b@x"}, []byte("x"), opts)
 	if err == nil {
 		t.Fatal("expected error when STARTTLS unavailable with credentials on non-loopback")
+	}
+	if !strings.Contains(err.Error(), "refusing to send credentials") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -200,3 +208,21 @@ func (plainAnyAuth) Start(*smtp.ServerInfo) (string, []byte, error) {
 	return "PLAIN", []byte("\x00u\x00p"), nil
 }
 func (plainAnyAuth) Next([]byte, bool) ([]byte, error) { return nil, nil }
+
+func TestSendMail_STARTTLSHandshakeFailureDoesNotFallBackToPlaintext(t *testing.T) {
+	cert, _ := newTestCert(t)
+	s := startFakeSMTP(t, true, cert)
+	// Empty RootCAs: the self-signed server cert is not trusted.
+	opts := smtpOptions{tlsConfig: &tls.Config{RootCAs: x509.NewCertPool(), MinVersion: tls.VersionTLS12}}
+	auth := smtp.PlainAuth("", "u", "p", "127.0.0.1")
+
+	err := sendMailWithOptions(context.Background(), s.ln.Addr().String(), auth, "a@x", []string{"b@x"}, []byte("x\r\n"), opts)
+	if err == nil {
+		t.Fatal("expected handshake error")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.gotData || s.authPlainOK {
+		t.Fatalf("plaintext fallback: auth=%v data=%v", s.authPlainOK, s.gotData)
+	}
+}
