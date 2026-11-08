@@ -2,6 +2,7 @@ package notify
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/smtp"
@@ -98,6 +99,27 @@ func (e *EmailNotifier) Send(ctx context.Context, a store.Alert) error {
 // no deadline, the dial falls back to net.Dialer's zero-value (no timeout),
 // matching net/smtp.SendMail's prior behavior for callers that don't set one.
 func sendMailContext(ctx context.Context, addr string, a smtp.Auth, from string, to []string, msg []byte) error {
+	return sendMailWithOptions(ctx, addr, a, from, to, msg, smtpOptions{})
+}
+
+// smtpOptions are test seams; the zero value gives production behavior.
+type smtpOptions struct {
+	tlsConfig  *tls.Config            // base TLS config for STARTTLS (ServerName is set to the host)
+	isLoopback func(host string) bool // overrides loopback detection
+}
+
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// sendMailWithOptions upgrades the connection with STARTTLS whenever the
+// server advertises it, and refuses to send credentials over a plaintext
+// connection to a non-loopback host (fail-closed, see issue #215).
+func sendMailWithOptions(ctx context.Context, addr string, a smtp.Auth, from string, to []string, msg []byte, opts smtpOptions) error {
 	var dialer net.Dialer
 	if deadline, ok := ctx.Deadline(); ok {
 		dialer.Timeout = time.Until(deadline)
@@ -125,6 +147,36 @@ func sendMailContext(ctx context.Context, addr string, a smtp.Auth, from string,
 		return err
 	}
 	defer c.Close()
+
+	if err := c.Hello("localhost"); err != nil {
+		return err
+	}
+	secured := false
+	if ok, _ := c.Extension("STARTTLS"); ok {
+		var cfg *tls.Config
+		if opts.tlsConfig != nil {
+			cfg = opts.tlsConfig.Clone()
+		} else {
+			cfg = &tls.Config{}
+		}
+		cfg.ServerName = host
+		if cfg.MinVersion < tls.VersionTLS12 {
+			cfg.MinVersion = tls.VersionTLS12
+		}
+		if err := c.StartTLS(cfg); err != nil {
+			return fmt.Errorf("starttls: %w", err)
+		}
+		secured = true
+	}
+	if a != nil && !secured {
+		loopback := isLoopbackHost
+		if opts.isLoopback != nil {
+			loopback = opts.isLoopback
+		}
+		if !loopback(host) {
+			return fmt.Errorf("smtp server %s does not support STARTTLS; refusing to send credentials in plaintext", host)
+		}
+	}
 
 	if a != nil {
 		if ok, _ := c.Extension("AUTH"); ok {
