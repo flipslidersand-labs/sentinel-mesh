@@ -616,6 +616,11 @@ func checkAuthLimited(ctx context.Context, st *store.Store, authEnabled bool, li
 	if !ok {
 		return "", status.Error(codes.Unauthenticated, "invalid token")
 	}
+	// A value that can't be a token is a failure, counted before any
+	// hashing so oversized Bearer values can't burn CPU unthrottled.
+	if len(got) != store.TokenLength {
+		return "", authFailure(ctx, lim)
+	}
 	// The lookup is an O(1) index hit (#232), so it runs first: a valid
 	// token always succeeds regardless of the source IP's failure budget —
 	// one misbehaving client behind a shared proxy/LB IP can't lock out the
@@ -627,10 +632,17 @@ func checkAuthLimited(ctx context.Context, st *store.Store, authEnabled bool, li
 	if ok {
 		return nodeID, nil
 	}
+	return "", authFailure(ctx, lim)
+}
+
+// authFailure counts a failed attempt against the caller's source and
+// returns the matching status: ResourceExhausted once its budget is spent,
+// Unauthenticated otherwise.
+func authFailure(ctx context.Context, lim *authFailLimiter) error {
 	if ip := peerIP(ctx); ip != "" && !lim.reserve(ip) {
-		return "", status.Error(codes.ResourceExhausted, "too many authentication failures")
+		return status.Error(codes.ResourceExhausted, "too many authentication failures")
 	}
-	return "", status.Error(codes.Unauthenticated, "invalid token")
+	return status.Error(codes.Unauthenticated, "invalid token")
 }
 
 func unaryAuthInterceptor(st *store.Store, authEnabled bool, lim *authFailLimiter) grpc.UnaryServerInterceptor {

@@ -3,6 +3,7 @@ package receiver
 import (
 	"context"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -193,5 +194,22 @@ func TestCheckAuth_ValidTokenPassesWhenIPExhausted(t *testing.T) {
 	// the attacker's budget.
 	if _, err := checkAuthLimited(authCtx(ip, "bad"), st, true, lim); status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("expected ResourceExhausted after success, got %v", status.Code(err))
+	}
+}
+
+// A Bearer value that can't be a valid token (wrong length) is rejected
+// before hashing and still counts as a failure, so oversized values can't
+// be used to burn CPU on SHA-256 without hitting the limiter.
+func TestCheckAuth_WrongLengthTokenCountsAsFailure(t *testing.T) {
+	lim, _ := newTestLimiter()
+	st := newAuthTestStore(t)
+	const ip = "198.51.100.9"
+	huge := strings.Repeat("x", 1<<20)
+	for i := 0; i < int(authFailBurst); i++ {
+		_, err := checkAuthLimited(authCtx(ip, huge), st, true, lim)
+		assertUnauthenticated(t, err)
+	}
+	if _, err := checkAuthLimited(authCtx(ip, huge), st, true, lim); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("expected ResourceExhausted after burst, got %v", status.Code(err))
 	}
 }

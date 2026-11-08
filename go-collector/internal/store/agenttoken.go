@@ -33,6 +33,11 @@ func agentTokenKey(nodeID string) []byte {
 	return []byte(fmt.Sprintf("agenttoken:%s", nodeID))
 }
 
+// TokenLength is the length of every issued token: hex of 32 random bytes.
+// A presented value of any other length can't match, so callers can reject
+// it before hashing (#232).
+const TokenLength = 64
+
 func hashToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
@@ -77,7 +82,10 @@ func (s *Store) IssueToken(ctx context.Context, nodeID string) (string, error) {
 		TokenHash: hashToken(token),
 		IssuedAt:  time.Now().UTC(),
 	}
-	if err := s.putAgentToken(ctx, rec); err != nil {
+	// WithoutCancel: the write's result must be known so the index matches
+	// disk (runWithContext would otherwise return on cancel while the write
+	// still commits in the background).
+	if err := s.putAgentToken(context.WithoutCancel(ctx), rec); err != nil {
 		return "", err
 	}
 	s.tokenIndex[rec.TokenHash] = nodeID
@@ -100,10 +108,18 @@ func (s *Store) RevokeToken(ctx context.Context, nodeID string) error {
 	}
 	now := time.Now().UTC()
 	rec.RevokedAt = &now
-	if err := s.putAgentToken(ctx, *rec); err != nil {
+	// Fail closed: drop the token from the index before writing, and write
+	// with WithoutCancel so a cancelled ctx can't return while the revoke
+	// commits in the background. The index entry is restored only when the
+	// write definitely failed (the record on disk is then still active).
+	activeNodeID, wasActive := s.tokenIndex[rec.TokenHash]
+	delete(s.tokenIndex, rec.TokenHash)
+	if err := s.putAgentToken(context.WithoutCancel(ctx), *rec); err != nil {
+		if wasActive {
+			s.tokenIndex[rec.TokenHash] = activeNodeID
+		}
 		return err
 	}
-	delete(s.tokenIndex, rec.TokenHash)
 	return nil
 }
 
@@ -148,6 +164,9 @@ func (s *Store) ListTokens(ctx context.Context) ([]AgentToken, error) {
 func (s *Store) LookupNodeID(ctx context.Context, token string) (nodeID string, ok bool, err error) {
 	if err := ctx.Err(); err != nil {
 		return "", false, err
+	}
+	if len(token) != TokenLength {
+		return "", false, nil
 	}
 	want := hashToken(token)
 

@@ -3,7 +3,10 @@ package store
 import (
 	"context"
 	"fmt"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	badger "github.com/dgraph-io/badger/v4"
 )
@@ -148,5 +151,78 @@ func BenchmarkLookupNodeID_10kTokens(b *testing.B) {
 		if _, ok, err := st.LookupNodeID(ctx, token); !ok || err != nil {
 			b.Fatalf("lookup failed: ok=%v err=%v", ok, err)
 		}
+	}
+}
+
+// cancelOnSecondDone is a context whose Done channel is open on the first
+// Done() call and closed from the second on, so a RevokeToken's read
+// (getAgentToken) sees a live context and its write sees a cancelled one.
+type cancelOnSecondDone struct {
+	context.Context
+	mu     sync.Mutex
+	calls  int
+	closed chan struct{}
+}
+
+func newCancelOnSecondDone() *cancelOnSecondDone {
+	c := make(chan struct{})
+	close(c)
+	return &cancelOnSecondDone{Context: context.Background(), closed: c}
+}
+
+func (c *cancelOnSecondDone) Done() <-chan struct{} {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls++
+	if c.calls >= 2 {
+		return c.closed
+	}
+	return nil
+}
+
+func (c *cancelOnSecondDone) Err() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.calls >= 2 {
+		return context.Canceled
+	}
+	return nil
+}
+
+// A revoke whose context is cancelled mid-write must never leave a token
+// that is revoked on disk still accepted by the index (fail-open).
+func TestRevokeToken_CancelDuringWriteDoesNotFailOpen(t *testing.T) {
+	bg := context.Background()
+	for i := 0; i < 20; i++ {
+		st := openTempStore(t, t.TempDir())
+		token, err := st.IssueToken(bg, "node-a")
+		if err != nil {
+			t.Fatalf("IssueToken: %v", err)
+		}
+		_ = st.RevokeToken(newCancelOnSecondDone(), "node-a")
+
+		// Let any write that outlived the cancelled call land.
+		deadline := time.Now().Add(time.Second)
+		var rec *AgentToken
+		for {
+			if rec, err = st.getAgentToken(bg, "node-a"); err != nil {
+				t.Fatalf("getAgentToken: %v", err)
+			}
+			if rec.RevokedAt != nil || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		_, ok, _ := st.LookupNodeID(bg, token)
+		if rec.RevokedAt != nil && ok {
+			t.Fatalf("iteration %d: token revoked on disk but still accepted", i)
+		}
+	}
+}
+
+func TestLookupNodeID_WrongLengthRejected(t *testing.T) {
+	st := openTempStore(t, t.TempDir())
+	if _, ok, err := st.LookupNodeID(context.Background(), strings.Repeat("a", 1<<20)); ok || err != nil {
+		t.Fatalf("oversized token: ok=%v err=%v", ok, err)
 	}
 }
