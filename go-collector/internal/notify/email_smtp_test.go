@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/flipslidersand/sentinel-mesh/internal/store"
 )
 
 // startSilentServer accepts connections and never replies. If greet is true
@@ -121,6 +123,11 @@ func TestSendMailContext_DialFailure(t *testing.T) {
 
 // Auth is attempted on loopback when the server advertises AUTH, and skipped
 // when it does not.
+//
+// The "auth + server lacks AUTH" case records CURRENT behavior only (the
+// message is sent without authenticating). net/smtp.SendMail would instead
+// return "server doesn't support AUTH". The intended spec is undecided and
+// is tracked in #247; this expectation may change.
 func TestSendMailContext_AuthBranches(t *testing.T) {
 	cert, _ := newTestCert(t)
 	for _, tc := range []struct {
@@ -188,13 +195,34 @@ func TestNewEmailNotifier_AuthHost(t *testing.T) {
 	}
 }
 
-// KNOWN BUG (carried over, see PR description): bracketed IPv6 addr yields
-// auth host "[::1]" while sendMailWithOptions uses "::1".
 func TestNewEmailNotifier_AuthHostIPv6(t *testing.T) {
+	t.Skip("既知バグ #246 (email.go の LastIndex(\":\") で host が [::1] になる)。#246 修正時に Skip を外す")
 	n := NewEmailNotifier(EmailConfig{Addr: "[::1]:25", Username: "u", Password: "p"})
 	host, _, _ := net.SplitHostPort("[::1]:25")
-	_, _, err := n.auth.Start(&smtp.ServerInfo{Name: host, TLS: true, Auth: []string{"PLAIN"}})
-	if err != nil {
-		t.Skipf("known mismatch for IPv6 addr (not fixed here; test-only PR): %v", err)
+	if _, _, err := n.auth.Start(&smtp.ServerInfo{Name: host, TLS: true, Auth: []string{"PLAIN"}}); err != nil {
+		t.Fatalf("auth host mismatch: %v", err)
+	}
+}
+
+// End to end: host extraction -> auth setup -> real SMTP dialogue.
+func TestEmailNotifier_Send_EndToEndWithAuth(t *testing.T) {
+	cert, _ := newTestCert(t)
+	s := startFakeSMTP(t, false, cert)
+	n := NewEmailNotifier(EmailConfig{
+		Addr: s.ln.Addr().String(), Username: "u", Password: "p",
+		From: "from@x", To: []string{"to@x"},
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := n.Send(ctx, store.Alert{Severity: "critical", Message: "e2e-msg"}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.authPlainOK || !s.gotData {
+		t.Fatalf("auth=%v data=%v", s.authPlainOK, s.gotData)
+	}
+	if len(s.rcpts) != 1 || !strings.Contains(s.rcpts[0], "to@x") || !strings.Contains(s.body.String(), "e2e-msg") {
+		t.Errorf("rcpts=%v body=%q", s.rcpts, s.body.String())
 	}
 }
