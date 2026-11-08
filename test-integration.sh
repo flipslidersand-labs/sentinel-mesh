@@ -4,22 +4,50 @@ set -eo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_ROOT"
 
-# Cleanup on exit
+# 起動した PID と一時ファイルだけを後始末する(pkill -f は使わない)
+COLLECTOR_PID=""
+AGENT_PID=""
+HEALTH_BODY=""
+DATA_DIR="/tmp/sentinel-test-data-$$"
+LOG_DIR="$(mktemp -d)"
+COLLECTOR_LOG="$LOG_DIR/collector.log"
+AGENT_LOG="$LOG_DIR/agent.log"
+
 cleanup() {
+  local rc=$? pid
   echo "🧹 Cleaning up..."
-  pkill -f "collector serve" || true
-  pkill -f "sentinel-agent" || true
-  rm -rf /tmp/sentinel-test-data
-  sleep 1
+  for pid in "$AGENT_PID" "$COLLECTOR_PID"; do
+    if [ -n "$pid" ]; then
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+    fi
+  done
+  rm -rf "$DATA_DIR"
+  # ログは失敗時のみ残す(原因調査用)
+  if [ "$rc" -eq 0 ]; then
+    rm -rf "$LOG_DIR"
+  else
+    echo "📝 Logs kept in: $LOG_DIR"
+  fi
+  if [ -n "$HEALTH_BODY" ]; then
+    rm -f "$HEALTH_BODY"
+  fi
 }
 trap cleanup EXIT
 
-# Config (use dynamic ports to avoid conflicts)
-GRPC_PORT=$((50000 + RANDOM % 1000))
-HTTP_PORT=$((8000 + RANDOM % 1000))
-GRPC_ADDR=":$GRPC_PORT"
-HTTP_ADDR=":$HTTP_PORT"
-DATA_DIR="/tmp/sentinel-test-data-$$"
+# 空きポートを 2 つ取得する(同時に bind して重複を避ける)。標準ライブラリのみ使用
+pick_free_ports() {
+  python3 -c '
+import socket
+socks = []
+for _ in range(2):
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("", 0))
+    socks.append(s)
+print(" ".join(str(s.getsockname()[1]) for s in socks))
+'
+}
+
 RULES_FILE="$PROJECT_ROOT/rules.yaml"
 AGENT_RATE=5
 
@@ -36,6 +64,52 @@ echo "📦 Building Agent..."
 cd "$PROJECT_ROOT/rust-agent"
 AGENT_BIN="$(pwd)/target/x86_64-unknown-linux-gnu/release/sentinel-agent"
 
+# 空きポートを探索(go build 後・起動直前に行い、取得から bind までの競合窓を縮める)
+if ! read -r GRPC_PORT HTTP_PORT < <(pick_free_ports) || [ -z "$GRPC_PORT" ] || [ -z "$HTTP_PORT" ]; then
+  echo "❌ 空きポートを取得できませんでした"
+  exit 1
+fi
+GRPC_ADDR=":$GRPC_PORT"
+HTTP_ADDR=":$HTTP_PORT"
+BASE_URL="http://localhost$HTTP_ADDR"
+
+# 失敗時は該当レスポンスを表示して終了する
+fail() {
+  echo "❌ FAIL: $1"
+  if [ -n "${2:-}" ]; then
+    echo "--- response ---"
+    echo "$2"
+    echo "----------------"
+  fi
+  for f in "$COLLECTOR_LOG" "$AGENT_LOG"; do
+    if [ -f "$f" ]; then
+      echo "--- tail -50 $f ---"
+      tail -50 "$f"
+    fi
+  done
+  exit 1
+}
+
+# wait_until <timeout秒> <説明> <コマンド...>: 条件成立まで1秒間隔でポーリング。タイムアウトまたは条件関数が終了コード2を返したら fail
+wait_until() {
+  local timeout="$1" desc="$2"
+  shift 2
+  local i out=""
+  for ((i = 0; i < timeout; i++)); do
+    local rc=0
+    out=$("$@" 2>&1) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      return 0
+    fi
+    # 終了コード 2: 待っても回復しない(プロセス死亡など)ので即 fail
+    if [ "$rc" -eq 2 ]; then
+      fail "${desc} (${out})" "$out"
+    fi
+    sleep 1
+  done
+  fail "${desc} (${timeout}秒以内に条件が成立しませんでした)" "$out"
+}
+
 # Start Collector
 echo ""
 echo "🔧 Starting Collector on $HTTP_ADDR..."
@@ -46,16 +120,15 @@ cd "$PROJECT_ROOT/go-collector"
   --data-dir "$DATA_DIR" \
   --rules "$RULES_FILE" \
   --grpc-auth disabled \
-  > /tmp/collector.log 2>&1 &
+  > "$COLLECTOR_LOG" 2>&1 &
 COLLECTOR_PID=$!
 
-# Wait for Collector to be ready
-sleep 2
-if ! kill -0 $COLLECTOR_PID 2>/dev/null; then
-  echo "❌ Collector failed to start"
-  cat /tmp/collector.log
-  exit 1
-fi
+# Wait for Collector to be ready (/healthz を最大30秒ポーリング)
+collector_ready() {
+  kill -0 "$COLLECTOR_PID" 2>/dev/null || { echo "collector process exited"; return 2; }
+  curl -fsS "$BASE_URL/healthz"
+}
+wait_until 30 "Collector が起動しませんでした" collector_ready
 echo "✅ Collector started (PID: $COLLECTOR_PID)"
 
 # Start Agent
@@ -65,15 +138,15 @@ $AGENT_BIN \
   --collector "http://127.0.0.1:$GRPC_PORT" \
   --mock \
   --mock-rate "$AGENT_RATE" \
-  > /tmp/agent.log 2>&1 &
+  > "$AGENT_LOG" 2>&1 &
 AGENT_PID=$!
 
-sleep 2
-if ! kill -0 $AGENT_PID 2>/dev/null; then
-  echo "❌ Agent failed to start"
-  cat /tmp/agent.log
-  exit 1
-fi
+# Agent: プロセス生存かつ Collector にノード登録されるまで最大30秒待つ
+agent_registered() {
+  kill -0 "$AGENT_PID" 2>/dev/null || { echo "agent process exited"; return 2; }
+  curl -fsS "$BASE_URL/api/nodes" | jq -e 'length >= 1'
+}
+wait_until 30 "Agent が起動・登録されませんでした" agent_registered
 echo "✅ Agent started (PID: $AGENT_PID)"
 
 # Let events flow
@@ -85,39 +158,6 @@ echo ""
 echo "════════════════════════════════════════════════"
 echo "📊 Testing REST API Endpoints"
 echo "════════════════════════════════════════════════"
-
-BASE_URL="http://localhost$HTTP_ADDR"
-
-# 失敗時は該当レスポンスを表示して終了する
-fail() {
-  echo "❌ FAIL: $1"
-  if [ -n "${2:-}" ]; then
-    echo "--- response ---"
-    echo "$2"
-    echo "----------------"
-  fi
-  for f in /tmp/collector.log /tmp/agent.log; do
-    if [ -f "$f" ]; then
-      echo "--- tail -50 $f ---"
-      tail -50 "$f"
-    fi
-  done
-  exit 1
-}
-
-# wait_until <timeout秒> <説明> <コマンド...>: 条件成立まで1秒間隔でポーリング。タイムアウトで fail
-wait_until() {
-  local timeout="$1" desc="$2"
-  shift 2
-  local i out=""
-  for ((i = 0; i < timeout; i++)); do
-    if out=$("$@" 2>&1); then
-      return 0
-    fi
-    sleep 1
-  done
-  fail "${desc} (${timeout}秒以内に条件が成立しませんでした)" "$out"
-}
 
 has_min_stats() {
   curl -fsS "$BASE_URL/api/stats" | jq -e '([.[]] | add // 0) >= 10'
@@ -189,8 +229,3 @@ echo ""
 echo "════════════════════════════════════════════════"
 echo "✅ Integration test completed successfully!"
 echo "════════════════════════════════════════════════"
-echo ""
-echo "📝 Log files:"
-echo "  - Collector: /tmp/collector.log"
-echo "  - Agent:     /tmp/agent.log"
-echo ""
