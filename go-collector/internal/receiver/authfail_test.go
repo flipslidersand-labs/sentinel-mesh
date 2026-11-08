@@ -3,6 +3,7 @@ package receiver
 import (
 	"context"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -164,5 +165,51 @@ func TestStreamAuthInterceptor_RateLimits(t *testing.T) {
 	err := itc(nil, authFakeStream{ctx: authCtx("203.0.113.5", "bad")}, &grpc.StreamServerInfo{}, handler)
 	if status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("expected ResourceExhausted, got %v", status.Code(err))
+	}
+}
+
+// #232: once the source IP has exhausted its failure budget (e.g. one bad
+// agent behind a shared proxy/LB IP), a valid token from the same IP must
+// still authenticate — only failures are throttled.
+func TestCheckAuth_ValidTokenPassesWhenIPExhausted(t *testing.T) {
+	lim, _ := newTestLimiter()
+	st := newAuthTestStore(t)
+	token, err := st.IssueToken(context.Background(), "node-a")
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	const ip = "198.51.100.7"
+	for i := 0; i < int(authFailBurst); i++ {
+		_, err := checkAuthLimited(authCtx(ip, "bad"), st, true, lim)
+		assertUnauthenticated(t, err)
+	}
+	if _, err := checkAuthLimited(authCtx(ip, "bad"), st, true, lim); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("expected ResourceExhausted for bad token after burst, got %v", status.Code(err))
+	}
+	nodeID, err := checkAuthLimited(authCtx(ip, token), st, true, lim)
+	if err != nil || nodeID != "node-a" {
+		t.Fatalf("valid token from exhausted IP = (%q, %v), want (node-a, nil)", nodeID, err)
+	}
+	// Still throttled for failures afterwards: a success must not refund
+	// the attacker's budget.
+	if _, err := checkAuthLimited(authCtx(ip, "bad"), st, true, lim); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("expected ResourceExhausted after success, got %v", status.Code(err))
+	}
+}
+
+// A Bearer value that can't be a valid token (wrong length) is rejected
+// before hashing and still counts as a failure, so oversized values can't
+// be used to burn CPU on SHA-256 without hitting the limiter.
+func TestCheckAuth_WrongLengthTokenCountsAsFailure(t *testing.T) {
+	lim, _ := newTestLimiter()
+	st := newAuthTestStore(t)
+	const ip = "198.51.100.9"
+	huge := strings.Repeat("x", 1<<20)
+	for i := 0; i < int(authFailBurst); i++ {
+		_, err := checkAuthLimited(authCtx(ip, huge), st, true, lim)
+		assertUnauthenticated(t, err)
+	}
+	if _, err := checkAuthLimited(authCtx(ip, huge), st, true, lim); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("expected ResourceExhausted after burst, got %v", status.Code(err))
 	}
 }

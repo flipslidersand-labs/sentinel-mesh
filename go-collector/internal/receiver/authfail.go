@@ -7,14 +7,12 @@ import (
 	"time"
 )
 
-// 既知の制限(#223 の暫定対応): 失敗は LookupNodeID の走査「前」に数えるため、
-// 枠を使い切った送信元 IP(IPv6 は /64)からは有効なトークンも一時的に拒否される。
-// プロキシ/LB の背後で全クライアントが同一 IP に見える構成では、1 台の失敗で
-// 全台が止まりうる。根本対応(O(1) のトークン照合で走査自体を安くし、失敗のみを
-// 数える)は別 Issue で追跡する。
+// 認証失敗のみを送信元単位で数える(#223)。トークン照合は O(1)(#232)なので
+// 照合を先に行い、有効なトークンは送信元の枠の状態に関係なく通す。
+// これによりプロキシ/LB の背後で 1 台が失敗を繰り返しても他の台は止まらない。
 
 const (
-	authFailBurst   = 5.0        // 送信元ごとに許容する連続試行数
+	authFailBurst   = 5.0        // 送信元ごとに許容する連続失敗数
 	authFailPerSec  = 5.0 / 60.0 // 回復速度: 1 分あたり 5 回
 	authFailMaxKeys = 10000      // 追跡する送信元数の上限(超過時は最終アクセス最古を追い出す)
 )
@@ -26,8 +24,8 @@ type authFailEntry struct {
 }
 
 // authFailLimiter は送信元(IPv4 は /32、IPv6 は /64)単位で認証試行を制限する。
-// 判定と予約を 1 つのクリティカルセクションで行い、同時リクエストの
-// すり抜けを防ぐ。認証成功時は release で予約を返す。
+// 判定と消費を 1 つのクリティカルセクションで行い、同時リクエストの
+// すり抜けを防ぐ。認証失敗時にのみ呼ばれる。
 type authFailLimiter struct {
 	mu      sync.Mutex
 	entries map[string]*list.Element // 値は *authFailEntry、list は先頭が最新
@@ -103,26 +101,4 @@ func (l *authFailLimiter) reserve(ip string) bool {
 	}
 	e.tokens--
 	return true
-}
-
-// release は認証成功時に予約を返す。満タンに戻った項目は表から外す。
-func (l *authFailLimiter) release(ip string) {
-	if l == nil {
-		return
-	}
-	key := authFailKey(ip)
-	now := l.now()
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	el, ok := l.entries[key]
-	if !ok {
-		return
-	}
-	e := el.Value.(*authFailEntry)
-	e.refill(now, l.rate, l.burst)
-	e.tokens++
-	if e.tokens >= l.burst {
-		l.order.Remove(el)
-		delete(l.entries, key)
-	}
 }
