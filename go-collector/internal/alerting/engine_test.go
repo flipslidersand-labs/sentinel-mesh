@@ -162,7 +162,7 @@ func TestEngineNumericComparison(t *testing.T) {
 				Message:   "high port",
 				Conditions: []Condition{
 					{
-						Field:    "dport",
+						Field:    "dst_port",
 						Operator: "gt",
 						Value:    "5000",
 					},
@@ -174,7 +174,7 @@ func TestEngineNumericComparison(t *testing.T) {
 	engine := New(ruleset, logger)
 
 	payload := map[string]interface{}{
-		"dport": 8080,
+		"dst_port": 8080,
 	}
 	raw, _ := json.Marshal(payload)
 
