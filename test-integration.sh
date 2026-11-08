@@ -78,8 +78,7 @@ echo "✅ Agent started (PID: $AGENT_PID)"
 
 # Let events flow
 echo ""
-echo "⏳ Collecting events and alerts for 8 seconds..."
-sleep 8
+echo "⏳ Waiting for events to be collected..."
 
 # Test REST API endpoints
 echo ""
@@ -97,6 +96,12 @@ fail() {
     echo "$2"
     echo "----------------"
   fi
+  for f in /tmp/collector.log /tmp/agent.log; do
+    if [ -f "$f" ]; then
+      echo "--- tail -50 $f ---"
+      tail -50 "$f"
+    fi
+  done
   exit 1
 }
 
@@ -104,47 +109,55 @@ fail() {
 wait_until() {
   local timeout="$1" desc="$2"
   shift 2
-  local i
+  local i out=""
   for ((i = 0; i < timeout; i++)); do
-    if "$@" >/dev/null 2>&1; then
+    if out=$("$@" 2>&1); then
       return 0
     fi
     sleep 1
   done
-  fail "${desc} (${timeout}秒以内に条件が成立しませんでした)"
+  fail "${desc} (${timeout}秒以内に条件が成立しませんでした)" "$out"
+}
+
+has_min_stats() {
+  curl -fsS "$BASE_URL/api/stats" | jq -e '([.[]] | add // 0) >= 10'
+}
+
+has_active_nodes() {
+  curl -fsS "$BASE_URL/api/nodes" | jq -e 'length >= 1 and all(.[]; .status == "active")'
 }
 
 has_events() {
   curl -fsS "$BASE_URL/api/events?limit=3" | jq -e 'length >= 1'
 }
 
-has_sentinel_metrics() {
+has_events_metric() {
   local body
   body=$(curl -fsS "$BASE_URL/metrics") || return 1
-  grep -q "^sentinel_" <<<"$body"
+  grep "^sentinel_events_total" <<<"$body" | awk '{ if ($NF + 0 > 0) found = 1 } END { exit !found }'
 }
 
 # Health check
 echo ""
 echo "🏥 Health Check:"
-HEALTH_CODE=$(curl -sS -o /tmp/healthz.body -w '%{http_code}' "$BASE_URL/healthz") \
+HEALTH_BODY=$(mktemp)
+HEALTH_CODE=$(curl -sS -o "$HEALTH_BODY" -w '%{http_code}' "$BASE_URL/healthz") \
   || fail "/healthz に接続できません"
-[ "$HEALTH_CODE" = "200" ] || fail "/healthz が 200 ではありません (got $HEALTH_CODE)" "$(cat /tmp/healthz.body)"
-cat /tmp/healthz.body | jq .
-rm -f /tmp/healthz.body
+[ "$HEALTH_CODE" = "200" ] || fail "/healthz が 200 ではありません (got $HEALTH_CODE)" "$(cat "$HEALTH_BODY")"
+jq . "$HEALTH_BODY"
+rm -f "$HEALTH_BODY"
 
-# Event stats (情報表示のみ)
+# Event stats: 合計 10 以上になるまで最大20秒待つ
 echo ""
 echo "📈 Event Stats:"
+wait_until 20 "/api/stats のイベント合計が 10 未満です" has_min_stats
 curl -fsS "$BASE_URL/api/stats" | jq .
 
 # Node status: 1件以上かつ全ノード active
 echo ""
 echo "🖥️  Registered Nodes:"
-NODES=$(curl -fsS "$BASE_URL/api/nodes") || fail "/api/nodes の取得に失敗しました"
-echo "$NODES" | jq '.[] | {node_id, hostname, status}'
-echo "$NODES" | jq -e 'length >= 1 and all(.[]; .status == "active")' >/dev/null \
-  || fail "/api/nodes: ノードが0件、または active でないノードがあります" "$NODES"
+wait_until 15 "/api/nodes: ノードが0件、または active でないノードがあります" has_active_nodes
+curl -fsS "$BASE_URL/api/nodes" | jq '.[] | {node_id, hostname, status}'
 
 # Recent events: 1件以上(流れ始めるまで最大15秒待つ)
 echo ""
@@ -168,9 +181,9 @@ fi
 # Prometheus metrics: sentinel_ 系メトリクスが存在する
 echo ""
 echo "📊 Prometheus Metrics (sample):"
-wait_until 15 "/metrics に sentinel_ 系メトリクスがありません" has_sentinel_metrics
+wait_until 15 "/metrics に sentinel_events_total > 0 がありません" has_events_metric
 METRICS=$(curl -fsS "$BASE_URL/metrics") || fail "/metrics の取得に失敗しました"
-grep "^sentinel_" <<<"$METRICS" | head -10 || true
+grep "^sentinel_events_total" <<<"$METRICS" | head -10 || true
 
 echo ""
 echo "════════════════════════════════════════════════"
