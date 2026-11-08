@@ -21,7 +21,7 @@ bash "$SCRIPTS/build.sh"
 
 echo ""
 echo "==> Step 2: Deploy Collector to $COLLECTOR_HOST ($COLLECTOR_IP)"
-bash "$SCRIPTS/install-collector.sh" "$COLLECTOR_HOST"
+bash "$SCRIPTS/install-collector.sh" "$COLLECTOR_HOST" --grpc-auth disabled  # demo: mock agents have no per-agent token
 
 echo ""
 echo "==> Step 3: Deploy Agents"

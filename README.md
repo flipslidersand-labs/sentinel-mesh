@@ -44,8 +44,9 @@ go build ./cmd/collector
 
 ```bash
 # Terminal 1: Start the Go Collector (with alerting rules)
+# --grpc-auth disabled: local demo only (gRPC defaults to `required`; see "gRPC TLS & Authentication")
 cd go-collector
-./collector serve --grpc-addr :50051 --http-addr :8081 --data-dir /tmp/sentinel-data --rules ../rules.yaml
+./collector serve --grpc-addr :50051 --http-addr :8081 --data-dir /tmp/sentinel-data --rules ../rules.yaml --grpc-auth disabled
 
 # Terminal 2: Start the Rust Agent (mock mode)
 cd rust-agent/agent
@@ -102,6 +103,7 @@ Options:
   --region <NAME>            Default region for agents that register without one [default: default]
   --grpc-tls-cert <PATH>     gRPC server TLS certificate (PEM); requires --grpc-tls-key
   --grpc-tls-key <PATH>      gRPC server TLS private key (PEM); requires --grpc-tls-cert
+  --grpc-auth <MODE>         gRPC auth: required | disabled [default: required]
 
   # Aggregate mode (cross-region, read-only — no gRPC)
   --aggregate                Run as a cross-region aggregator
@@ -132,8 +134,9 @@ For geographically distributed deployments, run one collector per region (each w
 
 ```bash
 # Region collectors (one per region, agents register with --region)
-./collector serve --region us-east --http-addr :8081   # on us-east host
-./collector serve --region eu-west --http-addr :8081   # on eu-west host
+# (demo: --grpc-auth disabled; in production keep the default `required` and issue per-agent tokens)
+./collector serve --region us-east --http-addr :8081 --grpc-auth disabled   # on us-east host
+./collector serve --region eu-west --http-addr :8081 --grpc-auth disabled   # on eu-west host
 
 # Aggregator (polls both, serves merged view + UI)
 ./collector serve --aggregate \
@@ -184,9 +187,9 @@ A region whose collector is unreachable is **isolated**: it is reported with `"r
 
 ## gRPC TLS & Authentication
 
-The gRPC endpoint (`--grpc-addr`, default `:50051`) that agents connect to is **plaintext and
-unauthenticated by default** — the collector logs a warning at startup. On any network you don't
-fully trust, enable both:
+The gRPC endpoint (`--grpc-addr`, default `:50051`) that agents connect to is **plaintext by
+default** (the collector logs a warning at startup); gRPC auth defaults to `--grpc-auth=required`
+(per-agent tokens). On any network you don't fully trust, use both:
 
 - **TLS**: pass `--grpc-tls-cert`/`--grpc-tls-key` (PEM) on the collector; agents connect with
   `--collector https://<host>:50051`, adding `--grpc-ca-cert <path>` if the cert isn't from a
@@ -199,18 +202,26 @@ fully trust, enable both:
   rejects the call with `Unauthenticated`. An authenticated agent also can't register or send
   events under a `node_id` other than the one its token was issued for.
 
-gRPC auth is enabled by the same signal as REST: setting `SENTINEL_API_TOKEN` on the collector
-(it only gates *whether* auth is required, not the credential itself — REST still checks it
-directly, gRPC now checks per-agent tokens instead).
+gRPC auth is controlled by `--grpc-auth=required|disabled` (default `required`), independent of
+`SENTINEL_API_TOKEN` (which now only gates the REST API). With `required`, the collector starts even
+if no per-agent token has been issued yet, but rejects every RPC until one is (fail-closed).
+Unauthenticated gRPC requires the explicit `--grpc-auth=disabled`.
+
+> **Breaking change (#222):** previously gRPC was unauthenticated unless `SENTINEL_API_TOKEN` was set.
+> The default is now `required`. **Migration:** either issue per-agent tokens (below) and pass them
+> to agents, or keep the old behaviour explicitly with `sentinel-collector serve --grpc-auth=disabled`
+> (`scripts/install-collector.sh <host> --grpc-auth disabled`). Existing deployments that ran without
+> `SENTINEL_API_TOKEN` will otherwise see all agents rejected after upgrading.
 
 ```bash
-# Collector: enable auth, then issue a token for each agent before it can connect.
+# Collector: gRPC auth is --grpc-auth=required (the default; independent of the REST token).
+# Issue a token for each agent before it can connect.
 # token issue/revoke/list require the collector to be stopped first — BadgerDB
 # takes an exclusive lock on --data-dir, so they can't run alongside `serve`.
-export SENTINEL_API_TOKEN="$(openssl rand -hex 32)"  # gates the REST API and enables gRPC auth
+export SENTINEL_API_TOKEN="$(openssl rand -hex 32)"  # optional: gates the REST API only, NOT gRPC
 sentinel-collector token issue web-01 --data-dir /var/lib/sentinel-mesh
 # prints the token once — copy it now, it's never shown again
-sentinel-collector serve --grpc-tls-cert cert.pem --grpc-tls-key key.pem
+sentinel-collector serve --grpc-auth=required --grpc-tls-cert cert.pem --grpc-tls-key key.pem
 
 # Agent: pass the per-agent token from `token issue`, matching --node-id.
 ./sentinel-agent --collector https://collector.internal:50051 --node-id web-01 \
@@ -276,7 +287,7 @@ Triggered alerts (from both the rules engine and the anomaly detector) can be fo
 # Example: Slack-only, notify on warning+ with a 2-minute cooldown
 export SENTINEL_SLACK_WEBHOOK_URL="https://hooks.slack.com/services/XXX/YYY/ZZZ"
 export SENTINEL_NOTIFY_COOLDOWN=2m
-./collector serve --rules ../rules.yaml
+./collector serve --rules ../rules.yaml --grpc-auth disabled   # demo; use per-agent tokens in production
 ```
 
 Severity ordering: `info`/`low` < `warning`/`warn`/`medium` < `high`/`critical`/`error`. The per-(rule, node) cooldown suppresses duplicate alert storms; a distinct node or rule notifies independently. Delivery is best-effort and runs off the event hot path — a failing channel is logged and never blocks event ingestion.
@@ -339,7 +350,9 @@ Deploy Collector on one node and Agents on multiple nodes in a local network.
 bash scripts/build.sh
 
 # 2. Deploy Collector to MINIPC (systemd service)
-bash scripts/install-collector.sh minipc
+#    --grpc-auth disabled: demo with mock agents that have no per-agent token.
+#    For production keep the default `required` and issue tokens (see "gRPC TLS & Authentication").
+bash scripts/install-collector.sh minipc --grpc-auth disabled
 
 # 3. Deploy Agents to each node (mock mode)
 bash scripts/deploy-agent.sh --mock --collector 192.0.2.10:50051 minipc
@@ -390,7 +403,7 @@ Deploys the collector binary to a remote host and installs as a systemd service.
 
 ```bash
 bash scripts/install-collector.sh <SSH_HOST> [OPTIONS]
-# Options: --region, --grpc-addr, --http-addr, --data-dir, --grpc-tls-cert, --grpc-tls-key
+# Options: --region, --grpc-addr, --http-addr, --data-dir, --grpc-tls-cert, --grpc-tls-key, --grpc-auth
 # Example:
 bash scripts/install-collector.sh minipc --grpc-addr :50051 --http-addr :8081
 ```
