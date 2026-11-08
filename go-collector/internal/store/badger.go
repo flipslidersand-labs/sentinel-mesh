@@ -58,6 +58,17 @@ type Store struct {
 	countersMu sync.Mutex
 	counters   map[string]int
 
+	// tokensMu/tokenIndex back LookupNodeID (#232): token hash (hex sha256)
+	// -> node_id for active (non-revoked) tokens only, seeded once at
+	// startup by loadTokenIndex and kept in sync by IssueToken/RevokeToken.
+	// BadgerDB's exclusive directory lock means no other process can write
+	// token records while this Store is open, so these are the only write
+	// paths. tokenIndexErr is the startup load error, if any: auth then fails
+	// closed instead of treating every token as unknown.
+	tokensMu      sync.RWMutex
+	tokenIndex    map[string]string
+	tokenIndexErr error
+
 	gcStop chan struct{}
 	gcDone chan struct{}
 }
@@ -79,6 +90,7 @@ func New(dir string) (*Store, error) {
 		db.Close() //nolint:errcheck
 		return nil, err
 	}
+	s.loadTokenIndex()
 	go s.runValueLogGC()
 	return s, nil
 }

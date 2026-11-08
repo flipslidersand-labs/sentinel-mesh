@@ -82,9 +82,11 @@ func tokenRevokeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "revoke <node_id>",
 		Short: "Revoke an agent's token",
-		Long: `revoke marks node_id's current token as revoked. The agent immediately
-loses the ability to authenticate; it must be issued a new token
-("token issue <node_id>") and reconfigured to reconnect.
+		Long: `revoke marks node_id's current token as revoked. Because "serve" must be
+stopped to run this command, the revoke takes effect when the collector is
+started again: from then on the agent can no longer authenticate. It must
+be issued a new token ("token issue <node_id>") and reconfigured to
+reconnect.
 
 Prompts for confirmation unless --yes is given.`,
 		Args: cobra.ExactArgs(1),
