@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
 	"github.com/flipslidersand/sentinel-mesh/internal/store"
@@ -225,5 +227,74 @@ func TestAggregator_RouterServesMergedData(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &nodes)
 	if len(nodes) != 0 {
 		t.Errorf("nodes?region=eu-west = %d, want 0", len(nodes))
+	}
+}
+
+// eventually polls cond until it returns true or timeout elapses.
+func eventually(t *testing.T, timeout time.Duration, cond func() bool, msg string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("timed out after %s: %s", timeout, msg)
+}
+
+// TestAggregator_Start covers Start: the initial synchronous poll, periodic
+// re-polling on the interval, and no further polling after ctx is cancelled (#220).
+func TestAggregator_Start(t *testing.T) {
+	const interval = 20 * time.Millisecond
+
+	var polls atomic.Int64 // one poll == one GET /api/nodes
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/nodes", func(w http.ResponseWriter, _ *http.Request) {
+		polls.Add(1)
+		_ = json.NewEncoder(w).Encode([]registry.AgentNode{{NodeID: "a1", Region: "us-east", Status: "active"}})
+	})
+	mux.HandleFunc("/api/events", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode([]store.Event{{EventID: "e1", NodeID: "a1", Type: "exec"}})
+	})
+	mux.HandleFunc("/api/alerts", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode([]store.Alert{{AlertID: "al1", NodeID: "a1", Severity: "warning"}})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	agg := New([]Upstream{{Region: "us-east", URL: srv.URL}}, interval, "", nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	agg.Start(ctx)
+
+	// 1. The first poll is synchronous: state is populated when Start returns.
+	if got := polls.Load(); got < 1 {
+		t.Fatalf("polls after Start = %d, want >= 1", got)
+	}
+	if n := agg.Nodes(); len(n) != 1 || n[0].NodeID != "a1" {
+		t.Fatalf("Nodes() right after Start = %+v", n)
+	}
+	if len(agg.Events()) != 1 || len(agg.Alerts()) != 1 {
+		t.Fatalf("events/alerts right after Start = %d/%d, want 1/1", len(agg.Events()), len(agg.Alerts()))
+	}
+	if r := agg.Regions(); len(r) != 1 || !r[0].Reachable {
+		t.Fatalf("Regions() right after Start = %+v", r)
+	}
+
+	// 2. The ticker re-polls the upstream after the interval elapses.
+	first := polls.Load()
+	eventually(t, 5*time.Second, func() bool { return polls.Load() >= first+2 },
+		"upstream was not polled again by the ticker")
+
+	// 3. After cancel, polling stops. Allow an in-flight poll to settle first,
+	// then the count must stay flat for several intervals.
+	cancel()
+	time.Sleep(3 * interval)
+	settled := polls.Load()
+	time.Sleep(5 * interval)
+	if got := polls.Load(); got != settled {
+		t.Fatalf("polls increased after cancel: %d -> %d", settled, got)
 	}
 }
