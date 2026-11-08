@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -eo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_ROOT"
@@ -78,8 +78,7 @@ echo "✅ Agent started (PID: $AGENT_PID)"
 
 # Let events flow
 echo ""
-echo "⏳ Collecting events and alerts for 8 seconds..."
-sleep 8
+echo "⏳ Waiting for events to be collected..."
 
 # Test REST API endpoints
 echo ""
@@ -89,42 +88,102 @@ echo "════════════════════════�
 
 BASE_URL="http://localhost$HTTP_ADDR"
 
+# 失敗時は該当レスポンスを表示して終了する
+fail() {
+  echo "❌ FAIL: $1"
+  if [ -n "${2:-}" ]; then
+    echo "--- response ---"
+    echo "$2"
+    echo "----------------"
+  fi
+  for f in /tmp/collector.log /tmp/agent.log; do
+    if [ -f "$f" ]; then
+      echo "--- tail -50 $f ---"
+      tail -50 "$f"
+    fi
+  done
+  exit 1
+}
+
+# wait_until <timeout秒> <説明> <コマンド...>: 条件成立まで1秒間隔でポーリング。タイムアウトで fail
+wait_until() {
+  local timeout="$1" desc="$2"
+  shift 2
+  local i out=""
+  for ((i = 0; i < timeout; i++)); do
+    if out=$("$@" 2>&1); then
+      return 0
+    fi
+    sleep 1
+  done
+  fail "${desc} (${timeout}秒以内に条件が成立しませんでした)" "$out"
+}
+
+has_min_stats() {
+  curl -fsS "$BASE_URL/api/stats" | jq -e '([.[]] | add // 0) >= 10'
+}
+
+has_active_nodes() {
+  curl -fsS "$BASE_URL/api/nodes" | jq -e 'length >= 1 and all(.[]; .status == "active")'
+}
+
+has_events() {
+  curl -fsS "$BASE_URL/api/events?limit=3" | jq -e 'length >= 1'
+}
+
+has_events_metric() {
+  local body
+  body=$(curl -fsS "$BASE_URL/metrics") || return 1
+  grep "^sentinel_events_total" <<<"$body" | awk '{ if ($NF + 0 > 0) found = 1 } END { exit !found }'
+}
+
 # Health check
 echo ""
 echo "🏥 Health Check:"
-curl -s "$BASE_URL/healthz" | jq .
+HEALTH_BODY=$(mktemp)
+HEALTH_CODE=$(curl -sS -o "$HEALTH_BODY" -w '%{http_code}' "$BASE_URL/healthz") \
+  || fail "/healthz に接続できません"
+[ "$HEALTH_CODE" = "200" ] || fail "/healthz が 200 ではありません (got $HEALTH_CODE)" "$(cat "$HEALTH_BODY")"
+jq . "$HEALTH_BODY"
+rm -f "$HEALTH_BODY"
 
-# Event stats
+# Event stats: 合計 10 以上になるまで最大20秒待つ
 echo ""
 echo "📈 Event Stats:"
-curl -s "$BASE_URL/api/stats" | jq .
+wait_until 20 "/api/stats のイベント合計が 10 未満です" has_min_stats
+curl -fsS "$BASE_URL/api/stats" | jq .
 
-# Node status
+# Node status: 1件以上かつ全ノード active
 echo ""
 echo "🖥️  Registered Nodes:"
-curl -s "$BASE_URL/api/nodes" | jq '.[] | {node_id, hostname, status}' | head -20
+wait_until 15 "/api/nodes: ノードが0件、または active でないノードがあります" has_active_nodes
+curl -fsS "$BASE_URL/api/nodes" | jq '.[] | {node_id, hostname, status}'
 
-# Recent events
+# Recent events: 1件以上(流れ始めるまで最大15秒待つ)
 echo ""
 echo "📋 Recent Events (limit 3):"
-curl -s "$BASE_URL/api/events?limit=3" | jq '.[] | {type, node_id, timestamp}' | head -20
+wait_until 15 "/api/events にイベントがありません" has_events
+EVENTS=$(curl -fsS "$BASE_URL/api/events?limit=3") || fail "/api/events の取得に失敗しました"
+echo "$EVENTS" | jq '.[] | {type, node_id, timestamp}'
 
-# Alerts (if any)
+# Alerts: mock の発火内容は決定的でないため警告のみ(失敗にはしない)
 echo ""
 echo "🚨 Triggered Alerts:"
-ALERTS=$(curl -s "$BASE_URL/api/alerts?limit=10")
-ALERT_COUNT=$(echo "$ALERTS" | jq 'length')
+ALERTS=$(curl -fsS "$BASE_URL/api/alerts?limit=10") || fail "/api/alerts の取得に失敗しました"
+ALERT_COUNT=$(echo "$ALERTS" | jq 'length') || fail "/api/alerts のレスポンスが不正です" "$ALERTS"
 if [ "$ALERT_COUNT" -gt 0 ]; then
   echo "Found $ALERT_COUNT alerts:"
-  echo "$ALERTS" | jq '.[] | {rule_id, severity, message, node_id}' | head -30
+  echo "$ALERTS" | jq '.[] | {rule_id, severity, message, node_id}'
 else
-  echo "No alerts triggered (rules may need adjustment)"
+  echo "⚠️  WARNING: No alerts triggered (rules may need adjustment)"
 fi
 
-# Prometheus metrics
+# Prometheus metrics: sentinel_ 系メトリクスが存在する
 echo ""
 echo "📊 Prometheus Metrics (sample):"
-curl -s "$BASE_URL/metrics" | grep "^sentinel" | head -10
+wait_until 15 "/metrics に sentinel_events_total > 0 がありません" has_events_metric
+METRICS=$(curl -fsS "$BASE_URL/metrics") || fail "/metrics の取得に失敗しました"
+grep "^sentinel_events_total" <<<"$METRICS" | head -10 || true
 
 echo ""
 echo "════════════════════════════════════════════════"
