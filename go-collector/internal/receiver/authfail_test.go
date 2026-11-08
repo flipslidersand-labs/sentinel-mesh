@@ -166,3 +166,32 @@ func TestStreamAuthInterceptor_RateLimits(t *testing.T) {
 		t.Fatalf("expected ResourceExhausted, got %v", status.Code(err))
 	}
 }
+
+// #232: once the source IP has exhausted its failure budget (e.g. one bad
+// agent behind a shared proxy/LB IP), a valid token from the same IP must
+// still authenticate — only failures are throttled.
+func TestCheckAuth_ValidTokenPassesWhenIPExhausted(t *testing.T) {
+	lim, _ := newTestLimiter()
+	st := newAuthTestStore(t)
+	token, err := st.IssueToken(context.Background(), "node-a")
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	const ip = "198.51.100.7"
+	for i := 0; i < int(authFailBurst); i++ {
+		_, err := checkAuthLimited(authCtx(ip, "bad"), st, true, lim)
+		assertUnauthenticated(t, err)
+	}
+	if _, err := checkAuthLimited(authCtx(ip, "bad"), st, true, lim); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("expected ResourceExhausted for bad token after burst, got %v", status.Code(err))
+	}
+	nodeID, err := checkAuthLimited(authCtx(ip, token), st, true, lim)
+	if err != nil || nodeID != "node-a" {
+		t.Fatalf("valid token from exhausted IP = (%q, %v), want (node-a, nil)", nodeID, err)
+	}
+	// Still throttled for failures afterwards: a success must not refund
+	// the attacker's budget.
+	if _, err := checkAuthLimited(authCtx(ip, "bad"), st, true, lim); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("expected ResourceExhausted after success, got %v", status.Code(err))
+	}
+}
