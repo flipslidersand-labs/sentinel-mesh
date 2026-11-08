@@ -191,6 +191,9 @@ TLS for the gRPC server is optional but, when enabled, both
 			if err := ruleset.Validate(); err != nil {
 				return fmt.Errorf("validate rules: %w", err)
 			}
+			for _, w := range ruleset.UnknownFieldWarnings() {
+				logger.Warn("rule references unknown payload field", zap.String("detail", w))
+			}
 			engine := alerting.New(ruleset, logger)
 			if len(ruleset.Rules) > 0 {
 				logger.Info("alerting engine loaded", zap.Int("rules", len(ruleset.Rules)))

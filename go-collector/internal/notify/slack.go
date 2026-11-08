@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/flipslidersand/sentinel-mesh/internal/store"
@@ -33,13 +36,29 @@ type slackPayload struct {
 	Text string `json:"text"`
 }
 
+// slackEscaper neutralises Slack mrkdwn control characters: & < > are
+// HTML-escaped (blocking <url|text> links and <!channel> mentions) and
+// backticks are removed (blocking code-span breakout).
+var slackEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "`", "")
+
 // formatSlackText renders a human-readable alert line for Slack.
 func formatSlackText(a store.Alert) string {
+	e := slackEscaper.Replace
 	return fmt.Sprintf(
 		":rotating_light: *[%s]* %s\n> node: `%s`  rule: `%s`  event: `%s`  at %s",
-		a.Severity, a.Message, a.NodeID, a.RuleID, a.EventID,
+		e(a.Severity), e(a.Message), e(a.NodeID), e(a.RuleID), e(a.EventID),
 		a.Timestamp.Format(time.RFC3339),
 	)
+}
+
+// stripURLError drops the request URL from a *url.Error. The URL embeds the
+// secret webhook path, so only the underlying cause is kept.
+func stripURLError(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Err
+	}
+	return err
 }
 
 // Send implements Notifier.
@@ -51,13 +70,13 @@ func (s *SlackNotifier) Send(ctx context.Context, a store.Alert) error {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.webhookURL, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("build slack request: %w", err)
+		return fmt.Errorf("build slack request: %w", stripURLError(err))
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("post to slack: %w", err)
+		return fmt.Errorf("post to slack: %w", stripURLError(err))
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
