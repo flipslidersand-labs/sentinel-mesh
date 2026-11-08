@@ -28,6 +28,12 @@ type fakeSMTP struct {
 	gotData     bool
 	authPlainOK bool
 	authOverTLS bool
+	// optional behaviors / captures (used by email_smtp_test.go)
+	rejectRcpt string // if non-empty, RCPT to this address gets 550
+	noAuthExt  bool   // do not advertise AUTH
+	mailFrom   string
+	rcpts      []string
+	body       strings.Builder
 }
 
 func newTestCert(t *testing.T) (tls.Certificate, *x509.CertPool) {
@@ -95,6 +101,11 @@ func (s *fakeSMTP) serve(c net.Conn) {
 		}
 		line = strings.TrimRight(line, "\r\n")
 		if inData {
+			if line != "." {
+				s.mu.Lock()
+				s.body.WriteString(line + "\n")
+				s.mu.Unlock()
+			}
 			if line == "." {
 				inData = false
 				s.mu.Lock()
@@ -114,7 +125,11 @@ func (s *fakeSMTP) serve(c net.Conn) {
 			if s.advertise && !tlsOn {
 				send(conn, "250-STARTTLS")
 			}
-			send(conn, "250 AUTH PLAIN")
+			if s.noAuthExt {
+				send(conn, "250 OK")
+			} else {
+				send(conn, "250 AUTH PLAIN")
+			}
 		case up == "STARTTLS":
 			send(conn, "220 go ahead")
 			tc := tls.Server(conn, &tls.Config{Certificates: []tls.Certificate{s.cert}})
@@ -132,8 +147,21 @@ func (s *fakeSMTP) serve(c net.Conn) {
 			s.authOverTLS = s.startedTLS
 			s.mu.Unlock()
 			send(conn, "235 ok")
-		case strings.HasPrefix(up, "MAIL"), strings.HasPrefix(up, "RCPT"):
+		case strings.HasPrefix(up, "MAIL"):
+			s.mu.Lock()
+			s.mailFrom = line
+			s.mu.Unlock()
 			send(conn, "250 ok")
+		case strings.HasPrefix(up, "RCPT"):
+			s.mu.Lock()
+			s.rcpts = append(s.rcpts, line)
+			rej := s.rejectRcpt != "" && strings.Contains(line, s.rejectRcpt)
+			s.mu.Unlock()
+			if rej {
+				send(conn, "550 no such user")
+			} else {
+				send(conn, "250 ok")
+			}
 		case up == "DATA":
 			inData = true
 			send(conn, "354 go")
