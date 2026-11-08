@@ -97,7 +97,8 @@ type server struct {
 	notifier      *notify.Dispatcher
 	metrics       *otel.MetricsProvider
 	tracer        trace.Tracer
-	defaultRegion string // used when an agent registers without a region
+	authFail      *authFailLimiter // per-source auth throttle (shared with the interceptors)
+	defaultRegion string           // used when an agent registers without a region
 	log           *zap.Logger
 }
 
@@ -506,6 +507,7 @@ func Serve(ctx context.Context, addr string, st *store.Store, reg *registry.Regi
 		return fmt.Errorf("listen %s: %w", addr, err)
 	}
 
+	authLim := newAuthFailLimiter()
 	var opts []grpc.ServerOption
 	if tlsCertFile != "" && tlsKeyFile != "" {
 		creds, err := credentials.NewServerTLSFromFile(tlsCertFile, tlsKeyFile)
@@ -515,8 +517,8 @@ func Serve(ctx context.Context, addr string, st *store.Store, reg *registry.Regi
 		opts = append(opts, grpc.Creds(creds))
 	}
 	opts = append(opts,
-		grpc.ChainUnaryInterceptor(unaryAuthInterceptor(st, authEnabled)),
-		grpc.ChainStreamInterceptor(streamAuthInterceptor(st, authEnabled)),
+		grpc.ChainUnaryInterceptor(unaryAuthInterceptor(st, authEnabled, authLim)),
+		grpc.ChainStreamInterceptor(streamAuthInterceptor(st, authEnabled, authLim)),
 		// A single agent could otherwise open unbounded concurrent
 		// StreamEvents connections or send oversized messages, exhausting
 		// collector resources (#75).
@@ -529,7 +531,7 @@ func Serve(ctx context.Context, addr string, st *store.Store, reg *registry.Regi
 	)
 	srv := grpc.NewServer(opts...)
 
-	s := &server{st: st, reg: reg, engine: engine, detector: detector, notifier: notifier, metrics: metrics, tracer: tracer, defaultRegion: defaultRegion, log: log}
+	s := &server{st: st, reg: reg, engine: engine, detector: detector, notifier: notifier, metrics: metrics, tracer: tracer, defaultRegion: defaultRegion, log: log, authFail: authLim}
 	pb.RegisterSentinelCollectorServer(srv, s)
 
 	// Stop the server when ctx is cancelled (e.g. SIGINT/SIGTERM) so the
@@ -585,6 +587,12 @@ func authedNodeIDFromContext(ctx context.Context) string {
 // token had, just gated by a separate flag now that there's no longer one
 // token whose emptiness could signal it.
 func checkAuth(ctx context.Context, st *store.Store, authEnabled bool) (nodeID string, err error) {
+	return checkAuthLimited(ctx, st, authEnabled, nil)
+}
+
+// checkAuthLimited is checkAuth plus per-source-IP throttling via lim (nil
+// disables throttling). See authfail.go for the known shared-IP limitation.
+func checkAuthLimited(ctx context.Context, st *store.Store, authEnabled bool, lim *authFailLimiter) (nodeID string, err error) {
 	if !authEnabled {
 		return "", nil
 	}
@@ -600,19 +608,30 @@ func checkAuth(ctx context.Context, st *store.Store, authEnabled bool) (nodeID s
 	if !ok {
 		return "", status.Error(codes.Unauthenticated, "invalid token")
 	}
+	ip := peerIP(ctx)
+	if ip != "" && !lim.reserve(ip) {
+		// Reject before the full token scan + JSON decode in LookupNodeID.
+		return "", status.Error(codes.ResourceExhausted, "too many authentication failures")
+	}
 	nodeID, ok, err = st.LookupNodeID(ctx, got)
 	if err != nil {
+		if ip != "" {
+			lim.release(ip) // store error is not the caller's failure
+		}
 		return "", status.Error(codes.Internal, "auth lookup failed")
 	}
 	if !ok {
 		return "", status.Error(codes.Unauthenticated, "invalid token")
 	}
+	if ip != "" {
+		lim.release(ip)
+	}
 	return nodeID, nil
 }
 
-func unaryAuthInterceptor(st *store.Store, authEnabled bool) grpc.UnaryServerInterceptor {
+func unaryAuthInterceptor(st *store.Store, authEnabled bool, lim *authFailLimiter) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		nodeID, err := checkAuth(ctx, st, authEnabled)
+		nodeID, err := checkAuthLimited(ctx, st, authEnabled, lim)
 		if err != nil {
 			return nil, err
 		}
@@ -631,9 +650,9 @@ type authedServerStream struct {
 
 func (s *authedServerStream) Context() context.Context { return s.ctx }
 
-func streamAuthInterceptor(st *store.Store, authEnabled bool) grpc.StreamServerInterceptor {
+func streamAuthInterceptor(st *store.Store, authEnabled bool, lim *authFailLimiter) grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		nodeID, err := checkAuth(ss.Context(), st, authEnabled)
+		nodeID, err := checkAuthLimited(ss.Context(), st, authEnabled, lim)
 		if err != nil {
 			return err
 		}
