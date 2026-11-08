@@ -135,3 +135,19 @@ func TestLoadRulesValidFile(t *testing.T) {
 		t.Fatalf("expected loaded ruleset to validate, got %v", err)
 	}
 }
+
+func TestUnknownFieldWarnings(t *testing.T) {
+	rs := &RuleSet{Rules: []Rule{
+		{ID: "ok", EventType: "tcp", Conditions: []Condition{{Field: "dst_port", Operator: "gt", Value: "1"}}},
+		{ID: "bad", EventType: "tcp", Conditions: []Condition{{Field: "dport", Operator: "gt", Value: "1"}}},
+		{ID: "wrongtype", EventType: "exec", Conditions: []Condition{{Field: "dst_port", Operator: "gt", Value: "1"}}},
+		{ID: "any", EventType: "*", Conditions: []Condition{{Field: "dst_port", Operator: "gt", Value: "1"}}},
+	}}
+	if err := rs.Validate(); err != nil {
+		t.Fatalf("unknown field must not make Validate fail (would block startup): %v", err)
+	}
+	w := rs.UnknownFieldWarnings()
+	if len(w) != 2 {
+		t.Fatalf("want 2 warnings (bad, wrongtype), got %v", w)
+	}
+}
