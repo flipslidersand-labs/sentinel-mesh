@@ -84,14 +84,14 @@ message FileEvent {
 rules:
   - id: tcp_to_suspicious_port
     description: Alert on connections to high ports
-    event_type: tcp          # exec | tcp | file
+    event_type: tcp          # exec | tcp | file | *(すべて)
     severity: warning
     message: "TCP connection to non-standard port detected"
     conditions:              # すべて満たしたときに発火(AND)
-      - field: dst_port      # payload のキー。ドット区切りで入れ子も指定可
+      - field: dst_port      # イベント payload のキー名。存在しないキーは起動時に警告が出る
         operator: gt
         value: "10000"       # 値は常に文字列で書く
 ```
 
-- サポートする `operator`: `eq`(文字列一致)、`contains`(部分一致)、`regex`(正規表現)、`gt` / `lt`(数値比較)。未知の operator はその条件が不成立になる
+- サポートする `operator`: `eq`(文字列一致)、`contains`(部分一致)、`regex`(正規表現)、`gt` / `lt`(数値比較)。rules.yaml に未知の operator があると、起動時の検証(`RuleSet.Validate`)でエラーになり Collector は起動しない
 - 頻度・件数の検知(旧例の `window` / `count`)は rules.yaml では表現できない。`go-collector/internal/anomaly` が別機構で担う
