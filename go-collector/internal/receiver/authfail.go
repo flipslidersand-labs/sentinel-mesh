@@ -34,6 +34,7 @@ type authFailLimiter struct {
 	burst   float64
 	rate    float64 // tokens/sec
 	maxKeys int
+	onFail  func(reason string) // optional: called once per rejected attempt (#223)
 }
 
 func newAuthFailLimiter() *authFailLimiter {
@@ -101,4 +102,11 @@ func (l *authFailLimiter) reserve(ip string) bool {
 	}
 	e.tokens--
 	return true
+}
+
+// recordFail reports a rejected attempt with a fixed reason label. Nil-safe.
+func (l *authFailLimiter) recordFail(reason string) {
+	if l != nil && l.onFail != nil {
+		l.onFail(reason)
+	}
 }

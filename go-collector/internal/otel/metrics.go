@@ -22,7 +22,17 @@ type MetricsProvider struct {
 	// persistent storage outages (disk full, corruption, ...) are visible in
 	// monitoring instead of being silently swallowed.
 	storeWriteFailureCounter metric.Int64Counter
+	// authFailureCounter counts rejected authentication attempts (#223) by a
+	// fixed, low-cardinality reason. Never labelled by peer IP or token.
+	authFailureCounter metric.Int64Counter
 }
+
+// Fixed reason label values for RecordAuthFailure.
+const (
+	AuthFailMissingCredentials = "missing_credentials" // no metadata / authorization header
+	AuthFailInvalidToken       = "invalid_token"       // Unauthenticated: bad scheme, malformed or unknown/revoked token
+	AuthFailRateLimited        = "rate_limited"        // ResourceExhausted: per-source failure budget spent
+)
 
 // NewMetricsProvider initializes Prometheus-backed OTel metrics.
 func NewMetricsProvider(ctx context.Context) (*MetricsProvider, error) {
@@ -63,7 +73,16 @@ func NewMetricsProvider(ctx context.Context) (*MetricsProvider, error) {
 		return nil, err
 	}
 
+	authFailureCounter, err := meter.Int64Counter(
+		"auth_failures_total",
+		metric.WithDescription("Total number of rejected gRPC authentication attempts"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	return &MetricsProvider{
+		authFailureCounter:       authFailureCounter,
 		meter:                    meter,
 		eventCounter:             eventCounter,
 		alertCounter:             alertCounter,
@@ -98,6 +117,16 @@ func (mp *MetricsProvider) RecordStoreWriteFailure(kind string) {
 	mp.storeWriteFailureCounter.Add(context.Background(), 1,
 		metric.WithAttributes(
 			attribute.String("kind", kind),
+		),
+	)
+}
+
+// RecordAuthFailure increments the auth failure counter for a fixed reason
+// (one of the AuthFail* constants).
+func (mp *MetricsProvider) RecordAuthFailure(reason string) {
+	mp.authFailureCounter.Add(context.Background(), 1,
+		metric.WithAttributes(
+			attribute.String("reason", reason),
 		),
 	)
 }
