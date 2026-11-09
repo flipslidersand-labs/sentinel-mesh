@@ -196,11 +196,17 @@ func TestNewEmailNotifier_AuthHost(t *testing.T) {
 }
 
 func TestNewEmailNotifier_AuthHostIPv6(t *testing.T) {
-	t.Skip("既知バグ #246 (email.go の LastIndex(\":\") で host が [::1] になる)。#246 修正時に Skip を外す")
-	n := NewEmailNotifier(EmailConfig{Addr: "[::1]:25", Username: "u", Password: "p"})
-	host, _, _ := net.SplitHostPort("[::1]:25")
-	if _, _, err := n.auth.Start(&smtp.ServerInfo{Name: host, TLS: true, Auth: []string{"PLAIN"}}); err != nil {
-		t.Fatalf("auth host mismatch: %v", err)
+	for _, tc := range []struct{ addr, serverName string }{
+		{"[::1]:25", "::1"},
+		{"[::1]", "::1"}, // bracketed, portless
+		{"[2001:db8::1]:587", "2001:db8::1"},
+		{"smtp.example.com:587", "smtp.example.com"},
+		{"127.0.0.1:2525", "127.0.0.1"},
+	} {
+		n := NewEmailNotifier(EmailConfig{Addr: tc.addr, Username: "u", Password: "p"})
+		if _, _, err := n.auth.Start(&smtp.ServerInfo{Name: tc.serverName, TLS: true, Auth: []string{"PLAIN"}}); err != nil {
+			t.Errorf("addr %q: auth host mismatch: %v", tc.addr, err)
+		}
 	}
 }
 

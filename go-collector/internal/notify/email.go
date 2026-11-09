@@ -38,11 +38,7 @@ type EmailConfig struct {
 func NewEmailNotifier(cfg EmailConfig) *EmailNotifier {
 	var auth smtp.Auth
 	if cfg.Username != "" {
-		host := cfg.Addr
-		if i := strings.LastIndex(host, ":"); i >= 0 {
-			host = host[:i]
-		}
-		auth = smtp.PlainAuth("", cfg.Username, cfg.Password, host)
+		auth = smtp.PlainAuth("", cfg.Username, cfg.Password, smtpHost(cfg.Addr))
 	}
 	return &EmailNotifier{
 		addr:     cfg.Addr,
@@ -51,6 +47,19 @@ func NewEmailNotifier(cfg EmailConfig) *EmailNotifier {
 		to:       cfg.To,
 		sendMail: sendMailContext,
 	}
+}
+
+// smtpHost extracts the host from addr the same way the SMTP client does
+// (net.SplitHostPort). Without a port the whole addr is the host, with
+// surrounding brackets of an IPv6 literal removed.
+func smtpHost(addr string) string {
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		return host
+	}
+	if strings.HasPrefix(addr, "[") && strings.HasSuffix(addr, "]") {
+		return addr[1 : len(addr)-1]
+	}
+	return addr
 }
 
 // Name implements Notifier.
@@ -137,10 +146,7 @@ func sendMailWithOptions(ctx context.Context, addr string, a smtp.Auth, from str
 		}
 	}
 
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		host = addr
-	}
+	host := smtpHost(addr)
 
 	c, err := smtp.NewClient(conn, host)
 	if err != nil {
