@@ -35,7 +35,7 @@ rules:
     severity: warning
     message: "TCP connection to non-standard port detected"
     conditions:
-      - field: dport
+      - field: dst_port
         operator: gt
         value: "10000"
 
