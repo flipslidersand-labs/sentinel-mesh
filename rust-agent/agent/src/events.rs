@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{error::TrySendError, Sender};
 use uuid::Uuid;
@@ -9,26 +11,18 @@ macro_rules! include_bytes_aligned {
     ($path:expr) => {{
         #[repr(C, align(4096))]
         struct Aligned<const N: usize>([u8; N]);
-        static DATA: Aligned<{ include_bytes!($path).len() }> = Aligned(*include_bytes!($path));
+        static DATA: Aligned<{ include_bytes!($path).len() }> =
+            Aligned(*include_bytes!($path));
         &DATA.0
     }};
 }
 
 // Mock pools for realistic-looking events
 static MOCK_IPS: &[&str] = &[
-    "10.0.0.1",
-    "10.0.0.2",
-    "172.16.0.10",
-    "192.168.1.100",
-    "8.8.8.8",
-    "1.1.1.1",
+    "10.0.0.1", "10.0.0.2", "172.16.0.10", "192.168.1.100", "8.8.8.8", "1.1.1.1",
 ];
 static MOCK_PORTS: &[(u32, &str)] = &[
-    (80, "nginx"),
-    (443, "curl"),
-    (5432, "psql"),
-    (6379, "redis-cli"),
-    (8080, "app"),
+    (80, "nginx"), (443, "curl"), (5432, "psql"), (6379, "redis-cli"), (8080, "app"),
 ];
 static MOCK_PATHS: &[(&str, &str)] = &[
     ("/etc/passwd", "open"),
@@ -48,6 +42,8 @@ const DROP_REPORT_INTERVAL: Duration = Duration::from_secs(10);
 /// `interval`. `total` is cumulative across reconnects (the tracker lives as
 /// long as the source task).
 struct DropTracker {
+    /// Mirror of `total`, readable from outside the task (tests, metrics).
+    counter: Arc<AtomicU64>,
     total: u64,
     unreported: u64,
     last_report: Option<Instant>,
@@ -62,8 +58,14 @@ struct DropReport {
 }
 
 impl DropTracker {
+    #[cfg(test)]
     fn new(interval: Duration) -> Self {
+        Self::with_counter(interval, Arc::new(AtomicU64::new(0)))
+    }
+
+    fn with_counter(interval: Duration, counter: Arc<AtomicU64>) -> Self {
         Self {
+            counter,
             total: 0,
             unreported: 0,
             last_report: None,
@@ -74,7 +76,22 @@ impl DropTracker {
     /// Record one dropped event; returns a report when it is time to log.
     fn record(&mut self, now: Instant) -> Option<DropReport> {
         self.total += 1;
+        self.counter.fetch_add(1, Ordering::Relaxed);
         self.unreported += 1;
+        self.report_if_due(now)
+    }
+
+    /// Call after a successful send: if drops are still unreported and the
+    /// interval has elapsed, report them so they never stay unlogged after
+    /// the channel recovers.
+    fn on_success(&mut self, now: Instant) -> Option<DropReport> {
+        self.report_if_due(now)
+    }
+
+    fn report_if_due(&mut self, now: Instant) -> Option<DropReport> {
+        if self.unreported == 0 {
+            return None;
+        }
         let due = match self.last_report {
             None => true,
             Some(t) => now.saturating_duration_since(t) >= self.interval,
@@ -105,7 +122,12 @@ impl DropTracker {
 /// A Full channel drops the event, counts it and logs (throttled).
 fn try_forward(tx: &Sender<KernelEvent>, event: KernelEvent, drops: &mut DropTracker) -> bool {
     match tx.try_send(event) {
-        Ok(()) => true,
+        Ok(()) => {
+            if let Some(r) = drops.on_success(Instant::now()) {
+                log_drops(&r);
+            }
+            true
+        }
         Err(TrySendError::Full(_)) => {
             if let Some(r) = drops.record(Instant::now()) {
                 log_drops(&r);
@@ -130,11 +152,17 @@ fn log_drops(r: &DropReport) {
 
 /// Mock event generator — cycles Exec / TCP / File to exercise all event types.
 pub async fn mock_source(tx: Sender<KernelEvent>, rate: u64) {
+    mock_source_counted(tx, rate, Arc::new(AtomicU64::new(0))).await
+}
+
+/// Same as `mock_source`, exposing the number of events dropped on a full
+/// channel through `dropped`.
+async fn mock_source_counted(tx: Sender<KernelEvent>, rate: u64, dropped: Arc<AtomicU64>) {
     let interval = Duration::from_millis(1000 / rate.max(1));
     let mut ticker = tokio::time::interval(interval);
     let mut counter: u64 = 0;
     let mut pid: u32 = 1000;
-    let mut drops = DropTracker::new(DROP_REPORT_INTERVAL);
+    let mut drops = DropTracker::with_counter(DROP_REPORT_INTERVAL, dropped);
 
     loop {
         ticker.tick().await;
@@ -260,10 +288,7 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
     if let Some(prog) = bpf.program_mut("sentinel_openat") {
         match TryInto::<&mut TracePoint>::try_into(prog) {
             Ok(tp) => {
-                if let Err(e) = tp
-                    .load()
-                    .and_then(|_| tp.attach("syscalls", "sys_enter_openat"))
-                {
+                if let Err(e) = tp.load().and_then(|_| tp.attach("syscalls", "sys_enter_openat")) {
                     eprintln!("warn: openat tracepoint: {e}");
                 }
             }
@@ -336,8 +361,9 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
                 // `>=`) ensures the ring buffer record is really this struct,
                 // not a same-tag record of a different size.
                 0 if data.len() == core::mem::size_of::<EbpfExecEvent>() => {
-                    let raw =
-                        unsafe { core::ptr::read_unaligned(data.as_ptr() as *const EbpfExecEvent) };
+                    let raw = unsafe {
+                        core::ptr::read_unaligned(data.as_ptr() as *const EbpfExecEvent)
+                    };
                     KernelEvent {
                         event_id: Uuid::new_v4().to_string(),
                         node_id: String::new(),
@@ -354,8 +380,9 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
                     }
                 }
                 1 if data.len() == core::mem::size_of::<EbpfFileEvent>() => {
-                    let raw =
-                        unsafe { core::ptr::read_unaligned(data.as_ptr() as *const EbpfFileEvent) };
+                    let raw = unsafe {
+                        core::ptr::read_unaligned(data.as_ptr() as *const EbpfFileEvent)
+                    };
                     KernelEvent {
                         event_id: Uuid::new_v4().to_string(),
                         node_id: String::new(),
@@ -371,8 +398,9 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
                     }
                 }
                 2 if data.len() == core::mem::size_of::<EbpfTcpEvent>() => {
-                    let raw =
-                        unsafe { core::ptr::read_unaligned(data.as_ptr() as *const EbpfTcpEvent) };
+                    let raw = unsafe {
+                        core::ptr::read_unaligned(data.as_ptr() as *const EbpfTcpEvent)
+                    };
                     KernelEvent {
                         event_id: Uuid::new_v4().to_string(),
                         node_id: String::new(),
@@ -638,6 +666,38 @@ mod tests {
                 total: 6
             })
         );
+    }
+
+    #[test]
+    fn drop_tracker_success_flushes_pending_after_interval() {
+        let t0 = Instant::now();
+        let mut d = DropTracker::new(Duration::from_secs(10));
+        assert!(d.record(t0).is_some());
+        assert!(d.record(t0 + Duration::from_secs(1)).is_none());
+        // Recovered: success within the interval keeps it pending...
+        assert_eq!(d.on_success(t0 + Duration::from_secs(5)), None);
+        // ...but once the interval passed, the next success reports it.
+        assert_eq!(
+            d.on_success(t0 + Duration::from_secs(10)),
+            Some(DropReport { since_last: 1, total: 2 })
+        );
+        assert_eq!(d.on_success(t0 + Duration::from_secs(30)), None);
+    }
+
+    #[tokio::test]
+    async fn mock_source_counts_drops_on_full_channel() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1); // never drained
+        let dropped = Arc::new(AtomicU64::new(0));
+        let handle = tokio::spawn(mock_source_counted(tx, 1000, dropped.clone()));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while dropped.load(Ordering::Relaxed) < 3 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("mock_source must count drops on a full channel");
+        drop(rx);
+        let _ = handle.await;
     }
 
     #[test]
