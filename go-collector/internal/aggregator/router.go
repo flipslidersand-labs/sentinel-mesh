@@ -2,12 +2,11 @@ package aggregator
 
 import (
 	"net/http"
-	"strings"
 
-	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 
 	"github.com/flipslidersand/sentinel-mesh/internal/httpauth"
+	"github.com/flipslidersand/sentinel-mesh/internal/httpserver"
 )
 
 // Router builds the read-only HTTP router for aggregate mode. It serves the same
@@ -16,31 +15,7 @@ import (
 // corsOrigins restricts cross-origin access (empty = deny cross-origin);
 // apiToken, when non-empty, gates /api/* behind bearer auth.
 func Router(a *Aggregator, staticDir string, corsOrigins []string, apiToken string) *gin.Engine {
-	gin.SetMode(gin.ReleaseMode)
-	r := gin.New()
-	r.Use(gin.Recovery())
-
-	// CORS: default deny. Only allow explicitly configured origins.
-	if len(corsOrigins) > 0 {
-		corsConfig := cors.DefaultConfig()
-		corsConfig.AllowOrigins = corsOrigins
-		r.Use(cors.New(corsConfig))
-	}
-
-	r.Static("/assets", staticDir+"/assets")
-	r.StaticFile("/", staticDir+"/index.html")
-	r.StaticFile("/favicon.svg", staticDir+"/favicon.svg")
-	r.NoRoute(func(c *gin.Context) {
-		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
-			return
-		}
-		c.File(staticDir + "/index.html")
-	})
-
-	r.GET("/healthz", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "ok", "mode": "aggregator"})
-	})
+	r := httpserver.NewBaseRouter(staticDir, corsOrigins, gin.H{"status": "ok", "mode": "aggregator"})
 
 	api := r.Group("/api", httpauth.BearerAuth(apiToken))
 	{
