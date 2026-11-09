@@ -12,7 +12,7 @@ jobs:
     # (2026-09-13 時点の master HEAD, Dependabot で更新PRを追跡: flipslidersand-labs/sentinel-mesh#148)
     uses: flipslidersand-labs/qa-workflows/.github/workflows/go-test.yml@4698972d73a1ca94088c0301899b93183ee1d90f
     with:
-      go-version: "1.25"
+      go-version: "1.26"
       working-directory: go-collector
       # 引き上げ追跡: flipslidersand-labs/sentinel-mesh#141 (段階的引き上げの運用ルールを規定)
       # 2026-09-14: CI実測 57.9% (go test -race -covermode=atomic ./... 、qa-workflows/go-test.yml
@@ -85,7 +85,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.25"
+          go-version: "1.26"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
