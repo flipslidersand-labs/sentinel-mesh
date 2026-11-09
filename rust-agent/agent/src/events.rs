@@ -1,5 +1,5 @@
-use std::time::Duration;
-use tokio::sync::mpsc::Sender;
+use std::time::{Duration, Instant};
+use tokio::sync::mpsc::{error::TrySendError, Sender};
 use uuid::Uuid;
 
 use crate::pb::{kernel_event::Payload, EventType, ExecEvent, FileEvent, KernelEvent, TcpEvent};
@@ -9,18 +9,26 @@ macro_rules! include_bytes_aligned {
     ($path:expr) => {{
         #[repr(C, align(4096))]
         struct Aligned<const N: usize>([u8; N]);
-        static DATA: Aligned<{ include_bytes!($path).len() }> =
-            Aligned(*include_bytes!($path));
+        static DATA: Aligned<{ include_bytes!($path).len() }> = Aligned(*include_bytes!($path));
         &DATA.0
     }};
 }
 
 // Mock pools for realistic-looking events
 static MOCK_IPS: &[&str] = &[
-    "10.0.0.1", "10.0.0.2", "172.16.0.10", "192.168.1.100", "8.8.8.8", "1.1.1.1",
+    "10.0.0.1",
+    "10.0.0.2",
+    "172.16.0.10",
+    "192.168.1.100",
+    "8.8.8.8",
+    "1.1.1.1",
 ];
 static MOCK_PORTS: &[(u32, &str)] = &[
-    (80, "nginx"), (443, "curl"), (5432, "psql"), (6379, "redis-cli"), (8080, "app"),
+    (80, "nginx"),
+    (443, "curl"),
+    (5432, "psql"),
+    (6379, "redis-cli"),
+    (8080, "app"),
 ];
 static MOCK_PATHS: &[(&str, &str)] = &[
     ("/etc/passwd", "open"),
@@ -31,12 +39,102 @@ static MOCK_PATHS: &[(&str, &str)] = &[
 ];
 static MOCK_COMMS: &[&str] = &["bash", "python3", "curl", "systemd", "sshd", "nginx"];
 
+/// Minimum gap between "events dropped" warnings, so a long outage does not
+/// flood the log (#282).
+const DROP_REPORT_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Counts events dropped because the channel was full. The first drop is
+/// reported immediately; later ones are batched and reported at most once per
+/// `interval`. `total` is cumulative across reconnects (the tracker lives as
+/// long as the source task).
+struct DropTracker {
+    total: u64,
+    unreported: u64,
+    last_report: Option<Instant>,
+    interval: Duration,
+}
+
+/// What to log: drops since the previous report, and the cumulative total.
+#[derive(Debug, PartialEq, Eq)]
+struct DropReport {
+    since_last: u64,
+    total: u64,
+}
+
+impl DropTracker {
+    fn new(interval: Duration) -> Self {
+        Self {
+            total: 0,
+            unreported: 0,
+            last_report: None,
+            interval,
+        }
+    }
+
+    /// Record one dropped event; returns a report when it is time to log.
+    fn record(&mut self, now: Instant) -> Option<DropReport> {
+        self.total += 1;
+        self.unreported += 1;
+        let due = match self.last_report {
+            None => true,
+            Some(t) => now.saturating_duration_since(t) >= self.interval,
+        };
+        if due {
+            self.flush(now)
+        } else {
+            None
+        }
+    }
+
+    /// Report any drops not yet logged (e.g. when the source stops).
+    fn flush(&mut self, now: Instant) -> Option<DropReport> {
+        if self.unreported == 0 {
+            return None;
+        }
+        let r = DropReport {
+            since_last: self.unreported,
+            total: self.total,
+        };
+        self.unreported = 0;
+        self.last_report = Some(now);
+        Some(r)
+    }
+}
+
+/// Non-blocking send. Returns `false` when the receiver is gone (Closed).
+/// A Full channel drops the event, counts it and logs (throttled).
+fn try_forward(tx: &Sender<KernelEvent>, event: KernelEvent, drops: &mut DropTracker) -> bool {
+    match tx.try_send(event) {
+        Ok(()) => true,
+        Err(TrySendError::Full(_)) => {
+            if let Some(r) = drops.record(Instant::now()) {
+                log_drops(&r);
+            }
+            true
+        }
+        Err(TrySendError::Closed(_)) => {
+            if let Some(r) = drops.flush(Instant::now()) {
+                log_drops(&r);
+            }
+            false
+        }
+    }
+}
+
+fn log_drops(r: &DropReport) {
+    eprintln!(
+        "warn: agent→collector channel full, dropped {} mock event(s) since last report ({} total)",
+        r.since_last, r.total
+    );
+}
+
 /// Mock event generator — cycles Exec / TCP / File to exercise all event types.
 pub async fn mock_source(tx: Sender<KernelEvent>, rate: u64) {
     let interval = Duration::from_millis(1000 / rate.max(1));
     let mut ticker = tokio::time::interval(interval);
     let mut counter: u64 = 0;
     let mut pid: u32 = 1000;
+    let mut drops = DropTracker::new(DROP_REPORT_INTERVAL);
 
     loop {
         ticker.tick().await;
@@ -104,10 +202,9 @@ pub async fn mock_source(tx: Sender<KernelEvent>, rate: u64) {
         // try_send (not send().await): while stream_to_collector is
         // reconnecting (#73), the channel can fill up — dropping new mock
         // events here is preferable to blocking this generator indefinitely.
-        match tx.try_send(event) {
-            Ok(()) => {}
-            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
-            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+        // Full drops are counted and logged (throttled), see DropTracker.
+        if !try_forward(&tx, event, &mut drops) {
+            break;
         }
     }
 }
@@ -163,7 +260,10 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
     if let Some(prog) = bpf.program_mut("sentinel_openat") {
         match TryInto::<&mut TracePoint>::try_into(prog) {
             Ok(tp) => {
-                if let Err(e) = tp.load().and_then(|_| tp.attach("syscalls", "sys_enter_openat")) {
+                if let Err(e) = tp
+                    .load()
+                    .and_then(|_| tp.attach("syscalls", "sys_enter_openat"))
+                {
                     eprintln!("warn: openat tracepoint: {e}");
                 }
             }
@@ -236,9 +336,8 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
                 // `>=`) ensures the ring buffer record is really this struct,
                 // not a same-tag record of a different size.
                 0 if data.len() == core::mem::size_of::<EbpfExecEvent>() => {
-                    let raw = unsafe {
-                        core::ptr::read_unaligned(data.as_ptr() as *const EbpfExecEvent)
-                    };
+                    let raw =
+                        unsafe { core::ptr::read_unaligned(data.as_ptr() as *const EbpfExecEvent) };
                     KernelEvent {
                         event_id: Uuid::new_v4().to_string(),
                         node_id: String::new(),
@@ -255,9 +354,8 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
                     }
                 }
                 1 if data.len() == core::mem::size_of::<EbpfFileEvent>() => {
-                    let raw = unsafe {
-                        core::ptr::read_unaligned(data.as_ptr() as *const EbpfFileEvent)
-                    };
+                    let raw =
+                        unsafe { core::ptr::read_unaligned(data.as_ptr() as *const EbpfFileEvent) };
                     KernelEvent {
                         event_id: Uuid::new_v4().to_string(),
                         node_id: String::new(),
@@ -273,9 +371,8 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
                     }
                 }
                 2 if data.len() == core::mem::size_of::<EbpfTcpEvent>() => {
-                    let raw = unsafe {
-                        core::ptr::read_unaligned(data.as_ptr() as *const EbpfTcpEvent)
-                    };
+                    let raw =
+                        unsafe { core::ptr::read_unaligned(data.as_ptr() as *const EbpfTcpEvent) };
                     KernelEvent {
                         event_id: Uuid::new_v4().to_string(),
                         node_id: String::new(),
@@ -505,6 +602,90 @@ mod tests {
         assert_eq!(bytes_to_str(raw), "bash");
     }
 
+    fn plain_event() -> KernelEvent {
+        ke(None)
+    }
+
+    #[test]
+    fn drop_tracker_reports_first_then_throttles() {
+        let t0 = Instant::now();
+        let mut d = DropTracker::new(Duration::from_secs(10));
+        assert_eq!(
+            d.record(t0),
+            Some(DropReport {
+                since_last: 1,
+                total: 1
+            })
+        );
+        // Within the interval: counted but not reported.
+        assert_eq!(d.record(t0 + Duration::from_secs(1)), None);
+        assert_eq!(d.record(t0 + Duration::from_secs(9)), None);
+        assert_eq!(d.total, 3);
+        // Boundary: exactly at the interval reports the batch with the total.
+        assert_eq!(
+            d.record(t0 + Duration::from_secs(10)),
+            Some(DropReport {
+                since_last: 3,
+                total: 4
+            })
+        );
+        // Next window starts from the last report.
+        assert_eq!(d.record(t0 + Duration::from_secs(19)), None);
+        assert_eq!(
+            d.record(t0 + Duration::from_secs(20)),
+            Some(DropReport {
+                since_last: 2,
+                total: 6
+            })
+        );
+    }
+
+    #[test]
+    fn drop_tracker_flush_reports_pending_only() {
+        let t0 = Instant::now();
+        let mut d = DropTracker::new(Duration::from_secs(10));
+        assert_eq!(d.flush(t0), None);
+        d.record(t0);
+        d.record(t0);
+        assert_eq!(
+            d.flush(t0),
+            Some(DropReport {
+                since_last: 1,
+                total: 2
+            })
+        );
+        assert_eq!(d.flush(t0), None);
+    }
+
+    #[tokio::test]
+    async fn try_forward_counts_drops_on_full_channel() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let mut d = DropTracker::new(Duration::from_secs(3600));
+        assert!(try_forward(&tx, plain_event(), &mut d)); // fills the channel
+        for _ in 0..5 {
+            assert!(try_forward(&tx, plain_event(), &mut d)); // Full: dropped
+        }
+        assert_eq!(d.total, 5);
+        // Draining then sending works again; count is cumulative.
+        rx.recv().await.unwrap();
+        assert!(try_forward(&tx, plain_event(), &mut d));
+        assert_eq!(d.total, 5);
+    }
+
+    #[tokio::test]
+    async fn try_forward_closed_returns_false_and_flushes() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let mut d = DropTracker::new(Duration::from_secs(3600));
+        assert!(try_forward(&tx, plain_event(), &mut d));
+        assert!(try_forward(&tx, plain_event(), &mut d)); // Full, reported
+        assert!(try_forward(&tx, plain_event(), &mut d)); // Full, pending
+        assert_eq!(d.unreported, 1);
+        drop(rx);
+        assert!(!try_forward(&tx, plain_event(), &mut d));
+        assert_eq!(d.unreported, 0);
+        assert_eq!(d.total, 2); // Closed is not counted as a drop
+    }
+
     fn pid_of(e: &KernelEvent) -> u32 {
         match &e.payload {
             Some(Payload::Exec(p)) => p.pid,
@@ -543,7 +724,10 @@ mod tests {
         assert!(kinds.contains("file"), "file missing: {kinds:?}");
 
         for e in &events {
-            assert!(e.node_id.is_empty(), "node_id filled by grpc layer, not source");
+            assert!(
+                e.node_id.is_empty(),
+                "node_id filled by grpc layer, not source"
+            );
             assert!(e.timestamp > 0);
             assert!(
                 uuid::Uuid::parse_str(&e.event_id).is_ok(),
