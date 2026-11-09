@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	badger "github.com/dgraph-io/badger/v4"
@@ -182,15 +183,45 @@ func (s *Store) LookupNodeID(ctx context.Context, token string) (nodeID string, 
 // loadTokenIndex seeds tokenIndex from disk at startup. A load failure is
 // kept in tokenIndexErr rather than failing New, so `token list`/`revoke`
 // can still open the store to inspect or repair it, while auth fails closed.
+//
+// A record that is not valid JSON is skipped (its token stays invalid, as it
+// is absent from the index) so one damaged record can't lock out every other
+// agent (#242). Other errors (iteration/IO) still fail closed. The warning
+// carries only record keys and a count, never hashes or token values.
 func (s *Store) loadTokenIndex() {
 	idx := make(map[string]string)
-	tokens, err := s.ListTokens(context.Background())
-	if err == nil {
-		for _, rec := range tokens {
-			if rec.RevokedAt == nil {
-				idx[rec.TokenHash] = rec.NodeID
+	var brokenKeys []string
+	err := runWithContext(context.Background(), func() error {
+		return s.db.View(func(tx *badger.Txn) error {
+			prefix := []byte("agenttoken:")
+			it := tx.NewIterator(badger.DefaultIteratorOptions)
+			defer it.Close()
+			for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+				item := it.Item()
+				var rec AgentToken
+				var decodeErr error
+				if err := item.Value(func(v []byte) error {
+					decodeErr = json.Unmarshal(v, &rec)
+					return nil
+				}); err != nil {
+					return err
+				}
+				if decodeErr != nil {
+					brokenKeys = append(brokenKeys, string(item.KeyCopy(nil)))
+					continue
+				}
+				if rec.RevokedAt == nil {
+					idx[rec.TokenHash] = rec.NodeID
+				}
 			}
-		}
+			return nil
+		})
+	})
+	if err != nil {
+		idx = make(map[string]string)
+	} else if len(brokenKeys) > 0 {
+		slog.Warn("agent token records could not be decoded and were skipped; their tokens are invalid",
+			"count", len(brokenKeys), "keys", brokenKeys)
 	}
 	s.tokensMu.Lock()
 	s.tokenIndex = idx

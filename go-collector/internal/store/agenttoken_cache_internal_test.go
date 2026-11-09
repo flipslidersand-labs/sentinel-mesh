@@ -1,8 +1,10 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -110,31 +112,6 @@ func TestLookupNodeID_IndexRebuiltOnReopen(t *testing.T) {
 	}
 }
 
-// A token record that can't be decoded at startup must fail auth closed
-// (error, not silently "unknown token"), matching the old full-scan
-// behaviour — while other store users (e.g. `token list`) can still open.
-func TestLookupNodeID_CorruptRecordAtOpenFailsClosed(t *testing.T) {
-	ctx := context.Background()
-	dir := t.TempDir()
-	st, err := New(dir)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	token, err := st.IssueToken(ctx, "node-a")
-	if err != nil {
-		t.Fatalf("IssueToken: %v", err)
-	}
-	putRaw(t, st, "agenttoken:zz-corrupt", "{not json")
-	if err := st.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-
-	st2 := openTempStore(t, dir)
-	if _, ok, err := st2.LookupNodeID(ctx, token); err == nil || ok {
-		t.Fatalf("LookupNodeID with corrupt index: ok=%v err=%v, want error", ok, err)
-	}
-}
-
 func BenchmarkLookupNodeID_10kTokens(b *testing.B) {
 	ctx := context.Background()
 	st := openTempStore(b, b.TempDir())
@@ -224,5 +201,59 @@ func TestLookupNodeID_WrongLengthRejected(t *testing.T) {
 	st := openTempStore(t, t.TempDir())
 	if _, ok, err := st.LookupNodeID(context.Background(), strings.Repeat("a", 1<<20)); ok || err != nil {
 		t.Fatalf("oversized token: ok=%v err=%v", ok, err)
+	}
+}
+
+// A record that can't be decoded at startup must not break authentication
+// for every other token (#242). Only the broken record is skipped; a warning
+// carries the record key and count, never token values or hashes.
+func TestLoadTokenIndex_SkipsUndecodableRecords(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	st, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	good, err := st.IssueToken(ctx, "node-good")
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	revoked, err := st.IssueToken(ctx, "node-revoked")
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	if err := st.RevokeToken(ctx, "node-revoked"); err != nil {
+		t.Fatalf("RevokeToken: %v", err)
+	}
+	putRaw(t, st, "agenttoken:node-broken", `{"node_id":"node-broken","token_hash":"deadbeefcafe`)
+	if err := st.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	st = openTempStore(t, dir)
+
+	nodeID, ok, err := st.LookupNodeID(ctx, good)
+	if err != nil || !ok || nodeID != "node-good" {
+		t.Fatalf("valid token = (%q, %v, %v), want (node-good, true, nil)", nodeID, ok, err)
+	}
+	if _, ok, err := st.LookupNodeID(ctx, revoked); err != nil || ok {
+		t.Fatalf("revoked token = (%v, %v), want (false, nil)", ok, err)
+	}
+	if _, ok, err := st.LookupNodeID(ctx, strings.Repeat("a", TokenLength)); err != nil || ok {
+		t.Fatalf("unknown token = (%v, %v), want (false, nil)", ok, err)
+	}
+
+	logs := buf.String()
+	if !strings.Contains(logs, "agenttoken:node-broken") || !strings.Contains(logs, "count=1") {
+		t.Errorf("warning should name the broken key and count, got: %q", logs)
+	}
+	if strings.Contains(logs, "deadbeefcafe") || strings.Contains(logs, good) {
+		t.Errorf("warning must not leak hashes or tokens: %q", logs)
 	}
 }
