@@ -52,3 +52,9 @@ validate_abs_path() {
   [[ "$value" == /* ]] || die "$name must be an absolute path: '$value'"
   validate_path "$name" "$value"
 }
+
+# Non-negative integer (e.g. --mock-rate), digits only.
+validate_uint() {
+  local name="$1" value="$2"
+  [[ "$value" =~ ^[0-9]+$ ]] || die "$name must be a non-negative integer: '$value'"
+}

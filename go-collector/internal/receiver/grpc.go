@@ -212,6 +212,8 @@ func validateKernelEvent(e *pb.KernelEvent) error {
 				namedField{"op", f.Op},
 			)
 		}
+	default:
+		return fmt.Errorf("unknown event type %d", int32(e.Type))
 	}
 	return validateFields(fields)
 }

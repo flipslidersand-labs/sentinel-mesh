@@ -749,3 +749,14 @@ func TestCheckAuth_Required_NoTokensIssued_RejectsAll(t *testing.T) {
 		assertUnauthenticated(t, err)
 	}
 }
+
+// proto3 enums accept out-of-range values; an unknown Type would otherwise
+// become a new "unknown(N)" counter key / metric label per value (#260).
+func TestValidateKernelEvent_RejectsUnknownType(t *testing.T) {
+	for _, typ := range []pb.EventType{3, 99, -1} {
+		e := &pb.KernelEvent{NodeId: "node-1", EventId: "evt-1", Type: typ}
+		if err := validateKernelEvent(e); err == nil {
+			t.Fatalf("expected unknown type %d to be rejected", typ)
+		}
+	}
+}
