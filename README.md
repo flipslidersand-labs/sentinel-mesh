@@ -46,7 +46,7 @@ go build ./cmd/collector
 # Terminal 1: Start the Go Collector (with alerting rules)
 # --grpc-auth disabled: local demo only (gRPC defaults to `required`; see "gRPC TLS & Authentication")
 cd go-collector
-./collector serve --grpc-addr :50051 --http-addr :8081 --data-dir /tmp/sentinel-data --rules ../rules.yaml --grpc-auth disabled
+./collector serve --grpc-addr :50051 --http-addr :8081 --data-dir /tmp/sentinel-data --rules ../rules.yaml --grpc-auth disabled --http-auth disabled
 
 # Terminal 2: Start the Rust Agent (mock mode)
 cd rust-agent/agent
@@ -104,6 +104,8 @@ Options:
   --grpc-tls-cert <PATH>     gRPC server TLS certificate (PEM); requires --grpc-tls-key
   --grpc-tls-key <PATH>      gRPC server TLS private key (PEM); requires --grpc-tls-cert
   --grpc-auth <MODE>         gRPC auth: required | disabled [default: required]
+  --http-auth <MODE>         REST auth: required | disabled [default: required]
+                             (required: startup fails unless SENTINEL_API_TOKEN is set)
 
   # Aggregate mode (cross-region, read-only — no gRPC)
   --aggregate                Run as a cross-region aggregator
@@ -135,14 +137,14 @@ For geographically distributed deployments, run one collector per region (each w
 ```bash
 # Region collectors (one per region, agents register with --region)
 # (demo: --grpc-auth disabled; in production keep the default `required` and issue per-agent tokens)
-./collector serve --region us-east --http-addr :8081 --grpc-auth disabled   # on us-east host
-./collector serve --region eu-west --http-addr :8081 --grpc-auth disabled   # on eu-west host
+./collector serve --region us-east --http-addr :8081 --grpc-auth disabled --http-auth disabled   # on us-east host
+./collector serve --region eu-west --http-addr :8081 --grpc-auth disabled --http-auth disabled   # on eu-west host
 
 # Aggregator (polls both, serves merged view + UI)
 ./collector serve --aggregate \
   --upstreams us-east=http://10.0.1.10:8081 \
   --upstreams eu-west=http://10.0.2.10:8081 \
-  --http-addr :8080 --poll-interval 10s
+  --http-addr :8080 --poll-interval 10s --http-auth disabled   # demo; production: set SENTINEL_API_TOKEN
 
 curl http://localhost:8080/api/regions
 # → [{"region":"eu-west","node_count":3,"active_count":3,"reachable":true},
@@ -165,10 +167,13 @@ A region whose collector is unreachable is **isolated**: it is reported with `"r
 
 ### API Authentication & CORS
 
-- **Authentication**: set `SENTINEL_API_TOKEN` to require `Authorization: Bearer <token>` on all
-  `/api/*` endpoints (constant-time compared). If unset, the API is unauthenticated and the
-  collector logs a warning — only acceptable on a trusted network. `/healthz` and `/metrics`
-  remain open for probes/scraping.
+- **Authentication**: REST auth is controlled by `--http-auth=required|disabled` (default
+  `required`), in both normal and `--aggregate` mode. With `required`, set `SENTINEL_API_TOKEN` to
+  require `Authorization: Bearer <token>` on all `/api/*` endpoints (constant-time compared); if it
+  is unset the collector **refuses to start**. Unauthenticated REST needs the explicit
+  `--http-auth=disabled` (the collector then logs a warning) — only acceptable on a trusted
+  network. `/healthz` and `/metrics` remain open for probes/scraping.
+  (Breaking change, #254: previously an unset token only logged a warning.)
 
   ```bash
   export SENTINEL_API_TOKEN="$(openssl rand -hex 32)"
@@ -218,7 +223,7 @@ Unauthenticated gRPC requires the explicit `--grpc-auth=disabled`.
 # Issue a token for each agent before it can connect.
 # token issue/revoke/list require the collector to be stopped first — BadgerDB
 # takes an exclusive lock on --data-dir, so they can't run alongside `serve`.
-export SENTINEL_API_TOKEN="$(openssl rand -hex 32)"  # optional: gates the REST API only, NOT gRPC
+export SENTINEL_API_TOKEN="$(openssl rand -hex 32)"  # required by --http-auth=required (default); gates the REST API only, NOT gRPC
 sentinel-collector token issue web-01 --data-dir /var/lib/sentinel-mesh
 # prints the token once — copy it now, it's never shown again
 sentinel-collector serve --grpc-auth=required --grpc-tls-cert cert.pem --grpc-tls-key key.pem
@@ -287,7 +292,7 @@ Triggered alerts (from both the rules engine and the anomaly detector) can be fo
 # Example: Slack-only, notify on warning+ with a 2-minute cooldown
 export SENTINEL_SLACK_WEBHOOK_URL="https://hooks.slack.com/services/XXX/YYY/ZZZ"
 export SENTINEL_NOTIFY_COOLDOWN=2m
-./collector serve --rules ../rules.yaml --grpc-auth disabled   # demo; use per-agent tokens in production
+./collector serve --rules ../rules.yaml --grpc-auth disabled --http-auth disabled   # demo; use per-agent tokens in production
 ```
 
 Severity ordering: `info`/`low` < `warning`/`warn`/`medium` < `high`/`critical`/`error`. The per-(rule, node) cooldown suppresses duplicate alert storms; a distinct node or rule notifies independently. Delivery is best-effort and runs off the event hot path — a failing channel is logged and never blocks event ingestion.
@@ -403,7 +408,7 @@ Deploys the collector binary to a remote host and installs as a systemd service.
 
 ```bash
 bash scripts/install-collector.sh <SSH_HOST> [OPTIONS]
-# Options: --region, --grpc-addr, --http-addr, --data-dir, --grpc-tls-cert, --grpc-tls-key, --grpc-auth
+# Options: --region, --grpc-addr, --http-addr, --data-dir, --grpc-tls-cert, --grpc-tls-key, --grpc-auth, --http-auth
 # Example:
 bash scripts/install-collector.sh minipc --grpc-addr :50051 --http-addr :8081
 ```

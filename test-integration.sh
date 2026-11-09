@@ -120,6 +120,7 @@ cd "$PROJECT_ROOT/go-collector"
   --data-dir "$DATA_DIR" \
   --rules "$RULES_FILE" \
   --grpc-auth disabled \
+  --http-auth disabled \
   > "$COLLECTOR_LOG" 2>&1 &
 COLLECTOR_PID=$!
 

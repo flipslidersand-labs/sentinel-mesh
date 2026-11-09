@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Migration: issue per-agent tokens (`sentinel-collector token issue <node_id>`)
   or pass `--grpc-auth=disabled` to keep the previous unauthenticated behaviour.
   `scripts/install-collector.sh` gained `--grpc-auth`.
+- **BREAKING (go-collector):** REST API authentication is now controlled by the new
+  `--http-auth=required|disabled` flag (default `required`), in both normal and
+  `--aggregate` mode (#254). With `required` and `SENTINEL_API_TOKEN` unset the
+  collector now exits at startup instead of serving the REST API unauthenticated
+  with only a warning. Migration: set `SENTINEL_API_TOKEN` (and enter it in the
+  bundled UI) or pass `--http-auth=disabled` to keep the previous unauthenticated
+  behaviour. `scripts/install-collector.sh` gained `--http-auth`.
 
 ## [0.1.0] - 2026-08-17
 

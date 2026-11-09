@@ -52,13 +52,13 @@ bash "$SCRIPTS/build.sh"
 echo ""
 echo "==> Step 2a: Deploy asia-west collector → $MINIPC_HOST"
 bash "$SCRIPTS/install-collector.sh" "$MINIPC_HOST" \
-  --region asia-west --grpc-addr :50051 --http-addr :8081 --grpc-auth disabled
+  --region asia-west --grpc-addr :50051 --http-addr :8081 --grpc-auth disabled --http-auth disabled
 
 if ssh -o ConnectTimeout=5 -o BatchMode=yes "$YUKI_HOST" true 2>/dev/null; then
   echo ""
   echo "==> Step 2b: Deploy asia-east collector → $YUKI_HOST"
   bash "$SCRIPTS/install-collector.sh" "$YUKI_HOST" \
-    --region asia-east --grpc-addr :50052 --http-addr :8082 --grpc-auth disabled
+    --region asia-east --grpc-addr :50052 --http-addr :8082 --grpc-auth disabled --http-auth disabled
 else
   echo "==> Step 2b: $YUKI_HOST unreachable — skipping asia-east collector"
   EAST_HTTP=""
@@ -79,7 +79,7 @@ Description=SentinelMesh Aggregator
 After=network.target sentinel-collector.service
 
 [Service]
-ExecStart=/usr/local/bin/sentinel-collector serve --aggregate --http-addr :8083 --upstreams ${UPSTREAMS} --poll-interval 10s
+ExecStart=/usr/local/bin/sentinel-collector serve --aggregate --http-auth disabled --http-addr :8083 --upstreams ${UPSTREAMS} --poll-interval 10s
 WorkingDirectory=/opt/sentinel-collector
 Restart=always
 RestartSec=5

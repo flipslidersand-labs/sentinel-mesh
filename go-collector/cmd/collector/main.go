@@ -146,6 +146,14 @@ TLS for the gRPC server is optional but, when enabled, both
 				return fmt.Errorf("--upstreams/--poll-interval require --aggregate")
 			}
 
+			// Same for --http-auth: refuse to start without SENTINEL_API_TOKEN
+			// unless unauthenticated REST is explicitly requested (#254).
+			httpAuthMode, _ := cmd.Flags().GetString("http-auth")
+			apiToken, restUnauth, err := httpauth.ResolveToken(httpAuthMode)
+			if err != nil {
+				return err
+			}
+
 			grpcAddr, _ := cmd.Flags().GetString("grpc-addr")
 			httpAddr, _ := cmd.Flags().GetString("http-addr")
 			dataDir, _ := cmd.Flags().GetString("data-dir")
@@ -160,7 +168,7 @@ TLS for the gRPC server is optional but, when enabled, both
 			// serve a merged read-only view.
 			if aggregate {
 				warnIgnoredNormalModeFlags(cmd, grpcAddr, logger)
-				return runAggregate(cmd, logger)
+				return runAggregate(cmd, logger, apiToken, restUnauth)
 			}
 
 			st, err := store.New(dataDir)
@@ -234,9 +242,8 @@ TLS for the gRPC server is optional but, when enabled, both
 
 			staticDir, _ := cmd.Flags().GetString("static-dir")
 			corsOrigins, _ := cmd.Flags().GetStringSlice("cors-origins")
-			apiToken := httpauth.TokenFromEnv()
-			if apiToken == "" {
-				logger.Warn("REST API is UNAUTHENTICATED — set " + httpauth.EnvAPIToken + " to require a bearer token")
+			if restUnauth {
+				logger.Warn("REST API is UNAUTHENTICATED (--http-auth=disabled) — set " + httpauth.EnvAPIToken + " and use --http-auth=required")
 			}
 
 			// REST API in background, tied to ctx for graceful shutdown (#117).
@@ -269,6 +276,7 @@ TLS for the gRPC server is optional but, when enabled, both
 	cmd.Flags().String("grpc-tls-cert", "", "path to gRPC server TLS certificate (PEM); requires --grpc-tls-key")
 	cmd.Flags().String("grpc-tls-key", "", "path to gRPC server TLS private key (PEM); requires --grpc-tls-cert")
 	cmd.Flags().String("grpc-auth", "required", "gRPC authentication: required (per-agent tokens; rejects all RPCs if none issued) or disabled (unauthenticated, dev only)")
+	cmd.Flags().String("http-auth", "required", "REST API authentication: required (needs SENTINEL_API_TOKEN, else startup fails) or disabled (unauthenticated, dev only)")
 	cmd.Flags().String("http-addr", ":8081", "REST API listen address")
 	cmd.Flags().String("data-dir", "/tmp/sentinel-data", "BadgerDB data directory")
 	cmd.Flags().Duration("heartbeat-timeout", 60*time.Second, "inactivity duration before agent is marked inactive")
@@ -313,15 +321,14 @@ func warnIgnoredNormalModeFlags(cmd *cobra.Command, grpcAddr string, logger *zap
 
 // runAggregate starts the cross-region aggregator: it polls upstream region
 // collectors' REST APIs and serves a merged read-only view on --http-addr.
-func runAggregate(cmd *cobra.Command, logger *zap.Logger) error {
+func runAggregate(cmd *cobra.Command, logger *zap.Logger, apiToken string, restUnauth bool) error {
 	httpAddr, _ := cmd.Flags().GetString("http-addr")
 	specs, _ := cmd.Flags().GetStringSlice("upstreams")
 	interval, _ := cmd.Flags().GetDuration("poll-interval")
 	staticDir, _ := cmd.Flags().GetString("static-dir")
 	corsOrigins, _ := cmd.Flags().GetStringSlice("cors-origins")
-	apiToken := httpauth.TokenFromEnv()
-	if apiToken == "" {
-		logger.Warn("aggregator REST API is UNAUTHENTICATED — set " + httpauth.EnvAPIToken + " to require a bearer token")
+	if restUnauth {
+		logger.Warn("aggregator REST API is UNAUTHENTICATED (--http-auth=disabled) — set " + httpauth.EnvAPIToken + " and use --http-auth=required")
 	}
 
 	upstreams, err := aggregator.ParseUpstreams(specs)
