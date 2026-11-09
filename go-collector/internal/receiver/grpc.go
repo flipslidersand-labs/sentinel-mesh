@@ -98,6 +98,7 @@ type server struct {
 	metrics       *otel.MetricsProvider
 	tracer        trace.Tracer
 	authFail      *authFailLimiter // per-source auth throttle (shared with the interceptors)
+	nodeLimiters  nodeLimiters     // per-authenticated-node event rate limit shared across streams (#254)
 	defaultRegion string           // used when an agent registers without a region
 	log           *zap.Logger
 }
@@ -262,12 +263,21 @@ func (s *server) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.Reg
 
 // StreamEvents receives a bidirectional stream of KernelEvents.
 func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) error {
-	// Per-stream (i.e. per connected agent) event rate limit — without one, a
-	// single flooding agent (malicious or misbehaving) can push events at an
-	// unbounded rate, exhausting store/alert-eval/notify capacity for every
-	// agent sharing the collector (#75). One tokenBucket per stream, used
-	// only by this goroutine, needs no locking.
-	limiter := newTokenBucket(streamEventsRateLimit, streamEventsRateBurst)
+	// Event rate limit (#75). Keyed by the authenticated node_id so that every
+	// stream/connection of one token shares a single bucket: the gRPC
+	// MaxConcurrentStreams cap is per connection, so a per-stream bucket let
+	// one token multiply its rate by opening more connections/streams (#254).
+	// With auth disabled there is no trusted identity, so fall back to a
+	// per-stream bucket (never key on the client-supplied event.NodeId or IP).
+	authedNodeID := authedNodeIDFromContext(stream.Context())
+	var limiter interface{ allow() bool }
+	if authedNodeID != "" {
+		b, release := s.nodeLimiters.acquire(authedNodeID)
+		defer release()
+		limiter = b
+	} else {
+		limiter = newTokenBucket(streamEventsRateLimit, streamEventsRateBurst)
+	}
 	var throttled uint64
 
 	// Flush response headers before the first Recv (auth already passed in
@@ -278,10 +288,9 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 		return err
 	}
 
-	// Resolved once per stream by the auth interceptor (#183/#190, per
-	// ADR-005) — "" when auth is disabled. Non-empty for the lifetime of
-	// this stream, so it's safe to read once here rather than per event.
-	authedNodeID := authedNodeIDFromContext(stream.Context())
+	// authedNodeID (resolved above) comes from the auth interceptor
+	// (#183/#190, per ADR-005) — "" when auth is disabled; constant for the
+	// lifetime of this stream.
 
 	for {
 		// Bail out promptly once the stream's context is done (e.g. the
