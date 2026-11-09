@@ -257,3 +257,114 @@ func TestLoadTokenIndex_SkipsUndecodableRecords(t *testing.T) {
 		t.Errorf("warning must not leak hashes or tokens: %q", logs)
 	}
 }
+
+// truncatedRealRecord issues a token for nodeID, then overwrites its stored
+// record with the first half of the real JSON (a write cut short mid-record).
+// Unlike a hand-made fake, the cut-off record belongs to a token that was
+// genuinely issued, so it pins that this token is rejected after restart.
+func truncatedRealRecord(t *testing.T, st *Store, nodeID string) string {
+	t.Helper()
+	token, err := st.IssueToken(context.Background(), nodeID)
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	var raw []byte
+	if err := st.db.View(func(tx *badger.Txn) error {
+		item, err := tx.Get(agentTokenKey(nodeID))
+		if err != nil {
+			return err
+		}
+		raw, err = item.ValueCopy(nil)
+		return err
+	}); err != nil {
+		t.Fatalf("read record: %v", err)
+	}
+	putRaw(t, st, string(agentTokenKey(nodeID)), string(raw[:len(raw)/2]))
+	return token
+}
+
+// A genuinely truncated record (not a fake hash) must leave its own token
+// rejected after restart while other tokens keep working (#276).
+func TestLoadTokenIndex_TruncatedRealRecordRejectsItsToken(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	st, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	good, err := st.IssueToken(ctx, "node-good")
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	cut := truncatedRealRecord(t, st, "node-cut")
+	if err := st.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	st = openTempStore(t, dir)
+	if _, ok, err := st.LookupNodeID(ctx, cut); err != nil || ok {
+		t.Fatalf("token of truncated record = (%v, %v), want (false, nil)", ok, err)
+	}
+	if id, ok, err := st.LookupNodeID(ctx, good); err != nil || !ok || id != "node-good" {
+		t.Fatalf("other token = (%q, %v, %v), want (node-good, true, nil)", id, ok, err)
+	}
+	// A damaged record cannot be fixed by revoke: it fails to decode too.
+	if err := st.RevokeToken(ctx, "node-cut"); err == nil {
+		t.Fatal("RevokeToken on a damaged record should fail to decode")
+	}
+}
+
+// Iteration/IO errors at startup must fail closed: LookupNodeID returns the
+// error rather than (false, nil) or a partial index. Injecting an iterator
+// error into badger is not practical, so this sets the state loadTokenIndex
+// records on such an error (tokenIndexErr set, index emptied) and checks
+// that lookups surface it even for a token that was valid.
+func TestLookupNodeID_IndexLoadErrorFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	st := openTempStore(t, t.TempDir())
+	token, err := st.IssueToken(ctx, "node-a")
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	loadErr := fmt.Errorf("injected io error")
+	st.tokensMu.Lock()
+	st.tokenIndex = map[string]string{}
+	st.tokenIndexErr = loadErr
+	st.tokensMu.Unlock()
+
+	if id, ok, err := st.LookupNodeID(ctx, token); err == nil || ok || id != "" {
+		t.Fatalf("LookupNodeID = (%q, %v, %v), want (\"\", false, error)", id, ok, err)
+	}
+}
+
+// ListTokens skips undecodable records (like the startup index load) so
+// `token list` stays usable, warning with the key and count only.
+func TestListTokens_SkipsUndecodableRecords(t *testing.T) {
+	ctx := context.Background()
+	st := openTempStore(t, t.TempDir())
+	good, err := st.IssueToken(ctx, "node-good")
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	cut := truncatedRealRecord(t, st, "node-cut")
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	tokens, err := st.ListTokens(ctx)
+	if err != nil {
+		t.Fatalf("ListTokens: %v", err)
+	}
+	if len(tokens) != 1 || tokens[0].NodeID != "node-good" {
+		t.Fatalf("tokens = %+v, want only node-good", tokens)
+	}
+	logs := buf.String()
+	if !strings.Contains(logs, "agenttoken:node-cut") || !strings.Contains(logs, "count=1") {
+		t.Errorf("warning should name the key and count, got: %q", logs)
+	}
+	if strings.Contains(logs, good) || strings.Contains(logs, cut) || strings.Contains(logs, hashToken(good)) {
+		t.Errorf("warning must not leak tokens or hashes: %q", logs)
+	}
+}
