@@ -69,6 +69,7 @@ message FileEvent {
   "hostname": "worker-01",
   "ip": "10.0.0.5",
   "version": "0.1.0",
+  "region": "us-east",
   "registered": "2026-01-01T00:00:00Z",
   "last_seen": "2026-01-01T01:00:00Z",
   "status": "active"
@@ -77,17 +78,20 @@ message FileEvent {
 
 ## AlertRule (YAML 設定)
 
+リポジトリ直下の `rules.yaml` が実スキーマ。実装は `go-collector/internal/alerting/engine.go`。
+
 ```yaml
 rules:
-  - name: suspicious_outbound
-    type: tcp
-    condition:
-      dst_port: [4444, 6666, 9001]
-    action: alert
-  - name: mass_exec
-    type: exec
-    window: 10s
-    condition:
-      count: "> 50"
-    action: alert
+  - id: tcp_to_suspicious_port
+    description: Alert on connections to high ports
+    event_type: tcp          # exec | tcp | file
+    severity: warning
+    message: "TCP connection to non-standard port detected"
+    conditions:              # すべて満たしたときに発火(AND)
+      - field: dst_port      # payload のキー。ドット区切りで入れ子も指定可
+        operator: gt
+        value: "10000"       # 値は常に文字列で書く
 ```
+
+- サポートする `operator`: `eq`(文字列一致)、`contains`(部分一致)、`regex`(正規表現)、`gt` / `lt`(数値比較)。未知の operator はその条件が不成立になる
+- 頻度・件数の検知(旧例の `window` / `count`)は rules.yaml では表現できない。`go-collector/internal/anomaly` が別機構で担う
