@@ -167,6 +167,12 @@ fn jittered(base: Duration) -> Duration {
 /// One connect→register→stream attempt. Returns `Ok(())` only when the event
 /// source is exhausted (rx closed); any connection/RPC failure is returned as
 /// `Err` for the caller to retry.
+///
+/// On `Err`, events already taken from `rx` that the collector never acked
+/// are gone (no re-send, #241). The error text reports that count: it is
+/// `taken - acked`, i.e. the events with no delivery confirmation. It is an
+/// upper bound on true loss (an event may have arrived with its ack lost),
+/// and it includes events still buffered in the bridge / HTTP/2 window.
 #[allow(clippy::too_many_arguments)]
 async fn run_once(
     endpoint: &str,
@@ -177,6 +183,51 @@ async fn run_once(
     ca_cert_path: &Option<String>,
     tuning: ConnTuning,
     rx: &mut Receiver<KernelEvent>,
+) -> Result<()> {
+    let mut stats = DeliveryStats::default();
+    let res = run_session(
+        endpoint,
+        node_id,
+        region,
+        hostname,
+        auth_token,
+        ca_cert_path,
+        tuning,
+        rx,
+        &mut stats,
+    )
+    .await;
+    res.map_err(|e| {
+        let unacked = stats.taken.saturating_sub(stats.acked);
+        if unacked > 0 {
+            anyhow::anyhow!(
+                "{e}; unacknowledged events: {unacked} discarded (taken from queue, no collector ack; \
+                 may include events delivered whose ack was lost)"
+            )
+        } else {
+            e
+        }
+    })
+}
+
+/// Counts for one connection attempt: events pulled from `rx` vs. acks seen.
+#[derive(Default)]
+struct DeliveryStats {
+    taken: u64,
+    acked: u64,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_session(
+    endpoint: &str,
+    node_id: &str,
+    region: &str,
+    hostname: &str,
+    auth_token: Option<MetadataValue<tonic::metadata::Ascii>>,
+    ca_cert_path: &Option<String>,
+    tuning: ConnTuning,
+    rx: &mut Receiver<KernelEvent>,
+    stats: &mut DeliveryStats,
 ) -> Result<()> {
     let mut builder = Endpoint::from_shared(endpoint.to_string())?
         .connect_timeout(tuning.connect_timeout)
@@ -240,6 +291,7 @@ async fn run_once(
             ack = response.message() => {
                 match ack? {
                     Some(a) => {
+                        stats.acked += 1;
                         if !a.ok {
                             eprintln!("collector rejected event");
                         }
@@ -253,6 +305,7 @@ async fn run_once(
             maybe_event = rx.recv() => {
                 match maybe_event {
                     Some(mut event) => {
+                        stats.taken += 1;
                         event.node_id = node_id.to_string();
                         if bridge_tx.send(event).await.is_err() {
                             anyhow::bail!("outbound stream to collector closed");
@@ -264,6 +317,7 @@ async fn run_once(
                     None => {
                         drop(bridge_tx);
                         while let Some(ack) = response.message().await? {
+                            stats.acked += 1;
                             if !ack.ok {
                                 eprintln!("collector rejected event");
                             }
@@ -575,6 +629,58 @@ mod tests {
                 sent < 40_000,
                 "backlog never formed ({sent} events accepted)"
             );
+        }
+
+        #[tokio::test]
+        async fn run_once_error_reports_unacknowledged_event_count() {
+            // #241: events already taken from `rx` but never acked are lost on
+            // disconnect; the error (which the caller logs) must say how many.
+            let mut h = harness().await;
+            let (ev_tx, mut ev_rx) = tokio::sync::mpsc::channel::<KernelEvent>(256);
+            let endpoint = h.endpoint.clone();
+            let agent = tokio::spawn(async move {
+                run_once(
+                    &endpoint,
+                    "n1",
+                    "",
+                    "h",
+                    None,
+                    &None,
+                    fast_tuning(),
+                    &mut ev_rx,
+                )
+                .await
+            });
+
+            ev_tx.send(KernelEvent::default()).await.unwrap();
+            within(5, "stream never got established", h.got_event.recv()).await;
+            h.conns.freeze();
+
+            let flood = tokio::spawn(async move {
+                let event = KernelEvent {
+                    event_id: "x".repeat(200),
+                    ..Default::default()
+                };
+                for _ in 0..40_000 {
+                    if ev_tx.send(event.clone()).await.is_err() {
+                        break;
+                    }
+                }
+            });
+
+            let res = within(5, "run_once stayed stuck behind the backlog", agent)
+                .await
+                .unwrap();
+            let _ = flood.await;
+            let msg = format!("{}", res.unwrap_err());
+            let n: u64 = msg
+                .split("unacknowledged events: ")
+                .nth(1)
+                .and_then(|r| r.split_whitespace().next())
+                .and_then(|n| n.parse().ok())
+                .unwrap_or_else(|| panic!("no 'unacknowledged events: N' count in error: {msg}"));
+            // The bridge channel alone holds 256 frozen-link events.
+            assert!(n >= 256, "count {n} too small: {msg}");
         }
 
         #[tokio::test]
