@@ -31,9 +31,17 @@ static MOCK_PATHS: &[(&str, &str)] = &[
 ];
 static MOCK_COMMS: &[&str] = &["bash", "python3", "curl", "systemd", "sshd", "nginx"];
 
+/// Upper bound for the mock event rate; a higher rate would round the period down to 0 ms.
+const MAX_MOCK_RATE: u64 = 1000;
+
+/// Period between two mock events, clamped so `tokio::time::interval` never receives a zero duration.
+fn mock_interval(rate: u64) -> Duration {
+    Duration::from_millis(1000 / rate.clamp(1, MAX_MOCK_RATE))
+}
+
 /// Mock event generator — cycles Exec / TCP / File to exercise all event types.
 pub async fn mock_source(tx: Sender<KernelEvent>, rate: u64) {
-    let interval = Duration::from_millis(1000 / rate.max(1));
+    let interval = mock_interval(rate);
     let mut ticker = tokio::time::interval(interval);
     let mut counter: u64 = 0;
     let mut pid: u32 = 1000;
@@ -557,5 +565,23 @@ mod tests {
         for w in events.windows(2) {
             assert_eq!(pid_of(&w[1]), pid_of(&w[0]) + 1);
         }
+    }
+
+    #[test]
+    fn mock_interval_never_returns_a_zero_duration() {
+        for rate in [0, 1, 2, 999, 1000, 1001, 10_000, u64::MAX] {
+            assert!(
+                !mock_interval(rate).is_zero(),
+                "--mock-rate {rate} must not produce a zero interval"
+            );
+        }
+    }
+
+    #[test]
+    fn mock_interval_caps_the_rate_at_1000_events_per_second() {
+        assert_eq!(mock_interval(1), Duration::from_millis(1000));
+        assert_eq!(mock_interval(2), Duration::from_millis(500));
+        assert_eq!(mock_interval(1000), Duration::from_millis(1));
+        assert_eq!(mock_interval(1001), Duration::from_millis(1));
     }
 }
