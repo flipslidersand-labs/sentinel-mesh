@@ -212,6 +212,8 @@ func validateKernelEvent(e *pb.KernelEvent) error {
 				namedField{"op", f.Op},
 			)
 		}
+	default:
+		return fmt.Errorf("unknown event type %d", int32(e.Type))
 	}
 	return validateFields(fields)
 }
@@ -451,21 +453,52 @@ func (s *server) eventTypeName(e *pb.KernelEvent) string {
 	}
 }
 
+// The generated pb structs tag every field `omitempty`, so json.Marshal drops
+// numeric zeros (uid=0, ports, ret=0) and `uid eq 0` rules never fire (#249).
+// These mirror them with identical keys/order/types but no omitempty on
+// numbers. String fields keep omitempty to preserve the existing payload.
+type execPayload struct {
+	Pid     uint32 `json:"pid"`
+	Ppid    uint32 `json:"ppid"`
+	Comm    string `json:"comm,omitempty"`
+	Cmdline string `json:"cmdline,omitempty"`
+	Cwd     string `json:"cwd,omitempty"`
+	Uid     uint32 `json:"uid"`
+}
+
+type tcpPayload struct {
+	Pid       uint32 `json:"pid"`
+	Comm      string `json:"comm,omitempty"`
+	SrcIp     string `json:"src_ip,omitempty"`
+	SrcPort   uint32 `json:"src_port"`
+	DstIp     string `json:"dst_ip,omitempty"`
+	DstPort   uint32 `json:"dst_port"`
+	Direction string `json:"direction,omitempty"`
+}
+
+type filePayload struct {
+	Pid  uint32 `json:"pid"`
+	Comm string `json:"comm,omitempty"`
+	Path string `json:"path,omitempty"`
+	Op   string `json:"op,omitempty"`
+	Ret  int32  `json:"ret"`
+}
+
 func (s *server) eventPayload(e *pb.KernelEvent) json.RawMessage {
 	var payload any
 
 	switch e.Type {
 	case pb.EventType_EXEC:
 		if ex := e.GetExec(); ex != nil {
-			payload = ex
+			payload = execPayload{ex.Pid, ex.Ppid, ex.Comm, ex.Cmdline, ex.Cwd, ex.Uid}
 		}
 	case pb.EventType_TCP:
 		if t := e.GetTcp(); t != nil {
-			payload = t
+			payload = tcpPayload{t.Pid, t.Comm, t.SrcIp, t.SrcPort, t.DstIp, t.DstPort, t.Direction}
 		}
 	case pb.EventType_FILE:
 		if f := e.GetFile(); f != nil {
-			payload = f
+			payload = filePayload{f.Pid, f.Comm, f.Path, f.Op, f.Ret}
 		}
 	}
 
@@ -516,6 +549,9 @@ func Serve(ctx context.Context, addr string, st *store.Store, reg *registry.Regi
 	}
 
 	authLim := newAuthFailLimiter()
+	if metrics != nil {
+		authLim.onFail = metrics.RecordAuthFailure
+	}
 	var opts []grpc.ServerOption
 	if tlsCertFile != "" && tlsKeyFile != "" {
 		creds, err := credentials.NewServerTLSFromFile(tlsCertFile, tlsKeyFile)
@@ -606,14 +642,17 @@ func checkAuthLimited(ctx context.Context, st *store.Store, authEnabled bool, li
 	}
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
+		lim.recordFail(otel.AuthFailMissingCredentials)
 		return "", status.Error(codes.Unauthenticated, "missing metadata")
 	}
 	values := md.Get("authorization")
 	if len(values) == 0 {
+		lim.recordFail(otel.AuthFailMissingCredentials)
 		return "", status.Error(codes.Unauthenticated, "missing authorization metadata")
 	}
 	got, ok := strings.CutPrefix(values[0], "Bearer ")
 	if !ok {
+		lim.recordFail(otel.AuthFailInvalidToken)
 		return "", status.Error(codes.Unauthenticated, "invalid token")
 	}
 	// A value that can't be a token is a failure, counted before any
@@ -640,8 +679,10 @@ func checkAuthLimited(ctx context.Context, st *store.Store, authEnabled bool, li
 // Unauthenticated otherwise.
 func authFailure(ctx context.Context, lim *authFailLimiter) error {
 	if ip := peerIP(ctx); ip != "" && !lim.reserve(ip) {
+		lim.recordFail(otel.AuthFailRateLimited)
 		return status.Error(codes.ResourceExhausted, "too many authentication failures")
 	}
+	lim.recordFail(otel.AuthFailInvalidToken)
 	return status.Error(codes.Unauthenticated, "invalid token")
 }
 

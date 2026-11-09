@@ -22,7 +22,7 @@ A **Rust Agent** collects kernel events via eBPF and streams them over gRPC to a
 ## Requirements
 
 - Rust 1.82+ (`cargo`)
-- Go 1.25+ (`go`)
+- Go 1.26+ (`go`)
 - `CAP_BPF` capability for real eBPF mode; mock mode works without it
 
 ## Build
@@ -341,7 +341,7 @@ Deploy Collector on one node and Agents on multiple nodes in a local network.
 
 - SSH access to target nodes (passwordless key auth)
 - Rust toolchain with `x86_64-unknown-linux-gnu` target (`rustup target add x86_64-unknown-linux-gnu`)
-- Go 1.25+
+- Go 1.26+
 
 ### Quick Start (3 nodes)
 
