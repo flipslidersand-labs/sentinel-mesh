@@ -168,6 +168,22 @@ func runWithContext(ctx context.Context, fn func() error) error {
 	}
 }
 
+// timeKeyLayout is RFC3339 with a fixed 9-digit fraction. RFC3339Nano trims
+// trailing zeros, so "…:00Z" sorted after "…:00.5Z" (byte 'Z' > '.') and
+// events within the same second came back in the wrong order, letting a
+// limit drop the newest rows (#250). A fixed width keeps byte order equal to
+// time order.
+const timeKeyLayout = "2006-01-02T15:04:05.000000000Z"
+
+// timeKey formats t (normalised to UTC, so offsets can't reorder keys) as a
+// fixed-width, lexicographically sortable key segment. Keys written before
+// #250 use RFC3339Nano; they are not migrated (reads are prefix scans, so both
+// forms stay readable). Old and new keys within the same second may order
+// imperfectly, but only until the retention TTL expires the old ones.
+func timeKey(t time.Time) string {
+	return t.UTC().Format(timeKeyLayout)
+}
+
 func (s *Store) SaveEvent(ctx context.Context, e Event) error {
 	val, err := json.Marshal(e)
 	if err != nil {
@@ -180,7 +196,7 @@ func (s *Store) SaveEvent(ctx context.Context, e Event) error {
 	// collision (#78). e.Timestamp is still stored in the record itself for
 	// display; it's just no longer trusted for ordering/storage identity.
 	received := time.Now().UTC()
-	key := []byte(fmt.Sprintf("event:%s:%s", received.Format(time.RFC3339Nano), e.EventID))
+	key := []byte(fmt.Sprintf("event:%s:%s", timeKey(received), e.EventID))
 	if err := runWithContext(ctx, func() error {
 		return s.db.Update(func(tx *badger.Txn) error {
 			return tx.SetEntry(badger.NewEntry(key, val).WithTTL(s.retention))
@@ -266,7 +282,7 @@ func (s *Store) SaveAlert(ctx context.Context, a Alert) error {
 	if err != nil {
 		return err
 	}
-	key := []byte(fmt.Sprintf("alert:%s:%s", a.Timestamp.Format(time.RFC3339Nano), a.AlertID))
+	key := []byte(fmt.Sprintf("alert:%s:%s", timeKey(a.Timestamp), a.AlertID))
 	return runWithContext(ctx, func() error {
 		return s.db.Update(func(tx *badger.Txn) error {
 			return tx.SetEntry(badger.NewEntry(key, val).WithTTL(s.retention))

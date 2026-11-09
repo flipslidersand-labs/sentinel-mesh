@@ -233,3 +233,50 @@ func TestNew_ReturnsErrorForInvalidDir(t *testing.T) {
 		t.Error("New(regular file path) = nil error, want non-nil")
 	}
 }
+
+// TestTimeKey_ByteOrderMatchesTimeOrder guards #250: RFC3339Nano trims
+// trailing zeros so keys within one second sorted wrongly. Also covers a
+// non-UTC offset, which previously ordered by local wall-clock text.
+func TestTimeKey_ByteOrderMatchesTimeOrder(t *testing.T) {
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	jst := time.FixedZone("JST", 9*3600)
+	ordered := []time.Time{ // strictly increasing instants
+		base,
+		base.Add(100 * time.Millisecond),
+		base.Add(123 * time.Millisecond),
+		base.Add(500 * time.Millisecond),
+		base.Add(time.Second).In(jst),
+		base.Add(time.Second + time.Nanosecond),
+	}
+	for i := 1; i < len(ordered); i++ {
+		a, b := timeKey(ordered[i-1]), timeKey(ordered[i])
+		if !(a < b) {
+			t.Errorf("timeKey(%v)=%q should sort before timeKey(%v)=%q", ordered[i-1], a, ordered[i], b)
+		}
+	}
+}
+
+// TestListAlerts_NewestFirstWithinOneSecond guards #250 end to end: with
+// limit=1 the newest alert must be returned even when timestamps share a second.
+func TestListAlerts_NewestFirstWithinOneSecond(t *testing.T) {
+	st, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { st.Close() }) //nolint:errcheck
+
+	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	for i, d := range []time.Duration{0, 100 * time.Millisecond, 500 * time.Millisecond} {
+		a := Alert{AlertID: "a" + strconv.Itoa(i), NodeID: "n1", Timestamp: base.Add(d)}
+		if err := st.SaveAlert(context.Background(), a); err != nil {
+			t.Fatalf("SaveAlert: %v", err)
+		}
+	}
+	got, err := st.ListAlerts(context.Background(), "", 1)
+	if err != nil {
+		t.Fatalf("ListAlerts: %v", err)
+	}
+	if len(got) != 1 || got[0].AlertID != "a2" {
+		t.Fatalf("limit=1 should return newest alert a2, got %+v", got)
+	}
+}
