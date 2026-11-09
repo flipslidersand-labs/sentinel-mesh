@@ -71,7 +71,7 @@ func (n *nodeLimiters) acquire(nodeID string) (*sharedBucket, func()) {
 	}
 	b, ok := n.m[nodeID]
 	if !ok {
-		b = &sharedBucket{tb: newTokenBucket(streamEventsRateLimit, streamEventsRateBurst)}
+		b = &sharedBucket{tb: newTokenBucketWithClock(streamEventsRateLimit, streamEventsRateBurst, n.now)}
 		n.m[nodeID] = b
 	}
 	b.active++

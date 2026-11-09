@@ -68,14 +68,28 @@ type tokenBucket struct {
 	max    float64
 	rate   float64
 	last   time.Time
+	now    func() time.Time // clock; nil means time.Now (tests inject a manual clock)
 }
 
 func newTokenBucket(ratePerSec, burst float64) *tokenBucket {
-	return &tokenBucket{tokens: burst, max: burst, rate: ratePerSec, last: time.Now()}
+	return newTokenBucketWithClock(ratePerSec, burst, nil)
+}
+
+func newTokenBucketWithClock(ratePerSec, burst float64, now func() time.Time) *tokenBucket {
+	b := &tokenBucket{tokens: burst, max: burst, rate: ratePerSec, now: now}
+	b.last = b.clock()
+	return b
+}
+
+func (b *tokenBucket) clock() time.Time {
+	if b.now != nil {
+		return b.now()
+	}
+	return time.Now()
 }
 
 func (b *tokenBucket) allow() bool {
-	now := time.Now()
+	now := b.clock()
 	b.tokens += now.Sub(b.last).Seconds() * b.rate
 	if b.tokens > b.max {
 		b.tokens = b.max

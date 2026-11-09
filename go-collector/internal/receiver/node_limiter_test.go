@@ -26,7 +26,12 @@ func newLimiterTestServer(t *testing.T) (*server, *store.Store) {
 		t.Fatalf("store.New: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	return &server{st: st, reg: registry.New(), log: zap.NewNop()}, st
+	s := &server{st: st, reg: registry.New(), log: zap.NewNop()}
+	// Frozen clock: no token ever refills, so results do not depend on
+	// wall-clock timing.
+	frozen := time.Now()
+	s.nodeLimiters.now = func() time.Time { return frozen }
+	return s, st
 }
 
 // drainNodeBudget pushes more invalid events than the burst through one
@@ -89,6 +94,8 @@ func TestStreamEvents_RateLimitIndependentAcrossNodes(t *testing.T) {
 
 func TestNodeLimiters_ConcurrentStreamsShareOneBudget(t *testing.T) {
 	var nl nodeLimiters
+	frozen := time.Now()
+	nl.now = func() time.Time { return frozen }
 	var allowed int64
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
@@ -105,8 +112,8 @@ func TestNodeLimiters_ConcurrentStreamsShareOneBudget(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	// 16000 attempts; only the burst (plus negligible refill) may pass.
-	if allowed > int64(streamEventsRateBurst)+500 {
+	// 16000 attempts on a frozen clock: exactly the burst may pass.
+	if allowed != int64(streamEventsRateBurst) {
 		t.Fatalf("allowed %d events across streams, want about %d", allowed, int(streamEventsRateBurst))
 	}
 }
