@@ -100,6 +100,11 @@ Options:
   --http-addr <ADDR>         REST API listen address [default: :8081]
   --data-dir <PATH>          BadgerDB data directory [default: /tmp/sentinel-data]
   --heartbeat-timeout <DUR>  Inactivity before agent is marked inactive [default: 60s]
+  --rules <PATH>             Alerting rules YAML file [default: none]
+  --otel-endpoint <URL>      OTLP HTTP endpoint for distributed tracing, e.g. http://localhost:4318 [default: none]
+  --static-dir <PATH>        Static UI directory [default: ./static]
+  --cors-origins <ORIGINS>   Allowed CORS origins, comma-separated or repeated
+                             [default: none = deny all cross-origin; bundled UI is same-origin]
   --region <NAME>            Default region for agents that register without one [default: default]
   --grpc-tls-cert <PATH>     gRPC server TLS certificate (PEM); requires --grpc-tls-key
   --grpc-tls-key <PATH>      gRPC server TLS private key (PEM); requires --grpc-tls-cert
@@ -111,6 +116,14 @@ Options:
   --aggregate                Run as a cross-region aggregator
   --upstreams <region=url>   Region collectors to poll (repeatable)
   --poll-interval <DUR>      How often to poll upstreams [default: 10s]
+                             (--upstreams/--poll-interval require --aggregate)
+
+  # In --aggregate mode, these normal-mode flags are ignored (a warning is logged
+  # if set): --grpc-addr, --data-dir, --rules, --grpc-tls-cert, --grpc-tls-key,
+  # --grpc-auth, --region. --http-addr, --http-auth, --static-dir and
+  # --cors-origins still apply.
+  # --otel-endpoint and --heartbeat-timeout are also not used in --aggregate
+  # mode (no warning is logged).
 ```
 
 ```text
@@ -311,17 +324,35 @@ sentinel-mesh/
 │   └── agent-ebpf/          # eBPF kernel program (aya)
 │       └── src/main.rs
 ├── go-collector/
-│   ├── cmd/collector/       # CLI (cobra) — serve subcommand
+│   ├── cmd/collector/       # CLI (cobra) — serve (main.go) and token (token.go) subcommands
 │   └── internal/
-│       ├── receiver/        # gRPC server (registers nodes, stores events)
+│       ├── receiver/        # gRPC server (registers nodes, stores events, auth-failure/rate limiting)
 │       ├── registry/        # Agent registry + heartbeat checker
-│       ├── store/           # BadgerDB wrapper (events)
+│       ├── store/           # BadgerDB wrapper (events, per-agent tokens)
 │       ├── exporter/        # Gin REST API router
+│       ├── httpserver/      # Shared HTTP server base
+│       ├── httpauth/        # REST API bearer-token auth
+│       ├── aggregator/      # Cross-region aggregator (--aggregate)
+│       ├── alerting/        # Alert rules engine (rules.yaml)
+│       ├── anomaly/         # Anomaly detector
+│       ├── notify/          # Alert notifications (Slack, email)
+│       ├── otel/            # OpenTelemetry metrics and traces
 │       └── pb/              # Generated protobuf/gRPC stubs
+├── web/                     # Web UI (React + TypeScript + Vite)
 ├── proto/
-│   └── sentinel.v1.proto    # Event + AgentService proto definition
+│   └── sentinel.proto       # Event + AgentService proto definition
+├── scripts/                 # build, install-collector, deploy-agent, demo-multi-node/-multi-region, lib-validate (shared helpers)
+├── rules.yaml               # Sample alerting rules
+├── test-integration.sh      # Integration test script
+├── CHANGELOG.md
+├── AGENTS.md
+├── LICENSE
+├── .github/                 # CI workflow, dependabot, PR template
+├── errors/                  # Troubleshooting notes (rust/, tooling/)
 └── docs/
     ├── spec.md
+    ├── data-model.md
+    ├── implementation-guide.md
     ├── tech-stack.md
     └── adr/
 ```
