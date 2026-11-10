@@ -12,6 +12,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -795,5 +796,49 @@ func TestServe_CompleteTLSConfigLoadsCredentials(t *testing.T) {
 		Deps{Registry: registry.New(), Logger: zap.NewNop()})
 	if err == nil || !strings.Contains(err.Error(), "load TLS cert/key") {
 		t.Fatalf("err = %v, want load TLS cert/key error", err)
+	}
+}
+
+// TestStreamEvents_RateLimitLogBoundsClientNodeID covers the #254 log-injection
+// item: the rate-limit warning must not echo the unvalidated, arbitrarily long
+// client-supplied event.NodeId. Without auth it is truncated and escaped.
+func TestStreamEvents_RateLimitLogBoundsClientNodeID(t *testing.T) {
+	core, logs := observer.New(zap.WarnLevel)
+	s := &server{reg: registry.New(), log: zap.New(core)}
+
+	long := strings.Repeat("A", 100000) + "\n\x1b[31mFAKE"
+	const floodMargin = 2000
+	events := make([]*pb.KernelEvent, 0, int(streamEventsRateBurst)+floodMargin)
+	for i := 0; i < int(streamEventsRateBurst)+floodMargin; i++ {
+		events = append(events, &pb.KernelEvent{NodeId: long, EventId: "e", Type: pb.EventType_EXEC})
+	}
+	if err := s.StreamEvents(&fakeStream{events: events}); err != nil {
+		t.Fatalf("StreamEvents: %v", err)
+	}
+	var found bool
+	for _, e := range logs.FilterMessageSnippet("rate limit exceeded").All() {
+		found = true
+		v, _ := e.ContextMap()["node_id"].(string)
+		if len(v) > maxLoggedNodeIDLen {
+			t.Errorf("logged node_id len = %d, want <= %d", len(v), maxLoggedNodeIDLen)
+		}
+		if strings.ContainsAny(v, "\n\x1b") {
+			t.Errorf("logged node_id contains raw control chars: %q", v)
+		}
+	}
+	if !found {
+		t.Fatal("expected a rate limit warning")
+	}
+}
+
+func TestSafeLogNodeID(t *testing.T) {
+	if got := safeLogNodeID("trusted", "ignored\n"); got != "trusted" {
+		t.Errorf("authed id should win, got %q", got)
+	}
+	if got := safeLogNodeID("", "node-1"); got != "node-1" {
+		t.Errorf("got %q", got)
+	}
+	if got := safeLogNodeID("", "a\nb"); got != `a\nb` {
+		t.Errorf("got %q", got)
 	}
 }
