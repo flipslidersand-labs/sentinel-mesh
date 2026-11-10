@@ -122,6 +122,8 @@ Options:
   # if set): --grpc-addr, --data-dir, --rules, --grpc-tls-cert, --grpc-tls-key,
   # --grpc-auth, --region. --http-addr, --http-auth, --static-dir and
   # --cors-origins still apply.
+  # --otel-endpoint and --heartbeat-timeout are also not used in --aggregate
+  # mode (no warning is logged).
 ```
 
 ```text
@@ -339,12 +341,18 @@ sentinel-mesh/
 ├── web/                     # Web UI (React + TypeScript + Vite)
 ├── proto/
 │   └── sentinel.proto       # Event + AgentService proto definition
-├── scripts/                 # build, install-collector, deploy-agent, demo-multi-node/-multi-region
+├── scripts/                 # build, install-collector, deploy-agent, demo-multi-node/-multi-region, lib-validate (shared helpers)
 ├── rules.yaml               # Sample alerting rules
 ├── test-integration.sh      # Integration test script
 ├── CHANGELOG.md
+├── AGENTS.md
+├── LICENSE
+├── .github/                 # CI workflow, dependabot, PR template
+├── errors/                  # Troubleshooting notes (rust/, tooling/)
 └── docs/
     ├── spec.md
+    ├── data-model.md
+    ├── implementation-guide.md
     ├── tech-stack.md
     └── adr/
 ```
