@@ -335,12 +335,13 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 		// storage path.
 		if !limiter.allow() {
 			throttled++
-			if throttled == 1 || throttled%1000 == 0 {
-				s.log.Warn("StreamEvents rate limit exceeded, dropping event",
-					zap.String("node_id", event.NodeId),
-					zap.Uint64("throttled_total", throttled))
-			}
-			if err := stream.Send(&pb.EventAck{Ok: false}); err != nil {
+			if err := rejectEvent(stream, func() {
+				if throttled == 1 || throttled%1000 == 0 {
+					s.log.Warn("StreamEvents rate limit exceeded, dropping event",
+						zap.String("node_id", event.NodeId),
+						zap.Uint64("throttled_total", throttled))
+				}
+			}); err != nil {
 				return err
 			}
 			continue
@@ -352,8 +353,9 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 		// control-character or oversized identifier (#154). The rejected
 		// value itself is never logged, since it is by definition unvalidated.
 		if err := validateKernelEvent(event); err != nil {
-			s.log.Warn("StreamEvents rejected invalid event", zap.Error(err))
-			if sendErr := stream.Send(&pb.EventAck{Ok: false}); sendErr != nil {
+			if sendErr := rejectEvent(stream, func() {
+				s.log.Warn("StreamEvents rejected invalid event", zap.Error(err))
+			}); sendErr != nil {
 				return sendErr
 			}
 			continue
@@ -365,9 +367,10 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 		// a client-supplied field (#178). An agent authenticated as one
 		// node_id must not be able to write/heartbeat as another.
 		if authedNodeID != "" && event.NodeId != authedNodeID {
-			s.log.Warn("StreamEvents event node_id does not match authenticated identity",
-				zap.String("authed_node_id", authedNodeID))
-			if sendErr := stream.Send(&pb.EventAck{Ok: false}); sendErr != nil {
+			if sendErr := rejectEvent(stream, func() {
+				s.log.Warn("StreamEvents event node_id does not match authenticated identity",
+					zap.String("authed_node_id", authedNodeID))
+			}); sendErr != nil {
 				return sendErr
 			}
 			continue
@@ -383,84 +386,104 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 			Payload:   s.eventPayload(event),
 		}
 
-		saveOk := true
-		saveCtx, saveCancel := context.WithTimeout(stream.Context(), storeOpTimeout)
-		storeErr := s.st.SaveEvent(saveCtx, storedEvent)
-		saveCancel()
-		if storeErr != nil {
-			s.log.Error("save event", zap.Error(storeErr))
+		saveOk := s.persistEvent(stream.Context(), storedEvent)
+		if _, alertsOk := s.evaluateAndNotify(stream.Context(), storedEvent); !alertsOk {
 			saveOk = false
-			if s.metrics != nil {
-				s.metrics.RecordStoreWriteFailure("event")
-			}
-		}
-
-		// Phase 6: record event metric
-		if s.metrics != nil {
-			s.metrics.RecordEvent(storedEvent.Type, storedEvent.NodeID)
-		}
-
-		// Phase 5: evaluate alerts. engine and detector run independently of
-		// each other so that a nil engine (e.g. a future "anomaly detection
-		// only" configuration) never silently disables the detector, or vice
-		// versa (#150).
-		if s.engine != nil || s.detector != nil {
-			_, span := s.tracer.Start(stream.Context(), "evaluate_alerts",
-				trace.WithAttributes(
-					attribute.String("event.id", storedEvent.EventID),
-					attribute.String("event.type", storedEvent.Type),
-					attribute.String("node.id", storedEvent.NodeID),
-				),
-			)
-
-			var allAlerts []alerting.Alert
-			if s.engine != nil {
-				allAlerts = append(allAlerts, s.engine.Evaluate(storedEvent)...)
-			}
-
-			// Phase 7: frequency-based anomaly detection
-			if s.detector != nil {
-				allAlerts = append(allAlerts, s.detector.Record(storedEvent)...)
-			}
-
-			for _, alert := range allAlerts {
-				alertCtx, alertCancel := context.WithTimeout(stream.Context(), storeOpTimeout)
-				alertErr := s.st.SaveAlert(alertCtx, alert)
-				alertCancel()
-				if alertErr != nil {
-					s.log.Error("save alert", zap.Error(alertErr))
-					saveOk = false
-					if s.metrics != nil {
-						s.metrics.RecordStoreWriteFailure("alert")
-					}
-				}
-
-				// Phase 6: record alert metric and trace
-				if s.metrics != nil {
-					s.metrics.RecordAlert(alert.RuleID, alert.Severity, alert.NodeID)
-				}
-				span.AddEvent("alert_triggered", trace.WithAttributes(
-					attribute.String("rule.id", alert.RuleID),
-					attribute.String("severity", alert.Severity),
-					attribute.String("message", alert.Message),
-				))
-
-				// Notify external channels off the hot path (best-effort).
-				// DispatchAsync is bounded — a flood of alerts can no longer
-				// spawn an unbounded number of goroutines (#75).
-				s.notifier.DispatchAsync(alert)
-			}
-
-			// End the span at the end of this iteration, not the whole
-			// StreamEvents loop — a `defer` here would accumulate one span
-			// per event for the life of the (long-lived) stream (#74).
-			span.End()
 		}
 
 		if err := stream.Send(&pb.EventAck{Ok: saveOk}); err != nil {
 			return err
 		}
 	}
+}
+
+// rejectEvent runs logFn (the caller's rejection log) and then sends a
+// failure Ack (Ok=false). A non-nil return is the Send error; the caller must
+// end the stream with it, otherwise continue with the next event.
+func rejectEvent(stream pb.SentinelCollector_StreamEventsServer, logFn func()) error {
+	if logFn != nil {
+		logFn()
+	}
+	return stream.Send(&pb.EventAck{Ok: false})
+}
+
+// persistEvent saves the event (bounded by storeOpTimeout) and records the
+// store-failure and event metrics. It reports whether the save succeeded.
+func (s *server) persistEvent(ctx context.Context, ev store.Event) (ok bool) {
+	ok = true
+	saveCtx, saveCancel := context.WithTimeout(ctx, storeOpTimeout)
+	storeErr := s.st.SaveEvent(saveCtx, ev)
+	saveCancel()
+	if storeErr != nil {
+		s.log.Error("save event", zap.Error(storeErr))
+		ok = false
+		if s.metrics != nil {
+			s.metrics.RecordStoreWriteFailure("event")
+		}
+	}
+
+	// Phase 6: record event metric
+	if s.metrics != nil {
+		s.metrics.RecordEvent(ev.Type, ev.NodeID)
+	}
+	return ok
+}
+
+// evaluateAndNotify runs the alert engine and anomaly detector on ev, saves,
+// records and traces each resulting alert and dispatches it to notifiers.
+// saveOk is false if any alert failed to save. engine and detector run
+// independently so a nil engine never disables the detector or vice versa
+// (#150).
+func (s *server) evaluateAndNotify(ctx context.Context, ev store.Event) (alerts []alerting.Alert, saveOk bool) {
+	saveOk = true
+	if s.engine == nil && s.detector == nil {
+		return nil, saveOk
+	}
+	_, span := s.tracer.Start(ctx, "evaluate_alerts",
+		trace.WithAttributes(
+			attribute.String("event.id", ev.EventID),
+			attribute.String("event.type", ev.Type),
+			attribute.String("node.id", ev.NodeID),
+		),
+	)
+	// End the span per call, not per stream (#74).
+	defer span.End()
+
+	if s.engine != nil {
+		alerts = append(alerts, s.engine.Evaluate(ev)...)
+	}
+	// Phase 7: frequency-based anomaly detection
+	if s.detector != nil {
+		alerts = append(alerts, s.detector.Record(ev)...)
+	}
+
+	for _, alert := range alerts {
+		alertCtx, alertCancel := context.WithTimeout(ctx, storeOpTimeout)
+		alertErr := s.st.SaveAlert(alertCtx, alert)
+		alertCancel()
+		if alertErr != nil {
+			s.log.Error("save alert", zap.Error(alertErr))
+			saveOk = false
+			if s.metrics != nil {
+				s.metrics.RecordStoreWriteFailure("alert")
+			}
+		}
+
+		// Phase 6: record alert metric and trace
+		if s.metrics != nil {
+			s.metrics.RecordAlert(alert.RuleID, alert.Severity, alert.NodeID)
+		}
+		span.AddEvent("alert_triggered", trace.WithAttributes(
+			attribute.String("rule.id", alert.RuleID),
+			attribute.String("severity", alert.Severity),
+			attribute.String("message", alert.Message),
+		))
+
+		// Notify external channels off the hot path (best-effort).
+		// DispatchAsync is bounded (#75).
+		s.notifier.DispatchAsync(alert)
+	}
+	return alerts, saveOk
 }
 
 func (s *server) eventTypeName(e *pb.KernelEvent) string {
