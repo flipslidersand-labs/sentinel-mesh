@@ -169,15 +169,15 @@ func (a *Aggregator) pollUpstream(ctx context.Context, u Upstream) {
 	st := &regionState{reachable: true}
 
 	if err := a.fetchJSON(ctx, u.URL+"/api/nodes", &st.nodes); err != nil {
-		a.markUnreachable(u, err)
+		a.markUnreachable(u, "nodes", err)
 		return
 	}
 	if err := a.fetchJSON(ctx, fmt.Sprintf("%s/api/events?limit=%d", u.URL, a.eventLimit), &st.events); err != nil {
-		a.markUnreachable(u, err)
+		a.markUnreachable(u, "events", err)
 		return
 	}
 	if err := a.fetchJSON(ctx, fmt.Sprintf("%s/api/alerts?limit=%d", u.URL, a.eventLimit), &st.alerts); err != nil {
-		a.markUnreachable(u, err)
+		a.markUnreachable(u, "alerts", err)
 		return
 	}
 
@@ -186,9 +186,10 @@ func (a *Aggregator) pollUpstream(ctx context.Context, u Upstream) {
 	a.mu.Unlock()
 }
 
-func (a *Aggregator) markUnreachable(u Upstream, err error) {
+func (a *Aggregator) markUnreachable(u Upstream, path string, err error) {
 	a.log.Warn("upstream unreachable",
-		zap.String("region", u.Region), zap.String("url", u.URL), zap.Error(err))
+		zap.String("region", u.Region), zap.String("url", u.URL),
+		zap.String("path", path), zap.Error(err))
 	a.mu.Lock()
 	a.state[u.Region] = &regionState{reachable: false, lastErr: classifyErr(err)}
 	a.mu.Unlock()
