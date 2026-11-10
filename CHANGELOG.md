@@ -13,12 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per-agent token store in BadgerDB (#195, #198). gRPC auth resolves the agent
   identity (`node_id`) from the presented token (#196); see ADR-005 (#188).
 - **Agent / deploy:** `--grpc-token` and `--grpc-ca-cert` (`SENTINEL_GRPC_CA_CERT`)
-  for bearer-token auth and TLS verification against the collector (#85);
-  `scripts/deploy-agent.sh` accepts `--grpc-token` / `--grpc-ca-cert` for
-  per-agent tokens (#200).
+  for bearer-token auth and TLS verification against the collector, also accepted
+  by `scripts/deploy-agent.sh` (#85). `deploy-agent.sh --grpc-token` is limited to
+  a single host and requires `--node-id`, since a per-agent token is bound to one
+  `node_id` (#200).
 - **Web UI:** API Token widget; the bundled UI now sends the `Authorization`
   header (#144).
-- gRPC auth-failure and rate-limit rejection metrics (#223, #266).
+- gRPC auth-failure and rate-limit rejection metrics (#266).
 
 ### Changed
 
@@ -43,11 +44,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - Per-agent bearer tokens for the gRPC channel instead of a shared token
-  (#195, #196, #198, ADR-005); token lookup is O(1) so valid tokens are not
+  (#195, #196, #198, ADR-005 / #188); token lookup is O(1) so valid tokens are not
   throttled by the auth-failure limiter (#238).
 - gRPC server TLS + bearer authentication (#85); failed-auth RPCs are rate
   limited (#230).
-- `/metrics` is gated behind the same bearer auth as `/api/*` (#180).
+- gRPC server limits: `MaxConcurrentStreams`, `MaxRecvMsgSize`, keepalive
+  enforcement and a per-stream `StreamEvents` rate limit; notification dispatch
+  is bounded (#98).
+- `Register` validates `node_id` / `hostname` / `ip` / `version` / `region`
+  before persisting (#128).
+- `deploy-agent.sh` / `install-collector.sh` validate inputs interpolated into
+  systemd units (command-injection fix, #87) and validate ssh/scp hosts, rejecting
+  option-like hosts (#88).
+- The aggregator sends the bearer token when polling upstream collectors, so
+  cross-region aggregation keeps working with REST auth enabled (#179).
+- `/metrics` is gated behind bearer auth like `/api/*` (#180; see Changed, #279).
 - `StreamEvents` validates `node_id` / `event_id` / payload strings (#166) and
   applies its rate limit before validation (#173); the limit is a shared bucket
   per authenticated `node_id` across streams (#277).
