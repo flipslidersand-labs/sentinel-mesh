@@ -799,35 +799,54 @@ func TestServe_CompleteTLSConfigLoadsCredentials(t *testing.T) {
 	}
 }
 
-// TestStreamEvents_RateLimitLogBoundsClientNodeID covers the #254 log-injection
-// item: the rate-limit warning must not echo the unvalidated, arbitrarily long
-// client-supplied event.NodeId. Without auth it is truncated and escaped.
-func TestStreamEvents_RateLimitLogBoundsClientNodeID(t *testing.T) {
+// floodRateLimitLogs streams enough events with clientNodeID to trip the rate
+// limit and returns the node_id values of the rate-limit warnings.
+func floodRateLimitLogs(t *testing.T, clientNodeID string, ctx context.Context) []string {
+	t.Helper()
 	core, logs := observer.New(zap.WarnLevel)
 	s := &server{reg: registry.New(), log: zap.New(core)}
-
-	long := strings.Repeat("A", 100000) + "\n\x1b[31mFAKE"
 	const floodMargin = 2000
 	events := make([]*pb.KernelEvent, 0, int(streamEventsRateBurst)+floodMargin)
 	for i := 0; i < int(streamEventsRateBurst)+floodMargin; i++ {
-		events = append(events, &pb.KernelEvent{NodeId: long, EventId: "e", Type: pb.EventType_EXEC})
+		events = append(events, &pb.KernelEvent{NodeId: clientNodeID, EventId: "e", Type: pb.EventType_EXEC})
 	}
-	if err := s.StreamEvents(&fakeStream{events: events}); err != nil {
+	if err := s.StreamEvents(&fakeStream{events: events, ctx: ctx}); err != nil {
 		t.Fatalf("StreamEvents: %v", err)
 	}
-	var found bool
+	var out []string
 	for _, e := range logs.FilterMessageSnippet("rate limit exceeded").All() {
-		found = true
 		v, _ := e.ContextMap()["node_id"].(string)
+		out = append(out, v)
+	}
+	if len(out) == 0 {
+		t.Fatal("expected a rate limit warning")
+	}
+	return out
+}
+
+// TestStreamEvents_RateLimitLogBoundsClientNodeID covers the #254 log-injection
+// item: without auth the unvalidated client node_id is escaped and capped.
+func TestStreamEvents_RateLimitLogBoundsClientNodeID(t *testing.T) {
+	long := "ab\n\x1b[31mFAKE" + strings.Repeat("A", 100000)
+	for _, v := range floodRateLimitLogs(t, long, nil) {
 		if len(v) > maxLoggedNodeIDLen {
 			t.Errorf("logged node_id len = %d, want <= %d", len(v), maxLoggedNodeIDLen)
 		}
 		if strings.ContainsAny(v, "\n\x1b") {
 			t.Errorf("logged node_id contains raw control chars: %q", v)
 		}
+		if !strings.HasPrefix(v, `ab\n\x1b[31mFAKE`) {
+			t.Errorf("control chars not escaped within the cap: %q", v)
+		}
 	}
-	if !found {
-		t.Fatal("expected a rate limit warning")
+}
+
+// With auth, the authenticated node_id is logged and the client value is not.
+func TestStreamEvents_RateLimitLogPrefersAuthedNodeID(t *testing.T) {
+	for _, v := range floodRateLimitLogs(t, "attacker-supplied", authedStreamCtx("node-auth")) {
+		if v != "node-auth" {
+			t.Errorf("logged node_id = %q, want node-auth", v)
+		}
 	}
 }
 
