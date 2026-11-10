@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **go-collector:** `sentinel-collector token issue|revoke|list` subcommands and a
+  per-agent token store in BadgerDB (#195, #198). gRPC auth resolves the agent
+  identity (`node_id`) from the presented token (#196); see ADR-005 (#188).
+- **Agent / deploy:** `--grpc-token` and `--grpc-ca-cert` (`SENTINEL_GRPC_CA_CERT`)
+  for bearer-token auth and TLS verification against the collector (#85);
+  `scripts/deploy-agent.sh` accepts `--grpc-token` / `--grpc-ca-cert` for
+  per-agent tokens (#200).
+- **Web UI:** API Token widget; the bundled UI now sends the `Authorization`
+  header (#144).
+- gRPC auth-failure and rate-limit rejection metrics (#223, #266).
+
 ### Changed
 
 - **BREAKING (go-collector):** gRPC authentication is now controlled by the new
@@ -26,6 +39,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/metrics` is behind the same bearer auth as `/api/*` (only `/healthz` is open). The
   installer now fails (with the journal tail) if the unit is not active after start, and the
   README/`serve --help` examples were fixed so they start (#279).
+
+### Security
+
+- Per-agent bearer tokens for the gRPC channel instead of a shared token
+  (#195, #196, #198, ADR-005); token lookup is O(1) so valid tokens are not
+  throttled by the auth-failure limiter (#238).
+- gRPC server TLS + bearer authentication (#85); failed-auth RPCs are rate
+  limited (#230).
+- `/metrics` is gated behind the same bearer auth as `/api/*` (#180).
+- `StreamEvents` validates `node_id` / `event_id` / payload strings (#166) and
+  applies its rate limit before validation (#173); the limit is a shared bucket
+  per authenticated `node_id` across streams (#277).
+- The agent IP is derived from the gRPC peer, not a client-supplied field (#178).
+- `deploy-agent.sh` no longer leaks the gRPC bearer token (#174); Slack send
+  errors no longer include the webhook URL (#256).
 
 ## [0.1.0] - 2026-08-17
 
