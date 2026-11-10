@@ -1,5 +1,7 @@
-use std::time::Duration;
-use tokio::sync::mpsc::Sender;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::mpsc::{error::TrySendError, Sender};
 use uuid::Uuid;
 
 use crate::pb::{kernel_event::Payload, EventType, ExecEvent, FileEvent, KernelEvent, TcpEvent};
@@ -31,12 +33,136 @@ static MOCK_PATHS: &[(&str, &str)] = &[
 ];
 static MOCK_COMMS: &[&str] = &["bash", "python3", "curl", "systemd", "sshd", "nginx"];
 
+/// Minimum gap between "events dropped" warnings, so a long outage does not
+/// flood the log (#282).
+const DROP_REPORT_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Counts events dropped because the channel was full. The first drop is
+/// reported immediately; later ones are batched and reported at most once per
+/// `interval`. `total` is cumulative across reconnects (the tracker lives as
+/// long as the source task).
+struct DropTracker {
+    /// Mirror of `total`, readable from outside the task (tests, metrics).
+    counter: Arc<AtomicU64>,
+    total: u64,
+    unreported: u64,
+    last_report: Option<Instant>,
+    interval: Duration,
+}
+
+/// What to log: drops since the previous report, and the cumulative total.
+#[derive(Debug, PartialEq, Eq)]
+struct DropReport {
+    since_last: u64,
+    total: u64,
+}
+
+impl DropTracker {
+    #[cfg(test)]
+    fn new(interval: Duration) -> Self {
+        Self::with_counter(interval, Arc::new(AtomicU64::new(0)))
+    }
+
+    fn with_counter(interval: Duration, counter: Arc<AtomicU64>) -> Self {
+        Self {
+            counter,
+            total: 0,
+            unreported: 0,
+            last_report: None,
+            interval,
+        }
+    }
+
+    /// Record one dropped event; returns a report when it is time to log.
+    fn record(&mut self, now: Instant) -> Option<DropReport> {
+        self.total += 1;
+        self.counter.fetch_add(1, Ordering::Relaxed);
+        self.unreported += 1;
+        self.report_if_due(now)
+    }
+
+    /// Call after a successful send: if drops are still unreported and the
+    /// interval has elapsed, report them so they never stay unlogged after
+    /// the channel recovers.
+    fn on_success(&mut self, now: Instant) -> Option<DropReport> {
+        self.report_if_due(now)
+    }
+
+    fn report_if_due(&mut self, now: Instant) -> Option<DropReport> {
+        if self.unreported == 0 {
+            return None;
+        }
+        let due = match self.last_report {
+            None => true,
+            Some(t) => now.saturating_duration_since(t) >= self.interval,
+        };
+        if due {
+            self.flush(now)
+        } else {
+            None
+        }
+    }
+
+    /// Report any drops not yet logged (e.g. when the source stops).
+    fn flush(&mut self, now: Instant) -> Option<DropReport> {
+        if self.unreported == 0 {
+            return None;
+        }
+        let r = DropReport {
+            since_last: self.unreported,
+            total: self.total,
+        };
+        self.unreported = 0;
+        self.last_report = Some(now);
+        Some(r)
+    }
+}
+
+/// Non-blocking send. Returns `false` when the receiver is gone (Closed).
+/// A Full channel drops the event, counts it and logs (throttled).
+fn try_forward(tx: &Sender<KernelEvent>, event: KernelEvent, drops: &mut DropTracker) -> bool {
+    match tx.try_send(event) {
+        Ok(()) => {
+            if let Some(r) = drops.on_success(Instant::now()) {
+                log_drops(&r);
+            }
+            true
+        }
+        Err(TrySendError::Full(_)) => {
+            if let Some(r) = drops.record(Instant::now()) {
+                log_drops(&r);
+            }
+            true
+        }
+        Err(TrySendError::Closed(_)) => {
+            if let Some(r) = drops.flush(Instant::now()) {
+                log_drops(&r);
+            }
+            false
+        }
+    }
+}
+
+fn log_drops(r: &DropReport) {
+    eprintln!(
+        "warn: agent→collector channel full, dropped {} mock event(s) since last report ({} total)",
+        r.since_last, r.total
+    );
+}
+
 /// Mock event generator — cycles Exec / TCP / File to exercise all event types.
 pub async fn mock_source(tx: Sender<KernelEvent>, rate: u64) {
+    mock_source_counted(tx, rate, Arc::new(AtomicU64::new(0))).await
+}
+
+/// Same as `mock_source`, exposing the number of events dropped on a full
+/// channel through `dropped`.
+async fn mock_source_counted(tx: Sender<KernelEvent>, rate: u64, dropped: Arc<AtomicU64>) {
     let interval = Duration::from_millis(1000 / rate.max(1));
     let mut ticker = tokio::time::interval(interval);
     let mut counter: u64 = 0;
     let mut pid: u32 = 1000;
+    let mut drops = DropTracker::with_counter(DROP_REPORT_INTERVAL, dropped);
 
     loop {
         ticker.tick().await;
@@ -104,10 +230,9 @@ pub async fn mock_source(tx: Sender<KernelEvent>, rate: u64) {
         // try_send (not send().await): while stream_to_collector is
         // reconnecting (#73), the channel can fill up — dropping new mock
         // events here is preferable to blocking this generator indefinitely.
-        match tx.try_send(event) {
-            Ok(()) => {}
-            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
-            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+        // Full drops are counted and logged (throttled), see DropTracker.
+        if !try_forward(&tx, event, &mut drops) {
+            break;
         }
     }
 }
@@ -505,6 +630,122 @@ mod tests {
         assert_eq!(bytes_to_str(raw), "bash");
     }
 
+    fn plain_event() -> KernelEvent {
+        ke(None)
+    }
+
+    #[test]
+    fn drop_tracker_reports_first_then_throttles() {
+        let t0 = Instant::now();
+        let mut d = DropTracker::new(Duration::from_secs(10));
+        assert_eq!(
+            d.record(t0),
+            Some(DropReport {
+                since_last: 1,
+                total: 1
+            })
+        );
+        // Within the interval: counted but not reported.
+        assert_eq!(d.record(t0 + Duration::from_secs(1)), None);
+        assert_eq!(d.record(t0 + Duration::from_secs(9)), None);
+        assert_eq!(d.total, 3);
+        // Boundary: exactly at the interval reports the batch with the total.
+        assert_eq!(
+            d.record(t0 + Duration::from_secs(10)),
+            Some(DropReport {
+                since_last: 3,
+                total: 4
+            })
+        );
+        // Next window starts from the last report.
+        assert_eq!(d.record(t0 + Duration::from_secs(19)), None);
+        assert_eq!(
+            d.record(t0 + Duration::from_secs(20)),
+            Some(DropReport {
+                since_last: 2,
+                total: 6
+            })
+        );
+    }
+
+    #[test]
+    fn drop_tracker_success_flushes_pending_after_interval() {
+        let t0 = Instant::now();
+        let mut d = DropTracker::new(Duration::from_secs(10));
+        assert!(d.record(t0).is_some());
+        assert!(d.record(t0 + Duration::from_secs(1)).is_none());
+        // Recovered: success within the interval keeps it pending...
+        assert_eq!(d.on_success(t0 + Duration::from_secs(5)), None);
+        // ...but once the interval passed, the next success reports it.
+        assert_eq!(
+            d.on_success(t0 + Duration::from_secs(10)),
+            Some(DropReport { since_last: 1, total: 2 })
+        );
+        assert_eq!(d.on_success(t0 + Duration::from_secs(30)), None);
+    }
+
+    #[tokio::test]
+    async fn mock_source_counts_drops_on_full_channel() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1); // never drained
+        let dropped = Arc::new(AtomicU64::new(0));
+        let handle = tokio::spawn(mock_source_counted(tx, 1000, dropped.clone()));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while dropped.load(Ordering::Relaxed) < 3 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("mock_source must count drops on a full channel");
+        drop(rx);
+        let _ = handle.await;
+    }
+
+    #[test]
+    fn drop_tracker_flush_reports_pending_only() {
+        let t0 = Instant::now();
+        let mut d = DropTracker::new(Duration::from_secs(10));
+        assert_eq!(d.flush(t0), None);
+        d.record(t0);
+        d.record(t0);
+        assert_eq!(
+            d.flush(t0),
+            Some(DropReport {
+                since_last: 1,
+                total: 2
+            })
+        );
+        assert_eq!(d.flush(t0), None);
+    }
+
+    #[tokio::test]
+    async fn try_forward_counts_drops_on_full_channel() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let mut d = DropTracker::new(Duration::from_secs(3600));
+        assert!(try_forward(&tx, plain_event(), &mut d)); // fills the channel
+        for _ in 0..5 {
+            assert!(try_forward(&tx, plain_event(), &mut d)); // Full: dropped
+        }
+        assert_eq!(d.total, 5);
+        // Draining then sending works again; count is cumulative.
+        rx.recv().await.unwrap();
+        assert!(try_forward(&tx, plain_event(), &mut d));
+        assert_eq!(d.total, 5);
+    }
+
+    #[tokio::test]
+    async fn try_forward_closed_returns_false_and_flushes() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let mut d = DropTracker::new(Duration::from_secs(3600));
+        assert!(try_forward(&tx, plain_event(), &mut d));
+        assert!(try_forward(&tx, plain_event(), &mut d)); // Full, reported
+        assert!(try_forward(&tx, plain_event(), &mut d)); // Full, pending
+        assert_eq!(d.unreported, 1);
+        drop(rx);
+        assert!(!try_forward(&tx, plain_event(), &mut d));
+        assert_eq!(d.unreported, 0);
+        assert_eq!(d.total, 2); // Closed is not counted as a drop
+    }
+
     fn pid_of(e: &KernelEvent) -> u32 {
         match &e.payload {
             Some(Payload::Exec(p)) => p.pid,
@@ -543,7 +784,10 @@ mod tests {
         assert!(kinds.contains("file"), "file missing: {kinds:?}");
 
         for e in &events {
-            assert!(e.node_id.is_empty(), "node_id filled by grpc layer, not source");
+            assert!(
+                e.node_id.is_empty(),
+                "node_id filled by grpc layer, not source"
+            );
             assert!(e.timestamp > 0);
             assert!(
                 uuid::Uuid::parse_str(&e.event_id).is_ok(),
