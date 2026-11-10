@@ -145,7 +145,8 @@ EOF
 ssh -- "$SSH_HOST" bash -s <<'REMOTE'
 set -euo pipefail
 sudo systemctl daemon-reload
-sudo systemctl enable --now sentinel-collector
+sudo systemctl enable sentinel-collector
+sudo systemctl restart sentinel-collector
 sleep 3
 if ! systemctl is-active --quiet sentinel-collector; then
   echo "Error: sentinel-collector failed to start; recent log:" >&2

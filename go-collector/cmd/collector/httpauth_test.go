@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestServeCmd_HTTPAuthFlagDefaultsToRequired(t *testing.T) {
@@ -27,7 +28,16 @@ func TestServe_RefusesUnauthenticatedRESTByDefault(t *testing.T) {
 		cmd := serveCmd()
 		cmd.SetArgs(args)
 		cmd.SilenceUsage, cmd.SilenceErrors = true, true
-		err := cmd.Execute()
+		// Run in a goroutine: if the auth check regresses, serve starts and
+		// blocks, so fail fast instead of hanging until the test timeout.
+		done := make(chan error, 1)
+		go func() { done <- cmd.Execute() }()
+		var err error
+		select {
+		case err = <-done:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("args %v: expected refusal, but serve started", args)
+		}
 		if err == nil {
 			t.Fatalf("args %v: expected error, got nil", args)
 		}

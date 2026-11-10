@@ -215,7 +215,7 @@ Unauthenticated gRPC requires the explicit `--grpc-auth=disabled`.
 
 > **Breaking change (#222):** previously gRPC was unauthenticated unless `SENTINEL_API_TOKEN` was set.
 > The default is now `required`. **Migration:** either issue per-agent tokens (below) and pass them
-> to agents, or keep the old behaviour explicitly with `sentinel-collector serve --grpc-auth=disabled`
+> to agents, or keep the old behaviour explicitly with `SENTINEL_API_TOKEN=<token> sentinel-collector serve --grpc-auth=disabled`
 > (`scripts/install-collector.sh <host> --grpc-auth disabled`). Existing deployments that ran without
 > `SENTINEL_API_TOKEN` will otherwise see all agents rejected after upgrading.
 

@@ -129,10 +129,10 @@ TLS for the gRPC server is optional but, when enabled, both
   sentinel-collector serve --grpc-auth=disabled --http-auth=disabled
 
   # Normal mode with gRPC TLS enabled
-  sentinel-collector serve --grpc-tls-cert=/etc/sentinel/tls.crt --grpc-tls-key=/etc/sentinel/tls.key
+  SENTINEL_API_TOKEN=<token> sentinel-collector serve --grpc-tls-cert=/etc/sentinel/tls.crt --grpc-tls-key=/etc/sentinel/tls.key
 
   # Aggregate mode: merge two region collectors into one read-only view
-  sentinel-collector serve --aggregate \
+  SENTINEL_API_TOKEN=<token> sentinel-collector serve --aggregate \
     --upstreams=us-east=http://collector-us-east:8081 \
     --upstreams=eu-west=http://collector-eu-west:8081`,
 		RunE: func(cmd *cobra.Command, args []string) error {
