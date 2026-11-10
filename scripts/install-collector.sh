@@ -13,12 +13,19 @@
 #   --grpc-tls-key PATH   path (on SSH_HOST) to gRPC TLS private key (PEM); requires --grpc-tls-cert
 #
 #   --grpc-auth MODE      gRPC auth: required (default) or disabled (#222)
+#   --http-auth MODE      REST auth: required (default) or disabled (#254)
 #
 # gRPC auth: the default (required) rejects every RPC until per-agent tokens
 # are issued on the collector (`sentinel-collector token issue <node_id>`;
 # stop the service first, BadgerDB is exclusively locked). Pass
 # `--grpc-auth disabled` only for dev/trusted networks. SENTINEL_API_TOKEN
 # only gates the REST API and no longer affects gRPC auth.
+#
+# REST auth: the default (required) makes the collector refuse to start unless
+# SENTINEL_API_TOKEN is set in its environment (e.g. a systemd drop-in with
+# EnvironmentFile=, mode 600 — this script never writes the token). Pass
+# `--http-auth disabled` only for dev/trusted networks. The script checks
+# `systemctl is-active` after start and fails (with the journal tail) otherwise.
 set -euo pipefail
 
 SSH_HOST="${1:?Usage: $0 <SSH_HOST> [options]}"
@@ -31,6 +38,7 @@ DATA_DIR="/var/lib/sentinel"
 GRPC_TLS_CERT=""
 GRPC_TLS_KEY=""
 GRPC_AUTH="required"
+HTTP_AUTH="required"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -41,6 +49,7 @@ while [[ $# -gt 0 ]]; do
     --grpc-tls-cert) GRPC_TLS_CERT="$2"; shift 2 ;;
     --grpc-tls-key)  GRPC_TLS_KEY="$2";  shift 2 ;;
     --grpc-auth)    GRPC_AUTH="$2";    shift 2 ;;
+    --http-auth)    HTTP_AUTH="$2";    shift 2 ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -49,6 +58,11 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib-validate.sh"
 
 if [[ "$GRPC_AUTH" != "required" && "$GRPC_AUTH" != "disabled" ]]; then
   echo "Error: --grpc-auth must be 'required' or 'disabled', got '${GRPC_AUTH}'" >&2
+  exit 1
+fi
+
+if [[ "$HTTP_AUTH" != "required" && "$HTTP_AUTH" != "disabled" ]]; then
+  echo "Error: --http-auth must be 'required' or 'disabled', got '${HTTP_AUTH}'" >&2
   exit 1
 fi
 
@@ -119,7 +133,7 @@ Description=SentinelMesh Collector (region=${REGION})
 After=network.target
 
 [Service]
-ExecStart=${REMOTE_BIN} serve --grpc-addr ${GRPC_ADDR} --http-addr ${HTTP_ADDR} --data-dir ${DATA_DIR} --static-dir ${REMOTE_STATIC} --region ${REGION} --grpc-auth ${GRPC_AUTH} ${TLS_FLAGS}
+ExecStart=${REMOTE_BIN} serve --grpc-addr ${GRPC_ADDR} --http-addr ${HTTP_ADDR} --data-dir ${DATA_DIR} --static-dir ${REMOTE_STATIC} --region ${REGION} --grpc-auth ${GRPC_AUTH} --http-auth ${HTTP_AUTH} ${TLS_FLAGS}
 WorkingDirectory=/opt/sentinel-collector
 Restart=always
 RestartSec=5
@@ -131,7 +145,14 @@ EOF
 ssh -- "$SSH_HOST" bash -s <<'REMOTE'
 set -euo pipefail
 sudo systemctl daemon-reload
-sudo systemctl enable --now sentinel-collector
+sudo systemctl enable sentinel-collector
+sudo systemctl restart sentinel-collector
+sleep 3
+if ! systemctl is-active --quiet sentinel-collector; then
+  echo "Error: sentinel-collector failed to start; recent log:" >&2
+  sudo journalctl -u sentinel-collector -n 15 --no-pager >&2 || true
+  exit 1
+fi
 REMOTE
 
 echo "==> sentinel-collector running on $SSH_HOST ${GRPC_ADDR} (gRPC) ${HTTP_ADDR} (HTTP)"
