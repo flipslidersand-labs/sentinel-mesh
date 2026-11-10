@@ -171,7 +171,15 @@ fn log_drops(r: &DropReport) {
 
 /// Mock event generator — cycles Exec / TCP / File to exercise all event types.
 pub async fn mock_source(tx: Sender<KernelEvent>, rate: u64) {
-    mock_source_counted(tx, rate, Arc::new(AtomicU64::new(0))).await
+    mock_source_counted(tx, rate, mock_dropped_counter()).await
+}
+
+/// Process-wide count of events `mock_source` dropped on a full channel
+/// (shared by all `mock_source` tasks; also lets tests observe that
+/// `mock_source` itself goes through `DropTracker`).
+fn mock_dropped_counter() -> Arc<AtomicU64> {
+    static COUNTER: std::sync::OnceLock<Arc<AtomicU64>> = std::sync::OnceLock::new();
+    COUNTER.get_or_init(|| Arc::new(AtomicU64::new(0))).clone()
 }
 
 /// Same as `mock_source`, exposing the number of events dropped on a full
@@ -825,8 +833,13 @@ mod tests {
         // the 2nd event, so after the pause the next event would be pid 1002.
         // With try_send the generator keeps running and drops in between.
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let before = mock_dropped_counter().load(Ordering::Relaxed);
         let handle = tokio::spawn(mock_source(tx, 1000));
         tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            mock_dropped_counter().load(Ordering::Relaxed) > before,
+            "drops via mock_source must be counted by DropTracker"
+        );
         let first = rx.recv().await.unwrap();
         assert_eq!(pid_of(&first), 1001);
         tokio::time::sleep(Duration::from_millis(200)).await;
