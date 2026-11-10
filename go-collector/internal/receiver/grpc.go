@@ -574,21 +574,51 @@ func gracefulStopWithTimeout(srv *grpc.Server, gracePeriod time.Duration, log *z
 	}
 }
 
-// Serve starts the gRPC server on addr. If tlsCertFile/tlsKeyFile are both
-// set, the server requires TLS; otherwise it serves in plaintext (caller is
-// expected to warn). If authEnabled, every RPC must present an
+// Config holds the scalar settings for Serve.
+//
+// Zero values behave exactly as the former positional arguments did:
+// TLS is enabled only when BOTH TLSCertFile and TLSKeyFile are non-empty
+// (setting just one serves plaintext); AuthEnabled false serves
+// unauthenticated; DefaultRegion is passed through unchanged (no
+// defaulting); Addr is handed to net.Listen as-is.
+type Config struct {
+	Addr          string
+	TLSCertFile   string
+	TLSKeyFile    string
+	AuthEnabled   bool
+	DefaultRegion string
+}
+
+// Deps holds the collaborators for Serve. Fields are passed through
+// unchanged with no defaulting, as before: Metrics may be nil (auth-failure
+// metrics are then skipped), and the other nilable fields keep whatever
+// nil handling the RPC handlers already had. Logger must be non-nil
+// (Serve logs unconditionally).
+type Deps struct {
+	Store    *store.Store
+	Registry *registry.Registry
+	Engine   *alerting.Engine
+	Detector *anomaly.Detector
+	Notifier *notify.Dispatcher
+	Metrics  *otel.MetricsProvider
+	Tracer   trace.Tracer
+	Logger   *zap.Logger
+}
+
+// Serve starts the gRPC server on cfg.Addr. If cfg.TLSCertFile/TLSKeyFile
+// are both set, the server requires TLS; otherwise it serves in plaintext
+// (caller is expected to warn). If cfg.AuthEnabled, every RPC must present an
 // `authorization: Bearer <token>` metadata entry naming a token issued via
-// st.IssueToken (#189) — unlike the REST API's single shared
+// deps.Store.IssueToken (#189) — unlike the REST API's single shared
 // SENTINEL_API_TOKEN, each agent authenticates with its own per-agent
 // token (#183, per ADR-005).
 //
 // Serve blocks until either the server stops on its own (e.g. a listener
 // error) or ctx is done, in which case it gracefully stops the server
 // (waiting for in-flight RPCs to finish) before returning.
-func Serve(ctx context.Context, addr string, st *store.Store, reg *registry.Registry, engine *alerting.Engine,
-	detector *anomaly.Detector, notifier *notify.Dispatcher, metrics *otel.MetricsProvider,
-	tracer trace.Tracer, defaultRegion string, log *zap.Logger,
-	tlsCertFile, tlsKeyFile string, authEnabled bool) error {
+func Serve(ctx context.Context, cfg Config, deps Deps) error {
+	addr, log, st, metrics := cfg.Addr, deps.Logger, deps.Store, deps.Metrics
+	tlsCertFile, tlsKeyFile, authEnabled := cfg.TLSCertFile, cfg.TLSKeyFile, cfg.AuthEnabled
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", addr, err)
@@ -621,7 +651,7 @@ func Serve(ctx context.Context, addr string, st *store.Store, reg *registry.Regi
 	)
 	srv := grpc.NewServer(opts...)
 
-	s := &server{st: st, reg: reg, engine: engine, detector: detector, notifier: notifier, metrics: metrics, tracer: tracer, defaultRegion: defaultRegion, log: log, authFail: authLim}
+	s := &server{st: st, reg: deps.Registry, engine: deps.Engine, detector: deps.Detector, notifier: deps.Notifier, metrics: metrics, tracer: deps.Tracer, defaultRegion: cfg.DefaultRegion, log: log, authFail: authLim}
 	pb.RegisterSentinelCollectorServer(srv, s)
 
 	// Stop the server when ctx is cancelled (e.g. SIGINT/SIGTERM) so the
