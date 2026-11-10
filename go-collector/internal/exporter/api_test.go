@@ -285,3 +285,31 @@ func TestRouter_CORS_AllowsConfiguredOrigin(t *testing.T) {
 		t.Errorf("Access-Control-Allow-Origin = %q, want %q", got, "https://ui.example.com")
 	}
 }
+
+// TestInternalErrors_DoNotLeakDetails: a failing store must yield a 500 with a
+// fixed message, never the underlying (Badger) error text.
+func TestInternalErrors_DoNotLeakDetails(t *testing.T) {
+	for _, path := range []string{"/api/events", "/api/alerts"} {
+		t.Run(path, func(t *testing.T) {
+			st, err := store.New(t.TempDir())
+			if err != nil {
+				t.Fatalf("store.New: %v", err)
+			}
+			_ = st.Close() // closed store -> store calls fail
+
+			r := Router(st, registry.New(), nil, t.TempDir(), nil, "")
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+			if w.Code != http.StatusInternalServerError {
+				t.Fatalf("status = %d, want 500 (body=%s)", w.Code, w.Body.String())
+			}
+			var body map[string]string
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if body["error"] != "internal error" {
+				t.Fatalf("error = %q, want fixed %q", body["error"], "internal error")
+			}
+		})
+	}
+}
