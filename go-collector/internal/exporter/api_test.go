@@ -1,11 +1,14 @@
 package exporter
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -297,9 +300,14 @@ func TestInternalErrors_DoNotLeakDetails(t *testing.T) {
 			}
 			_ = st.Close() // closed store -> store calls fail
 
+			var buf bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
 			r := Router(st, registry.New(), nil, t.TempDir(), nil, "")
 			w := httptest.NewRecorder()
-			r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+			r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path+"?node=secretq", nil))
 			if w.Code != http.StatusInternalServerError {
 				t.Fatalf("status = %d, want 500 (body=%s)", w.Code, w.Body.String())
 			}
@@ -309,6 +317,15 @@ func TestInternalErrors_DoNotLeakDetails(t *testing.T) {
 			}
 			if body["error"] != "internal error" {
 				t.Fatalf("error = %q, want fixed %q", body["error"], "internal error")
+			}
+			logged := buf.String()
+			for _, want := range []string{"method=GET", "path=" + path, "err="} {
+				if !strings.Contains(logged, want) {
+					t.Errorf("log missing %q: %s", want, logged)
+				}
+			}
+			if strings.Contains(logged, "secretq") || strings.Contains(logged, "?") {
+				t.Errorf("log must not contain query string: %s", logged)
 			}
 		})
 	}
