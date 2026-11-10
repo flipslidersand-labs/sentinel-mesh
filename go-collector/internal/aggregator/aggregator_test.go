@@ -349,3 +349,26 @@ func TestAggregator_RegionErrorDoesNotLeakUpstreamDetails(t *testing.T) {
 		}
 	}
 }
+
+// TestAggregator_RegionErrorTimeout (#254): a slow upstream is classified as
+// "timeout" without leaking details.
+func TestAggregator_RegionErrorTimeout(t *testing.T) {
+	release := make(chan struct{})
+	slow := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(slow.Close)
+	t.Cleanup(func() { close(release) })
+
+	agg := New([]Upstream{{Region: "slow", URL: slow.URL}}, 0, "", nil)
+	agg.client.Timeout = 50 * time.Millisecond
+	agg.PollOnce(context.Background())
+
+	regions := agg.Regions()
+	if len(regions) != 1 || regions[0].Reachable || regions[0].Error != "timeout" {
+		t.Errorf("want unreachable with Error=timeout, got %+v", regions)
+	}
+}
