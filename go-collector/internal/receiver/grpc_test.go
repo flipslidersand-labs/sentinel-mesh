@@ -627,7 +627,7 @@ func TestServe_StopsGracefullyWhenContextCancelled(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Serve(ctx, "127.0.0.1:0", nil, registry.New(), nil, nil, nil, nil, nil, "default", zap.NewNop(), "", "", false)
+		errCh <- Serve(ctx, Config{Addr: "127.0.0.1:0", DefaultRegion: "default"}, Deps{Registry: registry.New(), Logger: zap.NewNop()})
 	}()
 
 	// Give the server a moment to start listening before cancelling —
@@ -758,5 +758,42 @@ func TestValidateKernelEvent_RejectsUnknownType(t *testing.T) {
 		if err := validateKernelEvent(e); err == nil {
 			t.Fatalf("expected unknown type %d to be rejected", typ)
 		}
+	}
+}
+
+// TestServe_PartialTLSConfigServesPlaintext pins the zero-value semantics of
+// Config: TLS is enabled only when BOTH cert and key are set. With only one
+// set, Serve must not try to load credentials (the file does not exist) and
+// must start plaintext, as the former positional arguments did.
+func TestServe_PartialTLSConfigServesPlaintext(t *testing.T) {
+	for name, cfg := range map[string]Config{
+		"cert only": {Addr: "127.0.0.1:0", TLSCertFile: "/nonexistent/cert.pem"},
+		"key only":  {Addr: "127.0.0.1:0", TLSKeyFile: "/nonexistent/key.pem"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			errCh := make(chan error, 1)
+			go func() { errCh <- Serve(ctx, cfg, Deps{Registry: registry.New(), Logger: zap.NewNop()}) }()
+			time.Sleep(50 * time.Millisecond)
+			cancel()
+			select {
+			case err := <-errCh:
+				if err != nil {
+					t.Fatalf("Serve returned %v, want nil (plaintext start, clean stop)", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("Serve did not return after ctx cancel")
+			}
+		})
+	}
+}
+
+// TestServe_CompleteTLSConfigLoadsCredentials is the counterpart: with both
+// set, a bad path must fail Serve with a load error.
+func TestServe_CompleteTLSConfigLoadsCredentials(t *testing.T) {
+	err := Serve(context.Background(), Config{Addr: "127.0.0.1:0", TLSCertFile: "/nonexistent/c", TLSKeyFile: "/nonexistent/k"},
+		Deps{Registry: registry.New(), Logger: zap.NewNop()})
+	if err == nil || !strings.Contains(err.Error(), "load TLS cert/key") {
+		t.Fatalf("err = %v, want load TLS cert/key error", err)
 	}
 }

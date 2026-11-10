@@ -261,8 +261,13 @@ TLS for the gRPC server is optional but, when enabled, both
 			if !grpcAuthEnabled {
 				logger.Warn("gRPC server is UNAUTHENTICATED (--grpc-auth=disabled) — use --grpc-auth=required and issue per-agent tokens via `token issue`")
 			}
-			return receiver.Serve(ctx, grpcAddr, st, reg, engine, detector, notifier, metricsProvider, tracesProvider.Tracer(), defaultRegion, logger,
-				grpcTLSCert, grpcTLSKey, grpcAuthEnabled)
+			return receiver.Serve(ctx, receiver.Config{
+				Addr: grpcAddr, TLSCertFile: grpcTLSCert, TLSKeyFile: grpcTLSKey,
+				AuthEnabled: grpcAuthEnabled, DefaultRegion: defaultRegion,
+			}, receiver.Deps{
+				Store: st, Registry: reg, Engine: engine, Detector: detector, Notifier: notifier,
+				Metrics: metricsProvider, Tracer: tracesProvider.Tracer(), Logger: logger,
+			})
 		},
 	}
 	cmd.Flags().String("grpc-addr", ":50051", "gRPC listen address")
