@@ -1,6 +1,7 @@
 package exporter
 
 import (
+	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -13,6 +14,13 @@ import (
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
 	"github.com/flipslidersand/sentinel-mesh/internal/store"
 )
+
+// internalError logs err server-side and responds 500 with a fixed message so
+// store/Badger internals (paths, DB state) are not exposed to clients.
+func internalError(c *gin.Context, err error) {
+	slog.Error("exporter: internal error", "method", c.Request.Method, "path", c.Request.URL.Path, "err", err)
+	c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+}
 
 // maxLimit caps the "limit" query parameter accepted by list endpoints,
 // preventing a client-supplied value from forcing an unbounded store scan
@@ -80,7 +88,7 @@ func Router(st *store.Store, reg *registry.Registry, detector *anomaly.Detector,
 			}
 			events, err := st.ListEvents(c.Request.Context(), c.Query("node"), limit)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				internalError(c, err)
 				return
 			}
 			// Optional region filter: keep only events from nodes in the region.
@@ -129,7 +137,7 @@ func Router(st *store.Store, reg *registry.Registry, detector *anomaly.Detector,
 		api.GET("/stats", func(c *gin.Context) {
 			counts, err := st.Stats()
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				internalError(c, err)
 				return
 			}
 			c.JSON(http.StatusOK, counts)
@@ -142,7 +150,7 @@ func Router(st *store.Store, reg *registry.Registry, detector *anomaly.Detector,
 			}
 			alerts, err := st.ListAlerts(c.Request.Context(), c.Query("node"), limit)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				internalError(c, err)
 				return
 			}
 			// Optional region filter (applied post-fetch, same as /api/events).
