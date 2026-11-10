@@ -3,14 +3,13 @@ package exporter
 import (
 	"net/http"
 	"strconv"
-	"strings"
 
-	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/flipslidersand/sentinel-mesh/internal/anomaly"
 	"github.com/flipslidersand/sentinel-mesh/internal/httpauth"
+	"github.com/flipslidersand/sentinel-mesh/internal/httpserver"
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
 	"github.com/flipslidersand/sentinel-mesh/internal/store"
 )
@@ -64,33 +63,7 @@ type regionSummary struct {
 // default). apiToken, when non-empty, gates /api/* and /metrics behind
 // bearer auth (/healthz stays open for unauthenticated liveness probes).
 func Router(st *store.Store, reg *registry.Registry, detector *anomaly.Detector, staticDir string, corsOrigins []string, apiToken string) *gin.Engine {
-	gin.SetMode(gin.ReleaseMode)
-	r := gin.New()
-	r.Use(gin.Recovery())
-
-	// CORS: default deny. Only allow explicitly configured origins. Same-origin
-	// requests (the bundled UI) carry no Origin header and are unaffected.
-	if len(corsOrigins) > 0 {
-		corsConfig := cors.DefaultConfig()
-		corsConfig.AllowOrigins = corsOrigins
-		r.Use(cors.New(corsConfig))
-	}
-
-	// Serve the React SPA
-	r.Static("/assets", staticDir+"/assets")
-	r.StaticFile("/", staticDir+"/index.html")
-	r.StaticFile("/favicon.svg", staticDir+"/favicon.svg")
-	r.NoRoute(func(c *gin.Context) {
-		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
-			return
-		}
-		c.File(staticDir + "/index.html")
-	})
-
-	r.GET("/healthz", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
-	})
+	r := httpserver.NewBaseRouter(staticDir, corsOrigins, gin.H{"status": "ok"})
 
 	// Gated behind the same bearer auth as /api/* (#177): the exposed
 	// Prometheus counters carry node/rule/severity labels (internal/otel),
