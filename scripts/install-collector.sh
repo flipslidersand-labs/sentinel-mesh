@@ -24,7 +24,8 @@
 # REST auth: the default (required) makes the collector refuse to start unless
 # SENTINEL_API_TOKEN is set in its environment (e.g. a systemd drop-in with
 # EnvironmentFile=, mode 600 — this script never writes the token). Pass
-# `--http-auth disabled` only for dev/trusted networks.
+# `--http-auth disabled` only for dev/trusted networks. The script checks
+# `systemctl is-active` after start and fails (with the journal tail) otherwise.
 set -euo pipefail
 
 SSH_HOST="${1:?Usage: $0 <SSH_HOST> [options]}"
@@ -145,6 +146,12 @@ ssh -- "$SSH_HOST" bash -s <<'REMOTE'
 set -euo pipefail
 sudo systemctl daemon-reload
 sudo systemctl enable --now sentinel-collector
+sleep 3
+if ! systemctl is-active --quiet sentinel-collector; then
+  echo "Error: sentinel-collector failed to start; recent log:" >&2
+  sudo journalctl -u sentinel-collector -n 15 --no-pager >&2 || true
+  exit 1
+fi
 REMOTE
 
 echo "==> sentinel-collector running on $SSH_HOST ${GRPC_ADDR} (gRPC) ${HTTP_ADDR} (HTTP)"

@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with only a warning. Migration: set `SENTINEL_API_TOKEN` (and enter it in the
   bundled UI) or pass `--http-auth=disabled` to keep the previous unauthenticated
   behaviour. `scripts/install-collector.sh` gained `--http-auth`.
+  `/metrics` is behind the same bearer auth as `/api/*` (only `/healthz` is open). The
+  installer now fails (with the journal tail) if the unit is not active after start, and the
+  README/`serve --help` examples were fixed so they start (#279).
 
 ## [0.1.0] - 2026-08-17
 

@@ -59,7 +59,7 @@ curl "http://localhost:8081/api/events?node=web-01&limit=20"
 curl http://localhost:8081/api/nodes                         # list registered agents + status
 curl http://localhost:8081/api/stats                         # event counts by type
 curl http://localhost:8081/api/alerts                        # list triggered alerts
-curl http://localhost:8081/metrics                           # Prometheus metrics
+curl -H "Authorization: Bearer $SENTINEL_API_TOKEN" http://localhost:8081/metrics   # Prometheus metrics (omit header with --http-auth disabled)
 curl http://localhost:8081/healthz                           # health check
 ```
 
@@ -172,7 +172,8 @@ A region whose collector is unreachable is **isolated**: it is reported with `"r
   require `Authorization: Bearer <token>` on all `/api/*` endpoints (constant-time compared); if it
   is unset the collector **refuses to start**. Unauthenticated REST needs the explicit
   `--http-auth=disabled` (the collector then logs a warning) — only acceptable on a trusted
-  network. `/healthz` and `/metrics` remain open for probes/scraping.
+  network. `/healthz` remains open for probes; `/metrics` is behind the same Bearer auth as `/api/*`
+  (Prometheus needs `authorization` credentials, or `--http-auth=disabled`).
   (Breaking change, #254: previously an unset token only logged a warning.)
 
   ```bash
@@ -409,8 +410,10 @@ Deploys the collector binary to a remote host and installs as a systemd service.
 ```bash
 bash scripts/install-collector.sh <SSH_HOST> [OPTIONS]
 # Options: --region, --grpc-addr, --http-addr, --data-dir, --grpc-tls-cert, --grpc-tls-key, --grpc-auth, --http-auth
-# Example:
-bash scripts/install-collector.sh minipc --grpc-addr :50051 --http-addr :8081
+# Example (demo; --http-auth defaults to required and the unit crash-loops without SENTINEL_API_TOKEN):
+bash scripts/install-collector.sh minipc --grpc-addr :50051 --http-addr :8081 --http-auth disabled
+# Production: keep --http-auth required and put SENTINEL_API_TOKEN in a mode-600 EnvironmentFile
+# via a systemd drop-in on the host (the script never writes the token), then restart the unit.
 ```
 
 #### `scripts/deploy-agent.sh`

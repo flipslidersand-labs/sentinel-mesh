@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestServeCmd_HTTPAuthFlagDefaultsToRequired(t *testing.T) {
 	f := serveCmd().Flags().Lookup("http-auth")
@@ -27,6 +30,12 @@ func TestServe_RefusesUnauthenticatedRESTByDefault(t *testing.T) {
 		err := cmd.Execute()
 		if err == nil {
 			t.Fatalf("args %v: expected error, got nil", args)
+		}
+		// The failure must be the auth refusal itself, not an unrelated error.
+		for _, want := range []string{"SENTINEL_API_TOKEN", "--http-auth=disabled"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("args %v: error %q does not mention %q", args, err, want)
+			}
 		}
 	}
 }
