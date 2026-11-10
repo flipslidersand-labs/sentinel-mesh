@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -296,5 +297,55 @@ func TestAggregator_Start(t *testing.T) {
 	time.Sleep(5 * interval)
 	if got := polls.Load(); got != settled {
 		t.Fatalf("polls increased after cancel: %d -> %d", settled, got)
+	}
+}
+
+// TestAggregator_RegionErrorDoesNotLeakUpstreamDetails (#254): the Error
+// string exposed via REST must be a fixed classification, never the raw
+// upstream error text (which embeds URLs / internal hostnames).
+func TestAggregator_RegionErrorDoesNotLeakUpstreamDetails(t *testing.T) {
+	down := httptest.NewServer(http.NewServeMux())
+	downURL := down.URL
+	down.Close() // connection refused
+
+	status500 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(status500.Close)
+
+	badJSON := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("not json"))
+	}))
+	t.Cleanup(badJSON.Close)
+
+	cases := []struct {
+		region, url, want string
+	}{
+		{"down", downURL, "unreachable"},
+		{"s500", status500.URL, "upstream error status 500"},
+		{"bad", badJSON.URL, "invalid response"},
+	}
+	var ups []Upstream
+	for _, c := range cases {
+		ups = append(ups, Upstream{Region: c.region, URL: c.url})
+	}
+	agg := New(ups, 0, "", nil)
+	agg.PollOnce(context.Background())
+
+	got := map[string]RegionStatus{}
+	for _, r := range agg.Regions() {
+		got[r.Region] = r
+	}
+	for _, c := range cases {
+		r := got[c.region]
+		if r.Reachable {
+			t.Errorf("%s: expected unreachable", c.region)
+		}
+		if r.Error != c.want {
+			t.Errorf("%s: Error = %q, want %q", c.region, r.Error, c.want)
+		}
+		if strings.Contains(r.Error, "127.0.0.1") || strings.Contains(r.Error, "http") {
+			t.Errorf("%s: Error leaks upstream detail: %q", c.region, r.Error)
+		}
 	}
 }
