@@ -86,7 +86,7 @@ func (s *Store) IssueToken(ctx context.Context, nodeID string) (string, error) {
 	// WithoutCancel: the write's result must be known so the index matches
 	// disk (runWithContext would otherwise return on cancel while the write
 	// still commits in the background).
-	if err := s.putAgentToken(context.WithoutCancel(ctx), rec); err != nil {
+	if err := s.writeAgentToken(context.WithoutCancel(ctx), rec); err != nil {
 		return "", err
 	}
 	s.tokenIndex[rec.TokenHash] = nodeID
@@ -115,7 +115,7 @@ func (s *Store) RevokeToken(ctx context.Context, nodeID string) error {
 	// write definitely failed (the record on disk is then still active).
 	activeNodeID, wasActive := s.tokenIndex[rec.TokenHash]
 	delete(s.tokenIndex, rec.TokenHash)
-	if err := s.putAgentToken(context.WithoutCancel(ctx), *rec); err != nil {
+	if err := s.writeAgentToken(context.WithoutCancel(ctx), *rec); err != nil {
 		if wasActive {
 			s.tokenIndex[rec.TokenHash] = activeNodeID
 		}
@@ -269,6 +269,15 @@ func (s *Store) getAgentToken(ctx context.Context, nodeID string) (*AgentToken, 
 		})
 	})
 	return rec, err
+}
+
+// writeAgentToken persists rec; tests replace putTokenFn to inject write
+// failures (closing a live badger DB can panic, so that is not usable).
+func (s *Store) writeAgentToken(ctx context.Context, rec AgentToken) error {
+	if s.putTokenFn != nil {
+		return s.putTokenFn(ctx, rec)
+	}
+	return s.putAgentToken(ctx, rec)
 }
 
 func (s *Store) putAgentToken(ctx context.Context, rec AgentToken) error {
