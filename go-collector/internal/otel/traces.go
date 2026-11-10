@@ -2,6 +2,8 @@ package otel
 
 import (
 	"context"
+	"net/url"
+	"strings"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
@@ -25,7 +27,7 @@ func NewTracesProvider(ctx context.Context, otelEndpoint string) (*TracesProvide
 		}, nil
 	}
 
-	exporter, err := otlptracehttp.New(ctx, otlptracehttp.WithEndpoint(otelEndpoint))
+	exporter, err := otlptracehttp.New(ctx, endpointOption(otelEndpoint))
 	if err != nil {
 		return nil, err
 	}
@@ -39,6 +41,23 @@ func NewTracesProvider(ctx context.Context, otelEndpoint string) (*TracesProvide
 		tracer: provider.Tracer("sentinel-collector"),
 		closer: provider.Shutdown,
 	}, nil
+}
+
+// endpointOption builds the exporter option from the endpoint string.
+// A value with a scheme (e.g. http://localhost:4318) is treated as a URL and
+// its scheme is honored. A bare host:port keeps the previous behavior
+// (WithEndpoint, which defaults to https).
+func endpointOption(endpoint string) otlptracehttp.Option {
+	if strings.Contains(endpoint, "://") {
+		// WithEndpointURL uses the URL path verbatim, so an empty path would
+		// post to "/" instead of the OTLP default; fill in /v1/traces.
+		if u, err := url.Parse(endpoint); err == nil && (u.Path == "" || u.Path == "/") {
+			u.Path = "/v1/traces"
+			endpoint = u.String()
+		}
+		return otlptracehttp.WithEndpointURL(endpoint)
+	}
+	return otlptracehttp.WithEndpoint(endpoint)
 }
 
 // Tracer returns the OTel tracer.

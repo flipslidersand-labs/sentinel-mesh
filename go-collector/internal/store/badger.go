@@ -68,6 +68,8 @@ type Store struct {
 	tokensMu      sync.RWMutex
 	tokenIndex    map[string]string
 	tokenIndexErr error
+	// putTokenFn is a test seam for injecting token write failures; nil in production.
+	putTokenFn func(ctx context.Context, rec AgentToken) error
 
 	gcStop chan struct{}
 	gcDone chan struct{}

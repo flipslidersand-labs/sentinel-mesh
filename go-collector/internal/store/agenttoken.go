@@ -86,7 +86,7 @@ func (s *Store) IssueToken(ctx context.Context, nodeID string) (string, error) {
 	// WithoutCancel: the write's result must be known so the index matches
 	// disk (runWithContext would otherwise return on cancel while the write
 	// still commits in the background).
-	if err := s.putAgentToken(context.WithoutCancel(ctx), rec); err != nil {
+	if err := s.writeAgentToken(context.WithoutCancel(ctx), rec); err != nil {
 		return "", err
 	}
 	s.tokenIndex[rec.TokenHash] = nodeID
@@ -115,7 +115,7 @@ func (s *Store) RevokeToken(ctx context.Context, nodeID string) error {
 	// write definitely failed (the record on disk is then still active).
 	activeNodeID, wasActive := s.tokenIndex[rec.TokenHash]
 	delete(s.tokenIndex, rec.TokenHash)
-	if err := s.putAgentToken(context.WithoutCancel(ctx), *rec); err != nil {
+	if err := s.writeAgentToken(context.WithoutCancel(ctx), *rec); err != nil {
 		if wasActive {
 			s.tokenIndex[rec.TokenHash] = activeNodeID
 		}
@@ -126,8 +126,13 @@ func (s *Store) RevokeToken(ctx context.Context, nodeID string) error {
 
 // ListTokens returns all agent token records (revoked and active), for the
 // `token list` CLI (#191). Tokens are returned by node_id, ascending.
+//
+// A record that is not valid JSON is skipped so one damaged record can't make
+// the whole list unusable (#276). The warning carries only record keys and a
+// count, never hashes or token values. Other errors (iteration/IO) still fail.
 func (s *Store) ListTokens(ctx context.Context) ([]AgentToken, error) {
 	tokens := make([]AgentToken, 0)
+	var brokenKeys []string
 	err := runWithContext(ctx, func() error {
 		return s.db.View(func(tx *badger.Txn) error {
 			opts := badger.DefaultIteratorOptions
@@ -135,17 +140,28 @@ func (s *Store) ListTokens(ctx context.Context) ([]AgentToken, error) {
 			it := tx.NewIterator(opts)
 			defer it.Close()
 			for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+				item := it.Item()
 				var rec AgentToken
-				if err := it.Item().Value(func(v []byte) error {
-					return json.Unmarshal(v, &rec)
+				var decodeErr error
+				if err := item.Value(func(v []byte) error {
+					decodeErr = json.Unmarshal(v, &rec)
+					return nil
 				}); err != nil {
 					return err
+				}
+				if decodeErr != nil {
+					brokenKeys = append(brokenKeys, string(item.KeyCopy(nil)))
+					continue
 				}
 				tokens = append(tokens, rec)
 			}
 			return nil
 		})
 	})
+	if err == nil && len(brokenKeys) > 0 {
+		slog.Warn("agent token records could not be decoded and were skipped from the list",
+			"count", len(brokenKeys), "keys", brokenKeys)
+	}
 	return tokens, err
 }
 
@@ -181,8 +197,10 @@ func (s *Store) LookupNodeID(ctx context.Context, token string) (nodeID string, 
 }
 
 // loadTokenIndex seeds tokenIndex from disk at startup. A load failure is
-// kept in tokenIndexErr rather than failing New, so `token list`/`revoke`
-// can still open the store to inspect or repair it, while auth fails closed.
+// kept in tokenIndexErr rather than failing New, so `token list` can still
+// open the store to inspect it, while auth fails closed. A record that fails
+// to decode cannot be repaired with RevokeToken (it must decode the record
+// first and fails the same way); repair needs a separate path (#276).
 //
 // A record that is not valid JSON is skipped (its token stays invalid, as it
 // is absent from the index) so one damaged record can't lock out every other
@@ -251,6 +269,15 @@ func (s *Store) getAgentToken(ctx context.Context, nodeID string) (*AgentToken, 
 		})
 	})
 	return rec, err
+}
+
+// writeAgentToken persists rec; tests replace putTokenFn to inject write
+// failures (closing a live badger DB can panic, so that is not usable).
+func (s *Store) writeAgentToken(ctx context.Context, rec AgentToken) error {
+	if s.putTokenFn != nil {
+		return s.putTokenFn(ctx, rec)
+	}
+	return s.putAgentToken(ctx, rec)
 }
 
 func (s *Store) putAgentToken(ctx context.Context, rec AgentToken) error {

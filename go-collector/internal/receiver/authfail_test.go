@@ -91,7 +91,7 @@ func TestAuthFailLimiter_RecoversOverTime(t *testing.T) {
 	}
 }
 
-func TestCheckAuth_SuccessReleasesReservation(t *testing.T) {
+func TestCheckAuth_SuccessLeavesNoLimiterEntry(t *testing.T) {
 	lim, _ := newTestLimiter()
 	st := newAuthTestStore(t)
 	token, err := st.IssueToken(context.Background(), "node-a")
