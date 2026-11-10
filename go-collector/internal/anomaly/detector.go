@@ -8,6 +8,7 @@ package anomaly
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -108,14 +109,7 @@ func (d *Detector) WindowStats() map[string]map[string]int {
 		}
 		for _, w := range d.windows {
 			label := durationLabel(w.Duration)
-			count := 0
-			cutoff := now.Add(-w.Duration)
-			for _, t := range ts {
-				if !t.Before(cutoff) {
-					count++
-				}
-			}
-			result[key.EventType][label] += count
+			result[key.EventType][label] += countSince(ts, now.Add(-w.Duration))
 		}
 	}
 	return result
@@ -127,10 +121,7 @@ func (d *Detector) prune(key windowKey, now time.Time) {
 	maxDur := d.maxDuration()
 	cutoff := now.Add(-maxDur)
 	ts := d.timestamps[key]
-	i := 0
-	for i < len(ts) && ts[i].Before(cutoff) {
-		i++
-	}
+	i := firstSince(ts, cutoff)
 	if i > 0 {
 		d.timestamps[key] = ts[i:]
 	}
@@ -139,14 +130,19 @@ func (d *Detector) prune(key windowKey, now time.Time) {
 // countWithin returns how many timestamps for key fall within dur from now.
 // Must be called with d.mu held.
 func (d *Detector) countWithin(key windowKey, now time.Time, dur time.Duration) int {
-	cutoff := now.Add(-dur)
-	count := 0
-	for _, t := range d.timestamps[key] {
-		if !t.Before(cutoff) {
-			count++
-		}
-	}
-	return count
+	return countSince(d.timestamps[key], now.Add(-dur))
+}
+
+// firstSince returns the index of the first timestamp not before cutoff.
+// ts must be sorted ascending (it is append-only with time.Now), so a binary
+// search gives O(log n) instead of a linear scan.
+func firstSince(ts []time.Time, cutoff time.Time) int {
+	return sort.Search(len(ts), func(i int) bool { return !ts[i].Before(cutoff) })
+}
+
+// countSince returns how many timestamps in ts are not before cutoff.
+func countSince(ts []time.Time, cutoff time.Time) int {
+	return len(ts) - firstSince(ts, cutoff)
 }
 
 // StartGC runs a background goroutine that periodically removes (node, type)
