@@ -11,6 +11,15 @@ mkdir -p "$TMP/scripts" "$TMP/dist"
 cp "$SRC/scripts/deploy-agent.sh" "$SRC/scripts/lib-validate.sh" "$TMP/scripts/"
 : > "$TMP/dist/sentinel-agent"
 
+# Stub ssh/scp/sudo first on PATH: if validation regresses and the script
+# reaches them, the stub records the call and the test fails.
+mkdir -p "$TMP/stubs"
+for cmd in ssh scp sudo; do
+  printf '#!/bin/sh\necho "%s $*" >> "%s/stub-calls"\nexit 99\n' "$cmd" "$TMP" > "$TMP/stubs/$cmd"
+  chmod +x "$TMP/stubs/$cmd"
+done
+export PATH="$TMP/stubs:$PATH"
+
 fail=0
 expect_reject() {
   local label="$1" value="$2" out rc
@@ -33,7 +42,8 @@ expect_reject "trailing newline" $'3\n'
 expect_reject "overflow"         "18446744073709551617"
 
 # Accepted values must pass validation (checked via the lib, no ssh reached).
-# shellcheck source=../lib-validate.sh
+# shellcheck source=scripts/lib-validate.sh
+# shellcheck source-path=SCRIPTDIR/../..
 source "$SRC/scripts/lib-validate.sh"
 for v in 1 3 1000; do
   if (validate_mock_rate "--mock-rate" "$v") >/dev/null 2>&1; then
@@ -42,5 +52,9 @@ for v in 1 3 1000; do
     echo "FAIL accept $v"; fail=1
   fi
 done
+
+if [[ -s "$TMP/stub-calls" ]]; then
+  echo "FAIL ssh/scp/sudo was reached:"; cat "$TMP/stub-calls"; fail=1
+fi
 
 exit "$fail"
