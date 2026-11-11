@@ -12,6 +12,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -795,5 +796,68 @@ func TestServe_CompleteTLSConfigLoadsCredentials(t *testing.T) {
 		Deps{Registry: registry.New(), Logger: zap.NewNop()})
 	if err == nil || !strings.Contains(err.Error(), "load TLS cert/key") {
 		t.Fatalf("err = %v, want load TLS cert/key error", err)
+	}
+}
+
+// floodRateLimitLogs streams enough events with clientNodeID to trip the rate
+// limit and returns the node_id values of the rate-limit warnings.
+func floodRateLimitLogs(t *testing.T, clientNodeID string, ctx context.Context) []string {
+	t.Helper()
+	core, logs := observer.New(zap.WarnLevel)
+	s := &server{reg: registry.New(), log: zap.New(core)}
+	const floodMargin = 2000
+	events := make([]*pb.KernelEvent, 0, int(streamEventsRateBurst)+floodMargin)
+	for i := 0; i < int(streamEventsRateBurst)+floodMargin; i++ {
+		events = append(events, &pb.KernelEvent{NodeId: clientNodeID, EventId: "e", Type: pb.EventType_EXEC})
+	}
+	if err := s.StreamEvents(&fakeStream{events: events, ctx: ctx}); err != nil {
+		t.Fatalf("StreamEvents: %v", err)
+	}
+	var out []string
+	for _, e := range logs.FilterMessageSnippet("rate limit exceeded").All() {
+		v, _ := e.ContextMap()["node_id"].(string)
+		out = append(out, v)
+	}
+	if len(out) == 0 {
+		t.Fatal("expected a rate limit warning")
+	}
+	return out
+}
+
+// TestStreamEvents_RateLimitLogBoundsClientNodeID covers the #254 log-injection
+// item: without auth the unvalidated client node_id is escaped and capped.
+func TestStreamEvents_RateLimitLogBoundsClientNodeID(t *testing.T) {
+	long := "ab\n\x1b[31mFAKE" + strings.Repeat("A", 100000)
+	for _, v := range floodRateLimitLogs(t, long, nil) {
+		if len(v) > maxLoggedNodeIDLen {
+			t.Errorf("logged node_id len = %d, want <= %d", len(v), maxLoggedNodeIDLen)
+		}
+		if strings.ContainsAny(v, "\n\x1b") {
+			t.Errorf("logged node_id contains raw control chars: %q", v)
+		}
+		if !strings.HasPrefix(v, `ab\n\x1b[31mFAKE`) {
+			t.Errorf("control chars not escaped within the cap: %q", v)
+		}
+	}
+}
+
+// With auth, the authenticated node_id is logged and the client value is not.
+func TestStreamEvents_RateLimitLogPrefersAuthedNodeID(t *testing.T) {
+	for _, v := range floodRateLimitLogs(t, "attacker-supplied", authedStreamCtx("node-auth")) {
+		if v != "node-auth" {
+			t.Errorf("logged node_id = %q, want node-auth", v)
+		}
+	}
+}
+
+func TestSafeLogNodeID(t *testing.T) {
+	if got := safeLogNodeID("trusted", "ignored\n"); got != "trusted" {
+		t.Errorf("authed id should win, got %q", got)
+	}
+	if got := safeLogNodeID("", "node-1"); got != "node-1" {
+		t.Errorf("got %q", got)
+	}
+	if got := safeLogNodeID("", "a\nb"); got != `a\nb` {
+		t.Errorf("got %q", got)
 	}
 }
