@@ -58,3 +58,13 @@ validate_uint() {
   local name="$1" value="$2"
   [[ "$value" =~ ^[0-9]+$ ]] || die "$name must be a non-negative integer: '$value'"
 }
+
+# Mock event rate (--mock-rate): integer 1..1000. 0 is meaningless, and the
+# agent's tokio interval period becomes 0 above 1000 and panics (#260).
+# Digits-only match also rejects empty, negative, and newline-bearing values.
+validate_mock_rate() {
+  local name="$1" value="$2"
+  if [[ ! "$value" =~ ^[0-9]{1,4}$ ]] || (( 10#$value < 1 || 10#$value > 1000 )); then
+    die "$name must be an integer between 1 and 1000: '$value'"
+  fi
+}
