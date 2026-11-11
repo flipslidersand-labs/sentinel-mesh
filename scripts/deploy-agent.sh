@@ -133,7 +133,7 @@ done
 # Every value below is interpolated into the systemd unit written via
 # `sudo tee` in deploy_to() below — validate before use (#65).
 validate_hostport "--collector" "$COLLECTOR_ADDR"
-validate_uint "--mock-rate" "$MOCK_RATE"
+validate_mock_rate "--mock-rate" "$MOCK_RATE"
 [[ -n "$REGION" ]] && validate_ident "--region" "$REGION"
 [[ -n "$NODE_ID_OVERRIDE" ]] && validate_ident "--node-id" "$NODE_ID_OVERRIDE"
 [[ -n "$GRPC_TOKEN" ]] && validate_ident "--grpc-token" "$GRPC_TOKEN"
