@@ -104,7 +104,7 @@ func (e *EmailNotifier) Send(ctx context.Context, a store.Alert) error {
 
 // sendMailContext mirrors net/smtp.SendMail but dials with a deadline
 // derived from ctx, so a SMTP server that never responds cannot block the
-// caller past the Dispatcher's SendTimeout (see issue #109). If ctx carries
+// caller past the Dispatcher's send timeout (defaultSendTimeout) (see issue #109). If ctx carries
 // no deadline, the dial falls back to net.Dialer's zero-value (no timeout),
 // matching net/smtp.SendMail's prior behavior for callers that don't set one.
 func sendMailContext(ctx context.Context, addr string, a smtp.Auth, from string, to []string, msg []byte) error {
