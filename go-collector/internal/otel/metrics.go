@@ -2,9 +2,7 @@ package otel
 
 import (
 	"context"
-	"net/http"
 
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/otel/attribute"
 	promexp "go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/metric"
@@ -13,8 +11,6 @@ import (
 
 // MetricsProvider holds OTel metrics state.
 type MetricsProvider struct {
-	meter metric.Meter
-
 	// Counters for events and alerts
 	eventCounter metric.Int64Counter
 	alertCounter metric.Int64Counter
@@ -83,7 +79,6 @@ func NewMetricsProvider(ctx context.Context) (*MetricsProvider, error) {
 
 	return &MetricsProvider{
 		authFailureCounter:       authFailureCounter,
-		meter:                    meter,
 		eventCounter:             eventCounter,
 		alertCounter:             alertCounter,
 		storeWriteFailureCounter: storeWriteFailureCounter,
@@ -129,9 +124,4 @@ func (mp *MetricsProvider) RecordAuthFailure(reason string) {
 			attribute.String("reason", reason),
 		),
 	)
-}
-
-// PrometheusHandler returns the Prometheus HTTP handler for /metrics.
-func PrometheusHandler() http.Handler {
-	return promhttp.Handler()
 }

@@ -69,12 +69,14 @@ type Dispatcher struct {
 	sem chan struct{}
 }
 
+// defaultSendTimeout is the per-notifier send timeout.
+const defaultSendTimeout = 10 * time.Second
+
 // Options configures a Dispatcher.
 type Options struct {
 	Notifiers   []Notifier
 	Cooldown    time.Duration // minimum gap between notifications for the same (rule, node)
 	MinSeverity string        // alerts below this severity are dropped (default "warning")
-	SendTimeout time.Duration // per-notifier send timeout (default 10s)
 	Logger      *zap.Logger
 }
 
@@ -88,15 +90,11 @@ func NewDispatcher(opts Options) *Dispatcher {
 	if minSev == "" {
 		minSev = "warning"
 	}
-	timeout := opts.SendTimeout
-	if timeout <= 0 {
-		timeout = 10 * time.Second
-	}
 	return &Dispatcher{
 		notifiers: opts.Notifiers,
 		cooldown:  opts.Cooldown,
 		minRank:   rankOf(minSev),
-		timeout:   timeout,
+		timeout:   defaultSendTimeout,
 		log:       log,
 		lastSent:  make(map[string]time.Time),
 		now:       time.Now,
