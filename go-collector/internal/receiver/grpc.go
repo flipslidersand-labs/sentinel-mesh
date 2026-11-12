@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -275,6 +276,30 @@ func (s *server) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.Reg
 	return &pb.RegisterResponse{Ok: true, Message: "registered"}, nil
 }
 
+// maxLoggedNodeIDLen bounds how much of an unvalidated, client-supplied
+// node_id may appear in a log line (#254).
+const maxLoggedNodeIDLen = 64
+
+// safeLogNodeID returns the identity to log for a stream. The authenticated
+// node_id is preferred; otherwise the client-supplied value (not yet
+// validated) is escaped (control chars, quotes, non-ASCII) and cut to
+// maxLoggedNodeIDLen bytes so it can't inject or bloat log lines.
+func safeLogNodeID(authedNodeID, clientNodeID string) string {
+	if authedNodeID != "" {
+		clientNodeID = authedNodeID
+	}
+	var b strings.Builder
+	for _, r := range clientNodeID {
+		q := strconv.QuoteToASCII(string(r))
+		q = q[1 : len(q)-1] // strip surrounding quotes
+		if b.Len()+len(q) > maxLoggedNodeIDLen {
+			break
+		}
+		b.WriteString(q)
+	}
+	return b.String()
+}
+
 // StreamEvents receives a bidirectional stream of KernelEvents.
 func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) error {
 	// Event rate limit (#75). Keyed by the authenticated node_id so that every
@@ -338,7 +363,7 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 			if err := rejectEvent(stream, func() {
 				if throttled == 1 || throttled%1000 == 0 {
 					s.log.Warn("StreamEvents rate limit exceeded, dropping event",
-						zap.String("node_id", event.NodeId),
+						zap.String("node_id", safeLogNodeID(authedNodeID, event.NodeId)),
 						zap.Uint64("throttled_total", throttled))
 				}
 			}); err != nil {
