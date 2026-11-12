@@ -10,7 +10,7 @@ jobs:
   go-collector:
     # main 直参照だと qa-workflows 側の変更が無警告で波及するため commit SHA に固定
     # (2026-09-13 時点の master HEAD, Dependabot で更新PRを追跡: flipslidersand-labs/sentinel-mesh#148)
-    uses: flipslidersand-labs/qa-workflows/.github/workflows/go-test.yml@4698972d73a1ca94088c0301899b93183ee1d90f
+    uses: flipslidersand-labs/qa-workflows/.github/workflows/go-test.yml@1503057e4d2f7e34b00dc4543ca183c17c22f1d1
     with:
       go-version: "1.26"
       working-directory: go-collector
@@ -113,7 +113,7 @@ jobs:
   web:
     # main 直参照だと qa-workflows 側の変更が無警告で波及するため commit SHA に固定
     # (2026-09-13 時点の master HEAD, Dependabot で更新PRを追跡: flipslidersand-labs/sentinel-mesh#148)
-    uses: flipslidersand-labs/qa-workflows/.github/workflows/node-test.yml@4698972d73a1ca94088c0301899b93183ee1d90f
+    uses: flipslidersand-labs/qa-workflows/.github/workflows/node-test.yml@1503057e4d2f7e34b00dc4543ca183c17c22f1d1
     with:
       node-version: "22"
       package-manager: "npm"
@@ -124,4 +124,4 @@ jobs:
       contents: read
     # main 直参照だと qa-workflows 側の変更が無警告で波及するため commit SHA に固定
     # (2026-09-13 時点の master HEAD, Dependabot で更新PRを追跡: flipslidersand-labs/sentinel-mesh#148)
-    uses: flipslidersand-labs/qa-workflows/.github/workflows/gitleaks.yml@4698972d73a1ca94088c0301899b93183ee1d90f
+    uses: flipslidersand-labs/qa-workflows/.github/workflows/gitleaks.yml@1503057e4d2f7e34b00dc4543ca183c17c22f1d1
