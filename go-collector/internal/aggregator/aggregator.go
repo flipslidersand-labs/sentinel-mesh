@@ -10,6 +10,7 @@ package aggregator
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -168,15 +169,15 @@ func (a *Aggregator) pollUpstream(ctx context.Context, u Upstream) {
 	st := &regionState{reachable: true}
 
 	if err := a.fetchJSON(ctx, u.URL+"/api/nodes", &st.nodes); err != nil {
-		a.markUnreachable(u, err)
+		a.markUnreachable(u, "nodes", err)
 		return
 	}
 	if err := a.fetchJSON(ctx, fmt.Sprintf("%s/api/events?limit=%d", u.URL, a.eventLimit), &st.events); err != nil {
-		a.markUnreachable(u, err)
+		a.markUnreachable(u, "events", err)
 		return
 	}
 	if err := a.fetchJSON(ctx, fmt.Sprintf("%s/api/alerts?limit=%d", u.URL, a.eventLimit), &st.alerts); err != nil {
-		a.markUnreachable(u, err)
+		a.markUnreachable(u, "alerts", err)
 		return
 	}
 
@@ -185,11 +186,12 @@ func (a *Aggregator) pollUpstream(ctx context.Context, u Upstream) {
 	a.mu.Unlock()
 }
 
-func (a *Aggregator) markUnreachable(u Upstream, err error) {
+func (a *Aggregator) markUnreachable(u Upstream, path string, err error) {
 	a.log.Warn("upstream unreachable",
-		zap.String("region", u.Region), zap.String("url", u.URL), zap.Error(err))
+		zap.String("region", u.Region), zap.String("url", u.URL),
+		zap.String("path", path), zap.Error(err))
 	a.mu.Lock()
-	a.state[u.Region] = &regionState{reachable: false, lastErr: err.Error()}
+	a.state[u.Region] = &regionState{reachable: false, lastErr: classifyErr(err)}
 	a.mu.Unlock()
 }
 
@@ -207,11 +209,43 @@ func (a *Aggregator) fetchJSON(ctx context.Context, url string, target any) erro
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s: status %d", url, resp.StatusCode)
+		return &statusError{code: resp.StatusCode}
 	}
 	// Cap how much we'll read — an unbounded body from a malicious/misbehaving
 	// upstream could otherwise OOM the aggregator (#76).
-	return json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(target)
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(target); err != nil {
+		return &decodeError{err: err}
+	}
+	return nil
+}
+
+// statusError is a non-200 upstream response.
+type statusError struct{ code int }
+
+func (e *statusError) Error() string { return fmt.Sprintf("upstream status %d", e.code) }
+
+// decodeError is an unparseable / oversized upstream body.
+type decodeError struct{ err error }
+
+func (e *decodeError) Error() string { return e.err.Error() }
+func (e *decodeError) Unwrap() error { return e.err }
+
+// classifyErr maps an upstream failure to a fixed string safe to expose via
+// REST. Raw error text embeds URLs / internal hostnames, so it must only go
+// to the log (#254).
+func classifyErr(err error) string {
+	var se *statusError
+	var de *decodeError
+	switch {
+	case errors.As(err, &se):
+		return fmt.Sprintf("upstream error status %d", se.code)
+	case errors.As(err, &de):
+		return "invalid response"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	default:
+		return "unreachable"
+	}
 }
 
 // Nodes returns merged nodes across all reachable regions.
