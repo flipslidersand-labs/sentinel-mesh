@@ -51,9 +51,11 @@ jobs:
       - uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      # self-hosted (linux-general) の actions-runner:latest イメージに cc が無く
-      # リンクに失敗するため build-essential を明示インストール。
-      - run: sudo apt-get update && sudo apt-get install -y build-essential
+      # cc の有無は GATE_RUNNER の値で変わる。GitHub 提供の runner は cc ありなので
+      # apt を走らせない（外部ミラーの一時障害で落ちないように）。self-hosted
+      # (linux-general) の actions-runner:latest には cc が無くリンクに失敗するため、
+      # cc が無いときだけ build-essential をインストールする。
+      - run: command -v cc >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y build-essential)
       - run: cargo check --workspace
       - run: cargo test --workspace
       - uses: taiki-e/install-action@cargo-llvm-cov
@@ -94,9 +96,11 @@ jobs:
       - uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      # self-hosted (linux-general) の actions-runner:latest イメージに cc が無く
-      # リンクに失敗するため build-essential を明示インストール。
-      - run: sudo apt-get update && sudo apt-get install -y build-essential
+      # cc の有無は GATE_RUNNER の値で変わる。GitHub 提供の runner は cc ありなので
+      # apt を走らせない（外部ミラーの一時障害で落ちないように）。self-hosted
+      # (linux-general) の actions-runner:latest には cc が無くリンクに失敗するため、
+      # cc が無いときだけ build-essential をインストールする。
+      - run: command -v cc >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y build-essential)
       # test-integration.sh は release バイナリを
       # target/x86_64-unknown-linux-gnu/release/sentinel-agent から起動するため、
       # ターゲットを明示して release ビルドする。
