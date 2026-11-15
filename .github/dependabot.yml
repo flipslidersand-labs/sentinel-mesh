@@ -4,3 +4,29 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+  # #329: gomod / cargo / npm も監視する(github-actions のみだった)。
+  # 更新 PR が一度に溢れないよう、週次・各 3 件までに絞る。
+  - package-ecosystem: "gomod"
+    directory: "/go-collector"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+  - package-ecosystem: "cargo"
+    directory: "/rust-agent"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+  - package-ecosystem: "npm"
+    directory: "/web"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
