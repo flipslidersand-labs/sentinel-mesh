@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING (go-collector):** the SMTP notifier now requires STARTTLS for every
+  non-loopback server, even without credentials; if the server does not advertise
+  it the alert is not sent (previously sent in plaintext, open to downgrade) (#362).
+  Migration: enable STARTTLS on the SMTP server, or set
+  `SENTINEL_SMTP_ALLOW_PLAINTEXT=true` to keep the old behavior on a trusted network.
 - **BREAKING (go-collector):** gRPC authentication is now controlled by the new
   `--grpc-auth=required|disabled` flag (default `required`) instead of being
   implicitly enabled by `SENTINEL_API_TOKEN` (#222). With `required` and no

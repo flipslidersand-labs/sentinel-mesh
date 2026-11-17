@@ -254,3 +254,45 @@ func TestSendMail_STARTTLSHandshakeFailureDoesNotFallBackToPlaintext(t *testing.
 		t.Fatalf("plaintext fallback: auth=%v data=%v", s.authPlainOK, s.gotData)
 	}
 }
+
+// Issue #362: without credentials, a non-loopback server that does not
+// advertise STARTTLS must be refused unless plaintext is explicitly allowed.
+func TestSendMail_NoCreds_NoSTARTTLS_NonLoopbackRefused(t *testing.T) {
+	cert, _ := newTestCert(t)
+	s := startFakeSMTP(t, false, cert)
+	opts := smtpOptions{isLoopback: func(string) bool { return false }}
+	err := sendMailWithOptions(context.Background(), s.ln.Addr().String(), nil, "a@x", []string{"b@x"}, []byte("x\r\n"), opts)
+	if err == nil || !strings.Contains(err.Error(), "STARTTLS") {
+		t.Fatalf("expected STARTTLS refusal, got %v", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.gotData {
+		t.Fatal("message was sent in plaintext")
+	}
+}
+
+func TestSendMail_NoCreds_NoSTARTTLS_NonLoopbackAllowed(t *testing.T) {
+	cert, _ := newTestCert(t)
+	s := startFakeSMTP(t, false, cert)
+	opts := smtpOptions{isLoopback: func(string) bool { return false }, allowPlaintext: true}
+	if err := sendMailWithOptions(context.Background(), s.ln.Addr().String(), nil, "a@x", []string{"b@x"}, []byte("x\r\n"), opts); err != nil {
+		t.Fatalf("expected plaintext allowed, got %v", err)
+	}
+}
+
+func TestDispatcherFromEnv_AllowPlaintext(t *testing.T) {
+	t.Setenv(envSlackWebhook, "")
+	t.Setenv(envSMTPAddr, "smtp.example.com:25")
+	t.Setenv(envSMTPFrom, "a@example.com")
+	t.Setenv(envSMTPTo, "b@example.com")
+	t.Setenv(envSMTPAllowPlaintext, "")
+	d := DispatcherFromEnv(nil)
+	if len(d.notifiers) != 1 {
+		t.Fatalf("notifiers = %v", d.notifiers)
+	}
+	t.Setenv(envSMTPAllowPlaintext, "true")
+	if len(DispatcherFromEnv(nil).notifiers) != 1 {
+		t.Fatal("expected email notifier")
+	}
+}
