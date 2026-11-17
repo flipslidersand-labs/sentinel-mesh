@@ -43,22 +43,29 @@ type Upstream struct {
 // front is cheap and removes a class of misconfiguration (#76).
 func ParseUpstreams(specs []string) ([]Upstream, error) {
 	out := make([]Upstream, 0, len(specs))
-	for _, spec := range specs {
+	// Error messages deliberately never include the spec or URL: the value
+	// may carry credentials in userinfo (#364).
+	for i, spec := range specs {
 		region, rawURL, ok := strings.Cut(spec, "=")
 		region, rawURL = strings.TrimSpace(region), strings.TrimSpace(rawURL)
 		if !ok || region == "" || rawURL == "" {
-			return nil, fmt.Errorf("invalid upstream %q: expected region=url", spec)
+			return nil, fmt.Errorf("invalid upstream #%d: expected region=url", i+1)
 		}
 		rawURL = strings.TrimRight(rawURL, "/")
 		parsed, err := url.Parse(rawURL)
 		if err != nil {
-			return nil, fmt.Errorf("invalid upstream %q: %w", spec, err)
+			// The parse error embeds the raw URL (and may echo fragments
+			// of it), so report a fixed message instead.
+			return nil, fmt.Errorf("invalid upstream %q: unparsable URL", region)
 		}
 		if parsed.Scheme != "http" && parsed.Scheme != "https" {
-			return nil, fmt.Errorf("invalid upstream %q: scheme must be http or https", spec)
+			return nil, fmt.Errorf("invalid upstream %q: scheme must be http or https", region)
 		}
 		if parsed.Host == "" {
-			return nil, fmt.Errorf("invalid upstream %q: missing host", spec)
+			return nil, fmt.Errorf("invalid upstream %q: missing host", region)
+		}
+		if parsed.User != nil {
+			return nil, fmt.Errorf("invalid upstream %q: userinfo (user:pass@) is not allowed in the URL; use bearer auth", region)
 		}
 		out = append(out, Upstream{Region: region, URL: rawURL})
 	}

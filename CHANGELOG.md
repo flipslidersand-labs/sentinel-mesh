@@ -43,6 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **go-collector:** the aggregator rejects upstream URLs that contain userinfo
+  (`user:pass@`) at startup, and its errors no longer echo the configured URL, so
+  credentials cannot reach the logs (#364).
 - Per-agent bearer tokens for the gRPC channel instead of a shared token
   (#195, #196, #198, ADR-005 / #188); token lookup is O(1) so valid tokens are not
   throttled by the auth-failure limiter (#238).
