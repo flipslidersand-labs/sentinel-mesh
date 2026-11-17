@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -37,6 +38,8 @@ type Upstream struct {
 	URL    string // base URL, e.g. http://192.0.2.10:8081
 }
 
+var regionNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
 // ParseUpstreams parses "region=url" specs into Upstreams. Only http/https
 // URLs with a host are accepted — this is operator-supplied config, not
 // attacker input, but rejecting other schemes (file://, unix://, ...) up
@@ -48,7 +51,9 @@ func ParseUpstreams(specs []string) ([]Upstream, error) {
 	for i, spec := range specs {
 		region, rawURL, ok := strings.Cut(spec, "=")
 		region, rawURL = strings.TrimSpace(region), strings.TrimSpace(rawURL)
-		if !ok || region == "" || rawURL == "" {
+		if !ok || region == "" || rawURL == "" || !regionNameRe.MatchString(region) {
+			// region may actually be a URL fragment (no region= prefix), so
+			// it is never echoed here.
 			return nil, fmt.Errorf("invalid upstream #%d: expected region=url", i+1)
 		}
 		rawURL = strings.TrimRight(rawURL, "/")
