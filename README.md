@@ -299,7 +299,7 @@ Triggered alerts (from both the rules engine and the anomaly detector) can be fo
 | `SENTINEL_SMTP_TO`             | Email   | Comma-separated recipients (required for email).                           |
 | `SENTINEL_SMTP_USER`           | Email   | SMTP username. Omit for unauthenticated relays.                            |
 | `SENTINEL_SMTP_PASSWORD`       | Email   | SMTP password (PLAIN auth, used only when user is set).                    |
-| `SENTINEL_SMTP_ALLOW_PLAINTEXT`  | Email   | `true` allows non-loopback SMTP servers without STARTTLS (default: refused). |
+| `SENTINEL_SMTP_ALLOW_PLAINTEXT`  | Email   | `true` allows non-loopback SMTP servers without STARTTLS (default: refused). Credentials are still never sent without STARTTLS to non-loopback hosts. |
 | `SENTINEL_NOTIFY_MIN_SEVERITY` | Both    | Minimum severity to notify (default `warning`).                            |
 | `SENTINEL_NOTIFY_COOLDOWN`     | Both    | Min gap between notifications per (rule, node); Go duration, default `5m`. |
 

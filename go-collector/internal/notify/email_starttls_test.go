@@ -286,13 +286,17 @@ func TestDispatcherFromEnv_AllowPlaintext(t *testing.T) {
 	t.Setenv(envSMTPAddr, "smtp.example.com:25")
 	t.Setenv(envSMTPFrom, "a@example.com")
 	t.Setenv(envSMTPTo, "b@example.com")
-	t.Setenv(envSMTPAllowPlaintext, "")
-	d := DispatcherFromEnv(nil)
-	if len(d.notifiers) != 1 {
-		t.Fatalf("notifiers = %v", d.notifiers)
-	}
-	t.Setenv(envSMTPAllowPlaintext, "true")
-	if len(DispatcherFromEnv(nil).notifiers) != 1 {
-		t.Fatal("expected email notifier")
+	for _, tc := range []struct {
+		val  string
+		want bool
+	}{{"", false}, {"true", true}} {
+		t.Setenv(envSMTPAllowPlaintext, tc.val)
+		d := DispatcherFromEnv(nil)
+		if len(d.notifiers) != 1 {
+			t.Fatalf("notifiers = %v", d.notifiers)
+		}
+		if got := d.notifiers[0].(*EmailNotifier).allowPlaintext; got != tc.want {
+			t.Errorf("%q: allowPlaintext = %v, want %v", tc.val, got, tc.want)
+		}
 	}
 }

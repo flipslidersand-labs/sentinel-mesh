@@ -18,6 +18,8 @@ type EmailNotifier struct {
 	auth smtp.Auth
 	from string
 	to   []string
+	// allowPlaintext mirrors EmailConfig.AllowPlaintext (issue #362).
+	allowPlaintext bool
 	// sendMail is overridable in tests; defaults to sendMailContext, which
 	// dials with a deadline derived from ctx instead of net/smtp.SendMail's
 	// unbounded dial+send.
