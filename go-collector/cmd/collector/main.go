@@ -122,7 +122,8 @@ Two mutually exclusive modes:
 TLS for the gRPC server is optional but, when enabled, both
 --grpc-tls-cert and --grpc-tls-key must be supplied together.`,
 		Example: `  # Normal mode: gRPC + REST API on default addresses (REST auth is required
-  # by default, so SENTINEL_API_TOKEN must be set; gRPC needs per-agent tokens)
+  # by default, so SENTINEL_API_TOKEN must be set, at least 32 bytes, e.g.
+  # $(openssl rand -hex 32); gRPC needs per-agent tokens)
   SENTINEL_API_TOKEN=<token> sentinel-collector serve
 
   # Local demo without any authentication (dev only)

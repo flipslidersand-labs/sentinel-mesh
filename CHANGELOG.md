@@ -11,7 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **BREAKING (go-collector, #360):** `SENTINEL_API_TOKEN` must now be at least 32 bytes;
   the collector refuses to start with a shorter value (e.g. use `openssl rand -hex 32`).
-  Rotate any shorter token before upgrading.
+  Rotate any shorter token before upgrading. This also applies with `--http-auth disabled`: a
+  `SENTINEL_API_TOKEN` that is set but shorter than 32 bytes is a startup error.
 
 ### Security
 
