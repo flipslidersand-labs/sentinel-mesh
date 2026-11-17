@@ -46,10 +46,11 @@ func NewEmailNotifier(cfg EmailConfig) *EmailNotifier {
 		auth = smtp.PlainAuth("", cfg.Username, cfg.Password, smtpHost(cfg.Addr))
 	}
 	return &EmailNotifier{
-		addr: cfg.Addr,
-		auth: auth,
-		from: cfg.From,
-		to:   cfg.To,
+		addr:           cfg.Addr,
+		auth:           auth,
+		from:           cfg.From,
+		allowPlaintext: cfg.AllowPlaintext,
+		to:             cfg.To,
 		sendMail: func(ctx context.Context, addr string, a smtp.Auth, from string, to []string, msg []byte) error {
 			return sendMailWithOptions(ctx, addr, a, from, to, msg, smtpOptions{allowPlaintext: cfg.AllowPlaintext})
 		},
