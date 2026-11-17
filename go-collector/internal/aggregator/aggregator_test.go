@@ -383,6 +383,7 @@ func TestParseUpstreams_RejectsUserinfo(t *testing.T) {
 		"us-east=ftp://alice:s3cret-pw@example.com",   // other validation failure
 		"us-east=http://alice:s3cret-pw@exa mple.com", // url.Parse failure
 		"http://alice:s3cret-pw@example.com:8081",     // missing region=
+		"http://alice:s3cret-pw@example.com:81/?x=1",  // "=" in URL, no region prefix
 	}
 	for _, spec := range specs {
 		_, err := ParseUpstreams([]string{spec})
