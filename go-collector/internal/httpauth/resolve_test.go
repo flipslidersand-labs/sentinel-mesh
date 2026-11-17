@@ -5,6 +5,9 @@ import (
 	"testing"
 )
 
+// validTestToken is an obvious dummy of exactly MinTokenBytes bytes.
+var validTestToken = strings.Repeat("x", MinTokenBytes)
+
 func TestParseMode(t *testing.T) {
 	cases := []struct {
 		in      string
@@ -56,16 +59,16 @@ func TestResolveToken(t *testing.T) {
 		}
 	})
 	t.Run("required with token is allowed", func(t *testing.T) {
-		t.Setenv(EnvAPIToken, "0123456789abcdef0123456789abcdef")
+		t.Setenv(EnvAPIToken, validTestToken)
 		tok, unauth, err := ResolveToken("required")
-		if err != nil || tok != "0123456789abcdef0123456789abcdef" || unauth {
+		if err != nil || tok != validTestToken || unauth {
 			t.Fatalf("got (%q, %v, %v)", tok, unauth, err)
 		}
 	})
 	t.Run("disabled with token still enforces the token", func(t *testing.T) {
-		t.Setenv(EnvAPIToken, "0123456789abcdef0123456789abcdef")
+		t.Setenv(EnvAPIToken, validTestToken)
 		tok, unauth, err := ResolveToken("disabled")
-		if err != nil || tok != "0123456789abcdef0123456789abcdef" || unauth {
+		if err != nil || tok != validTestToken || unauth {
 			t.Fatalf("got (%q, %v, %v)", tok, unauth, err)
 		}
 	})
@@ -88,7 +91,7 @@ func TestResolveToken(t *testing.T) {
 		}
 	})
 	t.Run("invalid mode is an error", func(t *testing.T) {
-		t.Setenv(EnvAPIToken, "0123456789abcdef0123456789abcdef")
+		t.Setenv(EnvAPIToken, validTestToken)
 		if _, _, err := ResolveToken("off"); err == nil {
 			t.Fatal("expected error")
 		}
