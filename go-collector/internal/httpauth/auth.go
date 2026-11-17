@@ -17,6 +17,10 @@ import (
 // read from the environment only — never from flags or YAML.
 const EnvAPIToken = "SENTINEL_API_TOKEN" //nolint:gosec // env var name, not a credential
 
+// MinTokenBytes is the minimum accepted length of SENTINEL_API_TOKEN. Shorter
+// tokens make online brute force practical, so startup is refused (#360).
+const MinTokenBytes = 32
+
 // TokenFromEnv returns the configured API token (trimmed), or "" if unset.
 func TokenFromEnv() string {
 	return strings.TrimSpace(os.Getenv(EnvAPIToken))
@@ -47,6 +51,10 @@ func ResolveToken(mode string) (token string, unauthenticated bool, err error) {
 	}
 	token = TokenFromEnv()
 	if token != "" {
+		if len(token) < MinTokenBytes {
+			// Never include the token value (or any prefix) in the error.
+			return "", false, fmt.Errorf("%s is too short: got %d bytes, need at least %d (e.g. generate one with `openssl rand -hex 32`)", EnvAPIToken, len(token), MinTokenBytes)
+		}
 		return token, false, nil
 	}
 	if required {
@@ -62,13 +70,25 @@ func BearerAuth(token string) gin.HandlerFunc {
 	if token == "" {
 		return func(c *gin.Context) { c.Next() }
 	}
+	return bearerAuth(token, newFailLimiter())
+}
+
+func bearerAuth(token string, lim *failLimiter) gin.HandlerFunc {
 	want := []byte(token)
 	return func(c *gin.Context) {
 		got, ok := strings.CutPrefix(c.GetHeader("Authorization"), "Bearer ")
-		if !ok || subtle.ConstantTimeCompare([]byte(got), want) != 1 {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		if ok && subtle.ConstantTimeCompare([]byte(got), want) == 1 {
+			// A valid token always passes, whatever the source's failure budget.
+			c.Next()
 			return
 		}
-		c.Next()
+		// RemoteIP (not ClientIP): X-Forwarded-For is client-controlled and
+		// would let an attacker dodge the limit.
+		if !lim.reserve(c.RemoteIP()) {
+			c.Header("Retry-After", "60")
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "too many failed attempts"})
+			return
+		}
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 	}
 }

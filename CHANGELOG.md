@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING (go-collector, #360):** `SENTINEL_API_TOKEN` must now be at least 32 bytes;
+  the collector refuses to start with a shorter value (e.g. use `openssl rand -hex 32`).
+  Rotate any shorter token before upgrading.
+
+### Security
+
+- **go-collector:** REST API now throttles repeated failed bearer-auth attempts per source
+  address (5 failures, refilling 5/min) and answers 429 with `Retry-After` (#360).
+
 ### Added
 
 - **go-collector:** `sentinel-collector token issue|revoke|list` subcommands and a

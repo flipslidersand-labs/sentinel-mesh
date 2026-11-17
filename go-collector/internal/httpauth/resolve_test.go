@@ -56,21 +56,39 @@ func TestResolveToken(t *testing.T) {
 		}
 	})
 	t.Run("required with token is allowed", func(t *testing.T) {
-		t.Setenv(EnvAPIToken, "dummy-value")
+		t.Setenv(EnvAPIToken, "0123456789abcdef0123456789abcdef")
 		tok, unauth, err := ResolveToken("required")
-		if err != nil || tok != "dummy-value" || unauth {
+		if err != nil || tok != "0123456789abcdef0123456789abcdef" || unauth {
 			t.Fatalf("got (%q, %v, %v)", tok, unauth, err)
 		}
 	})
 	t.Run("disabled with token still enforces the token", func(t *testing.T) {
-		t.Setenv(EnvAPIToken, "dummy-value")
+		t.Setenv(EnvAPIToken, "0123456789abcdef0123456789abcdef")
 		tok, unauth, err := ResolveToken("disabled")
-		if err != nil || tok != "dummy-value" || unauth {
+		if err != nil || tok != "0123456789abcdef0123456789abcdef" || unauth {
 			t.Fatalf("got (%q, %v, %v)", tok, unauth, err)
 		}
 	})
+	t.Run("short token is rejected without leaking the value", func(t *testing.T) {
+		for _, mode := range []string{"required", "disabled"} {
+			t.Setenv(EnvAPIToken, "short-secret-value")
+			_, _, err := ResolveToken(mode)
+			if err == nil {
+				t.Fatalf("%s: expected error for short token", mode)
+			}
+			if strings.Contains(err.Error(), "short-secret") {
+				t.Fatalf("error leaks token: %v", err)
+			}
+		}
+	})
+	t.Run("token of exactly the minimum length is accepted", func(t *testing.T) {
+		t.Setenv(EnvAPIToken, strings.Repeat("a", MinTokenBytes))
+		if _, _, err := ResolveToken("required"); err != nil {
+			t.Fatal(err)
+		}
+	})
 	t.Run("invalid mode is an error", func(t *testing.T) {
-		t.Setenv(EnvAPIToken, "dummy-value")
+		t.Setenv(EnvAPIToken, "0123456789abcdef0123456789abcdef")
 		if _, _, err := ResolveToken("off"); err == nil {
 			t.Fatal("expected error")
 		}

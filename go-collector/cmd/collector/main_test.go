@@ -87,7 +87,7 @@ func TestServeCmd_UpstreamsWithoutAggregateRejected(t *testing.T) {
 // unvalidated and panic, crashing the whole CLI. It must now be rejected
 // with a plain error before the heartbeat checker ever starts.
 func TestServeCmd_NonPositiveHeartbeatTimeoutRejected(t *testing.T) {
-	t.Setenv("SENTINEL_API_TOKEN", "dummy-value") // REST auth check (#254) runs first
+	t.Setenv("SENTINEL_API_TOKEN", "0123456789abcdef0123456789abcdef") // REST auth check (#254) runs first
 	cases := []struct{ flag, wantDuration string }{
 		{"0", "0s"},
 		{"-5s", "-5s"},
