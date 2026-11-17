@@ -252,7 +252,13 @@ func (s *Store) ListEvents(ctx context.Context, node string, limit int) ([]Event
 			return nil
 		})
 	})
-	return events, err
+	if err != nil {
+		// On ctx expiry the View goroutine may still be appending to events;
+		// do not read it (data race, #351). Only a normal completion
+		// (which happens-before the receive in runWithContext) is safe.
+		return nil, err
+	}
+	return events, nil
 }
 
 // Stats returns event counts per type, from the in-memory counters (#77) —
@@ -332,7 +338,13 @@ func (s *Store) ListAlerts(ctx context.Context, node string, limit int) ([]Alert
 			return nil
 		})
 	})
-	return alerts, err
+	if err != nil {
+		// On ctx expiry the View goroutine may still be appending to alerts;
+		// do not read it (data race, #351). Only a normal completion
+		// (which happens-before the receive in runWithContext) is safe.
+		return nil, err
+	}
+	return alerts, nil
 }
 
 func (s *Store) Close() error {

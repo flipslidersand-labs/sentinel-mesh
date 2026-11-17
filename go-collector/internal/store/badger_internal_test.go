@@ -280,3 +280,41 @@ func TestListAlerts_NewestFirstWithinOneSecond(t *testing.T) {
 		t.Fatalf("limit=1 should return newest alert a2, got %+v", got)
 	}
 }
+
+// TestList_CancelledContextReturnsNilWithoutRacing is the regression test for
+// #351: on ctx expiry ListEvents/ListAlerts must not hand back (or read) the
+// slice the still-running View goroutine appends to. Run under -race.
+func TestList_CancelledContextReturnsNilWithoutRacing(t *testing.T) {
+	st, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { st.Close() }) //nolint:errcheck
+
+	bg := context.Background()
+	for i := 0; i < 200; i++ {
+		id := strconv.Itoa(i)
+		if err := st.SaveEvent(bg, Event{EventID: id, NodeID: "n"}); err != nil {
+			t.Fatalf("SaveEvent: %v", err)
+		}
+		if err := st.SaveAlert(bg, Alert{AlertID: id, NodeID: "n", Timestamp: time.Now()}); err != nil {
+			t.Fatalf("SaveAlert: %v", err)
+		}
+	}
+
+	ctx, cancel := context.WithCancel(bg)
+	cancel()
+	for i := 0; i < 50; i++ {
+		evs, err := st.ListEvents(ctx, "", 1000)
+		if err == nil {
+			continue // fn won the select; a complete result is fine
+		}
+		if evs != nil {
+			t.Fatalf("ListEvents: want nil slice on ctx error, got len %d", len(evs))
+		}
+		als, err := st.ListAlerts(ctx, "", 1000)
+		if err != nil && als != nil {
+			t.Fatalf("ListAlerts: want nil slice on ctx error, got len %d", len(als))
+		}
+	}
+}
