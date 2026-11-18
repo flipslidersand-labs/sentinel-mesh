@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Agent:** a permanently rejected registration (`ok=false` or an
+  InvalidArgument/Unauthenticated/PermissionDenied status) now logs the
+  collector's reason and exits non-zero instead of retrying forever; transient
+  errors still back off and retry (#380).
 - **BREAKING (go-collector):** gRPC authentication is now controlled by the new
   `--grpc-auth=required|disabled` flag (default `required`) instead of being
   implicitly enabled by `SENTINEL_API_TOKEN` (#222). With `required` and no

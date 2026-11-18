@@ -141,6 +141,11 @@ async fn stream_to_collector_with(
             // rx.recv() returned None: every event-source Sender was dropped,
             // so there will never be another event. Exit for good.
             Ok(()) => return Ok(()),
+            Err(e) if e.downcast_ref::<RegistrationRejected>().is_some() => {
+                // Retrying can't help; surface the reason and exit non-zero.
+                eprintln!("{e}");
+                return Err(e);
+            }
             Err(e) => {
                 let wait = jittered(backoff);
                 eprintln!("collector connection lost/failed: {e} — reconnecting in {wait:.1?}");
@@ -149,6 +154,32 @@ async fn stream_to_collector_with(
             }
         }
     }
+}
+
+/// The collector permanently refused this agent's registration (validation
+/// failure, identity mismatch, or an auth/argument gRPC status). Not retried:
+/// `stream_to_collector` returns it so the process exits non-zero (#380).
+#[derive(Debug)]
+struct RegistrationRejected(String);
+
+impl std::fmt::Display for RegistrationRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.0.is_empty() {
+            write!(f, "registration rejected by collector (no reason given)")
+        } else {
+            write!(f, "registration rejected by collector: {}", self.0)
+        }
+    }
+}
+
+impl std::error::Error for RegistrationRejected {}
+
+/// gRPC codes that retrying the same request cannot fix.
+fn is_permanent_status(code: tonic::Code) -> bool {
+    matches!(
+        code,
+        tonic::Code::InvalidArgument | tonic::Code::Unauthenticated | tonic::Code::PermissionDenied
+    )
 }
 
 /// Adds up to ±25% jitter to `base` so many agents reconnecting after a
@@ -262,10 +293,25 @@ async fn run_session(
             version: env!("CARGO_PKG_VERSION").to_string(),
             region: region.to_string(),
         })
-        .await?;
+        .await
+        .map_err(|st| {
+            if is_permanent_status(st.code()) {
+                anyhow::Error::new(RegistrationRejected(format!(
+                    "{:?}: {}",
+                    st.code(),
+                    st.message()
+                )))
+            } else {
+                anyhow::Error::new(st)
+            }
+        })?;
 
-    if !resp.into_inner().ok {
-        anyhow::bail!("registration rejected by collector");
+    // The collector answers every validation / identity failure with
+    // `ok=false` + a message (go-collector receiver Register), and none of
+    // those can succeed on retry, so treat it as permanent.
+    let resp = resp.into_inner();
+    if !resp.ok {
+        return Err(anyhow::Error::new(RegistrationRejected(resp.message)));
     }
     println!("registered with collector");
 
@@ -718,6 +764,119 @@ mod tests {
             )
             .await;
             agent.abort();
+        }
+
+        /// Collector whose `Register` always answers with `reply`.
+        struct RegisterStub {
+            reply: std::result::Result<RegisterResponse, Status>,
+            calls: Arc<std::sync::atomic::AtomicUsize>,
+        }
+
+        #[tonic::async_trait]
+        impl SentinelCollector for RegisterStub {
+            async fn register(
+                &self,
+                _: Request<RegisterRequest>,
+            ) -> std::result::Result<Response<RegisterResponse>, Status> {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.reply.clone().map(Response::new)
+            }
+
+            type StreamEventsStream =
+                Pin<Box<dyn Stream<Item = std::result::Result<EventAck, Status>> + Send>>;
+
+            async fn stream_events(
+                &self,
+                _: Request<Streaming<KernelEvent>>,
+            ) -> std::result::Result<Response<Self::StreamEventsStream>, Status> {
+                Err(Status::unimplemented("test stub"))
+            }
+        }
+
+        /// Runs the agent against a collector stub; returns the agent's
+        /// result (None if it was still retrying after `secs`) and the number
+        /// of Register calls seen.
+        async fn run_against_stub(
+            reply: std::result::Result<RegisterResponse, Status>,
+            secs: u64,
+        ) -> (Option<Result<()>>, usize) {
+            let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = l.local_addr().unwrap();
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            tokio::spawn(
+                tonic::transport::Server::builder()
+                    .add_service(SentinelCollectorServer::new(RegisterStub {
+                        reply,
+                        calls: calls.clone(),
+                    }))
+                    .serve_with_incoming(tokio_stream_from(l)),
+            );
+            // Keep the sender alive so a clean "source exhausted" exit can't
+            // mask a retry loop.
+            let (_ev_tx, ev_rx) = tokio::sync::mpsc::channel::<KernelEvent>(1);
+            let res = tokio::time::timeout(
+                Duration::from_secs(secs),
+                stream_to_collector_with(
+                    format!("http://{addr}"),
+                    "n1".into(),
+                    String::new(),
+                    None,
+                    None,
+                    fast_tuning(),
+                    ev_rx,
+                ),
+            )
+            .await
+            .ok();
+            (res, calls.load(std::sync::atomic::Ordering::SeqCst))
+        }
+
+        #[tokio::test]
+        async fn register_ok_false_is_fatal_and_reports_message() {
+            let (res, calls) = run_against_stub(
+                Ok(RegisterResponse {
+                    ok: false,
+                    message: "node_id does not match authenticated identity".into(),
+                }),
+                5,
+            )
+            .await;
+            let err = res
+                .expect("agent kept retrying a rejected registration")
+                .unwrap_err();
+            let text = format!("{err:#}");
+            assert!(
+                text.contains("node_id does not match authenticated identity"),
+                "rejection reason missing from error: {text}"
+            );
+            assert_eq!(calls, 1, "must not retry a rejected registration");
+        }
+
+        #[tokio::test]
+        async fn register_permanent_status_codes_are_fatal() {
+            for st in [
+                Status::invalid_argument("bad field"),
+                Status::unauthenticated("bad token"),
+                Status::permission_denied("nope"),
+            ] {
+                let code = st.code();
+                let (res, calls) = run_against_stub(Err(st), 5).await;
+                let err = res
+                    .unwrap_or_else(|| panic!("{code:?}: agent kept retrying"))
+                    .unwrap_err();
+                assert!(
+                    format!("{err:#}").contains("rejected"),
+                    "{code:?}: error should say registration was rejected: {err:#}"
+                );
+                assert_eq!(calls, 1, "{code:?}: must not retry");
+            }
+        }
+
+        #[tokio::test]
+        async fn register_unavailable_is_retried() {
+            let (res, calls) = run_against_stub(Err(Status::unavailable("restarting")), 2).await;
+            assert!(res.is_none(), "transient error must keep retrying");
+            assert!(calls >= 2, "expected retries, saw {calls} Register calls");
         }
 
         fn tokio_stream_from(l: TcpListener) -> impl Stream<Item = std::io::Result<TcpStream>> {
