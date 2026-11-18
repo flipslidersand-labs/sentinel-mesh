@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -26,8 +27,9 @@ const defaultCooldown = 5 * time.Minute
 // DispatcherFromEnv builds a Dispatcher whose notifiers are configured entirely
 // from environment variables. Channels with missing configuration are skipped;
 // the returned Dispatcher is always non-nil and its Enabled method reports
-// whether any channel was configured.
-func DispatcherFromEnv(logger *zap.Logger) *Dispatcher {
+// whether any channel was configured. A negative cooldown or an unknown
+// minimum severity is a configuration error (returned, so startup can fail).
+func DispatcherFromEnv(logger *zap.Logger) (*Dispatcher, error) {
 	var notifiers []Notifier
 
 	if url := strings.TrimSpace(os.Getenv(envSlackWebhook)); url != "" {
@@ -54,18 +56,26 @@ func DispatcherFromEnv(logger *zap.Logger) *Dispatcher {
 	cooldown := defaultCooldown
 	if v := strings.TrimSpace(os.Getenv(envCooldown)); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
+			if d < 0 {
+				return nil, fmt.Errorf("%s must be >= 0 (0 disables the cooldown), got %q", envCooldown, v)
+			}
 			cooldown = d
 		} else if logger != nil {
 			logger.Warn("invalid "+envCooldown+", using default", zap.String("value", v))
 		}
 	}
 
+	minSeverity := strings.TrimSpace(os.Getenv(envMinSeverity))
+	if minSeverity != "" && !knownSeverity(minSeverity) {
+		return nil, fmt.Errorf("unknown %s %q", envMinSeverity, minSeverity)
+	}
+
 	return NewDispatcher(Options{
 		Notifiers:   notifiers,
 		Cooldown:    cooldown,
-		MinSeverity: strings.TrimSpace(os.Getenv(envMinSeverity)),
+		MinSeverity: minSeverity,
 		Logger:      logger,
-	})
+	}), nil
 }
 
 func splitAndTrim(csv string) []string {

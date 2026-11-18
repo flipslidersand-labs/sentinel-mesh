@@ -291,7 +291,10 @@ func TestDispatcherFromEnv_AllowPlaintext(t *testing.T) {
 		want bool
 	}{{"", false}, {"true", true}} {
 		t.Setenv(envSMTPAllowPlaintext, tc.val)
-		d := DispatcherFromEnv(nil)
+		d, err := DispatcherFromEnv(nil)
+		if err != nil {
+			t.Fatalf("%q: DispatcherFromEnv: %v", tc.val, err)
+		}
 		if len(d.notifiers) != 1 {
 			t.Fatalf("notifiers = %v", d.notifiers)
 		}

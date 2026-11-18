@@ -264,7 +264,10 @@ TLS for the gRPC server is optional but, when enabled, both
 				zap.Int("windows", len(anomaly.DefaultWindows)))
 
 			// Alert notifications (Slack/email) — configured via SENTINEL_* env vars.
-			notifier := notify.DispatcherFromEnv(logger)
+			notifier, err := notify.DispatcherFromEnv(logger)
+			if err != nil {
+				return fmt.Errorf("notify config: %w", err)
+			}
 			if notifier.Enabled() {
 				logger.Info("alert notifications enabled")
 			}

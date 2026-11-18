@@ -134,6 +134,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The agent IP is derived from the gRPC peer, not a client-supplied field (#178).
 - `deploy-agent.sh` no longer leaks the gRPC bearer token (#174); Slack send
   errors no longer include the webhook URL (#256).
+- A negative `SENTINEL_NOTIFY_COOLDOWN` or an unknown `SENTINEL_NOTIFY_MIN_SEVERITY`
+  now fails collector startup instead of notifying on every alert (#379).
+||||||| f4e74e3
 - gRPC `MaxRecvMsgSize` lowered from 4 MB to 8 KB, derived from the validated field
   limits (largest legitimate message is about 1.6 KB); oversized messages are
   rejected with `ResourceExhausted` (#361).
