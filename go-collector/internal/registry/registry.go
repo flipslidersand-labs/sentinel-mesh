@@ -59,6 +59,17 @@ func (r *Registry) Register(nodeID, hostname, ip, version, region string) error 
 		existing.LastSeen = now
 		existing.Status = "active"
 		existing.Region = region
+		// Refresh identity attributes (e.g. after HeartbeatOrRegister
+		// re-created the node without them); empty values keep what is stored.
+		if hostname != "" {
+			existing.Hostname = hostname
+		}
+		if ip != "" {
+			existing.IP = ip
+		}
+		if version != "" {
+			existing.Version = version
+		}
 		existing.inactiveSince = time.Time{}
 		return nil
 	}
@@ -89,7 +100,7 @@ func (r *Registry) Heartbeat(nodeID string) {
 // in the registry (e.g. evicted while its stream stayed connected, #371), it is
 // re-created from the given identity so it reappears in List/ListByRegion.
 // Hostname and version are unknown here and are left empty; region falls back
-// to DefaultRegion when empty. A later Register restores the full attributes.
+// to DefaultRegion when empty. A later Register fills in hostname, version and IP (non-empty values only) and sets the region.
 func (r *Registry) HeartbeatOrRegister(nodeID, ip, region string) {
 	if nodeID == "" {
 		return

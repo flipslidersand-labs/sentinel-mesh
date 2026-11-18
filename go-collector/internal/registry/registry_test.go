@@ -252,3 +252,21 @@ func TestHeartbeatOrRegisterRecreatesEvictedNode(t *testing.T) {
 		t.Fatalf("node not recreated: %+v", got)
 	}
 }
+
+func TestRegisterFillsAttributesOfRecreatedNode(t *testing.T) {
+	reg := registry.New()
+	reg.HeartbeatOrRegister("node-a", "198.51.100.7", "")
+	if err := reg.Register("node-a", "host-a", "203.0.113.5", "1.2.3", "eu"); err != nil {
+		t.Fatal(err)
+	}
+	got := reg.List()
+	if len(got) != 1 || got[0].Hostname != "host-a" || got[0].Version != "1.2.3" || got[0].IP != "203.0.113.5" || got[0].Region != "eu" {
+		t.Fatalf("attributes not filled: %+v", got)
+	}
+	if err := reg.Register("node-a", "", "", "", "eu"); err != nil {
+		t.Fatal(err)
+	}
+	if got := reg.List()[0]; got.Hostname != "host-a" || got.Version != "1.2.3" {
+		t.Fatalf("empty values must not erase: %+v", got)
+	}
+}
