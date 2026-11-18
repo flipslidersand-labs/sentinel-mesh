@@ -77,9 +77,12 @@ func Router(st *store.Store, reg *registry.Registry, detector *anomaly.Detector,
 	// Prometheus counters carry node/rule/severity labels (internal/otel),
 	// the same category of data /api/stats protects, so leaving /metrics
 	// outside the auth group let it bypass that protection entirely.
-	r.GET("/metrics", httpauth.BearerAuth(apiToken), gin.WrapH(promhttp.Handler()))
+	// One middleware instance so /metrics and /api/* share a single
+	// failed-auth budget per source (#360).
+	auth := httpauth.BearerAuth(apiToken)
+	r.GET("/metrics", auth, gin.WrapH(promhttp.Handler()))
 
-	api := r.Group("/api", httpauth.BearerAuth(apiToken))
+	api := r.Group("/api", auth)
 	{
 		api.GET("/events", func(c *gin.Context) {
 			limit, ok := parseLimit(c, "limit", 100)
