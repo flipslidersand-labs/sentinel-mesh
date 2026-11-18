@@ -59,6 +59,17 @@ func (r *Registry) Register(nodeID, hostname, ip, version, region string) error 
 		existing.LastSeen = now
 		existing.Status = "active"
 		existing.Region = region
+		// Refresh identity attributes (e.g. after HeartbeatOrRegister
+		// re-created the node without them); empty values keep what is stored.
+		if hostname != "" {
+			existing.Hostname = hostname
+		}
+		if ip != "" {
+			existing.IP = ip
+		}
+		if version != "" {
+			existing.Version = version
+		}
 		existing.inactiveSince = time.Time{}
 		return nil
 	}
@@ -82,6 +93,34 @@ func (r *Registry) Heartbeat(nodeID string) {
 		n.LastSeen = time.Now().UTC()
 		n.Status = "active"
 		n.inactiveSince = time.Time{}
+	}
+}
+
+// HeartbeatOrRegister refreshes a known node like Heartbeat. If the node is not
+// in the registry (e.g. evicted while its stream stayed connected, #371), it is
+// re-created from the given identity so it reappears in List/ListByRegion.
+// Hostname and version are unknown here and are left empty; region falls back
+// to DefaultRegion when empty. A later Register fills in hostname, version and IP (non-empty values only) and sets the region.
+func (r *Registry) HeartbeatOrRegister(nodeID, ip, region string) {
+	if nodeID == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now().UTC()
+	if n, ok := r.nodes[nodeID]; ok {
+		n.LastSeen = now
+		n.Status = "active"
+		n.inactiveSince = time.Time{}
+		return
+	}
+	r.nodes[nodeID] = &AgentNode{
+		NodeID:     nodeID,
+		IP:         ip,
+		Region:     normalizeRegion(region),
+		Registered: now,
+		LastSeen:   now,
+		Status:     "active",
 	}
 }
 
