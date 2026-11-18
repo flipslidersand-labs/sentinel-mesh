@@ -23,6 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Deploy:** `scripts/install-collector.sh` now runs the collector as the unprivileged
+  system user `sentinel` with systemd hardening (`NoNewPrivileges`, `ProtectSystem=strict`,
+  `ProtectHome`, `PrivateTmp`, ...; ports below 1024 stay bindable via
+  `CAP_NET_BIND_SERVICE`) instead of root (#365). Migration: re-run the installer; it
+  creates the user and chowns `--data-dir`. TLS cert/key given by `--grpc-tls-*` must be
+  readable by `sentinel` and outside `/home`, otherwise the installer stops with a hint.
+
 - **BREAKING (go-collector):** gRPC authentication is now controlled by the new
   `--grpc-auth=required|disabled` flag (default `required`) instead of being
   implicitly enabled by `SENTINEL_API_TOKEN` (#222). With `required` and no

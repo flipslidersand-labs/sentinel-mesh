@@ -436,7 +436,9 @@ bash scripts/build.sh
 
 #### `scripts/install-collector.sh`
 
-Deploys the collector binary to a remote host and installs as a systemd service.
+Deploys the collector binary to a remote host and installs as a systemd service running as the
+unprivileged `sentinel` user with systemd hardening (the data dir is chowned to it; TLS files
+must be readable by `sentinel` and not under `/home`).
 
 ```bash
 bash scripts/install-collector.sh <SSH_HOST> [OPTIONS]
