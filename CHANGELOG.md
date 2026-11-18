@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING (go-collector, #360):** `SENTINEL_API_TOKEN` must now be at least 32 bytes;
+  the collector refuses to start with a shorter value (e.g. use `openssl rand -hex 32`).
+  Rotate any shorter token before upgrading. This also applies with `--http-auth disabled`: a
+  `SENTINEL_API_TOKEN` that is set but shorter than 32 bytes is a startup error.
+
+### Security
+
+- **go-collector:** REST API now throttles repeated failed bearer-auth attempts per source
+  address (5 failures, refilling 5/min) and answers 429 with `Retry-After` (#360).
+
 ### Added
 
 - **go-collector:** `sentinel-collector token issue|revoke|list` subcommands and a
@@ -32,7 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scripts/install-collector.sh` gained `--grpc-auth`.
 - **BREAKING (go-collector):** REST API authentication is now controlled by the new
   `--http-auth=required|disabled` flag (default `required`), in both normal and
-  `--aggregate` mode (#254). With `required` and `SENTINEL_API_TOKEN` unset the
+  `--aggregate` mode (#254, #278). With `required` and `SENTINEL_API_TOKEN` unset the
   collector now exits at startup instead of serving the REST API unauthenticated
   with only a warning. Migration: set `SENTINEL_API_TOKEN` (and enter it in the
   bundled UI) or pass `--http-auth=disabled` to keep the previous unauthenticated
@@ -40,6 +52,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/metrics` is behind the same bearer auth as `/api/*` (only `/healthz` is open). The
   installer now fails (with the journal tail) if the unit is not active after start, and the
   README/`serve --help` examples were fixed so they start (#279).
+- **go-collector:** anomaly window counts use a binary search over the sorted
+  timestamps instead of a linear scan (#296).
+
+### Fixed
+
+- **go-collector:** `--otel-endpoint` for traces accepts a value with a scheme
+  (e.g. `http://localhost:4318`) (#280).
+- **go-collector:** a corrupted token record no longer breaks `token list`; it is
+  skipped (#283).
+- **Agent:** on collector disconnect the agent logs how many unacknowledged events
+  were discarded (#281); mock-source events dropped by a full channel are counted
+  and warned about (#284); the eBPF source uses the same drop counter (#291).
+- **deploy:** `scripts/deploy-agent.sh` validates `--mock-rate` as an integer in
+  1..1000 (#310).
 
 ### Security
 
@@ -68,6 +94,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The agent IP is derived from the gRPC peer, not a client-supplied field (#178).
 - `deploy-agent.sh` no longer leaks the gRPC bearer token (#174); Slack send
   errors no longer include the webhook URL (#256).
+- REST 500 responses return a fixed `internal error` message instead of the store
+  error text (#297); the aggregator's `RegionStatus.error` carries a fixed
+  classification instead of the raw upstream error (#306); the rate-limit log
+  escapes and caps an unauthenticated client `node_id` (#307).
 
 ## [0.1.0] - 2026-08-17
 
