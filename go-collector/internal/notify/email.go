@@ -18,6 +18,8 @@ type EmailNotifier struct {
 	auth smtp.Auth
 	from string
 	to   []string
+	// allowPlaintext mirrors EmailConfig.AllowPlaintext (issue #362).
+	allowPlaintext bool
 	// sendMail is overridable in tests; defaults to sendMailContext, which
 	// dials with a deadline derived from ctx instead of net/smtp.SendMail's
 	// unbounded dial+send.
@@ -26,11 +28,14 @@ type EmailNotifier struct {
 
 // EmailConfig configures an EmailNotifier.
 type EmailConfig struct {
-	Addr     string   // host:port
-	Username string   // optional; if empty no auth is used
-	Password string   // optional
-	From     string   // sender address
-	To       []string // recipient addresses
+	Addr     string // host:port
+	Username string // optional; if empty no auth is used
+	Password string // optional
+	// AllowPlaintext permits sending to a non-loopback server that does not
+	// advertise STARTTLS (see issue #362). Default false: STARTTLS is required.
+	AllowPlaintext bool
+	From           string   // sender address
+	To             []string // recipient addresses
 }
 
 // NewEmailNotifier builds an EmailNotifier. PLAIN auth is used when a username
@@ -41,11 +46,14 @@ func NewEmailNotifier(cfg EmailConfig) *EmailNotifier {
 		auth = smtp.PlainAuth("", cfg.Username, cfg.Password, smtpHost(cfg.Addr))
 	}
 	return &EmailNotifier{
-		addr:     cfg.Addr,
-		auth:     auth,
-		from:     cfg.From,
-		to:       cfg.To,
-		sendMail: sendMailContext,
+		addr:           cfg.Addr,
+		auth:           auth,
+		from:           cfg.From,
+		allowPlaintext: cfg.AllowPlaintext,
+		to:             cfg.To,
+		sendMail: func(ctx context.Context, addr string, a smtp.Auth, from string, to []string, msg []byte) error {
+			return sendMailWithOptions(ctx, addr, a, from, to, msg, smtpOptions{allowPlaintext: cfg.AllowPlaintext})
+		},
 	}
 }
 
@@ -115,6 +123,8 @@ func sendMailContext(ctx context.Context, addr string, a smtp.Auth, from string,
 type smtpOptions struct {
 	tlsConfig  *tls.Config            // base TLS config for STARTTLS (ServerName is set to the host)
 	isLoopback func(host string) bool // overrides loopback detection
+	// allowPlaintext permits non-loopback servers without STARTTLS (issue #362).
+	allowPlaintext bool
 }
 
 func isLoopbackHost(host string) bool {
@@ -127,7 +137,9 @@ func isLoopbackHost(host string) bool {
 
 // sendMailWithOptions upgrades the connection with STARTTLS whenever the
 // server advertises it, and refuses to send credentials over a plaintext
-// connection to a non-loopback host (fail-closed, see issue #215).
+// connection to a non-loopback host (fail-closed, see issue #215). Without
+// STARTTLS, non-loopback hosts are refused even without credentials unless
+// opts.allowPlaintext is set (issue #362).
 func sendMailWithOptions(ctx context.Context, addr string, a smtp.Auth, from string, to []string, msg []byte, opts smtpOptions) error {
 	var dialer net.Dialer
 	if deadline, ok := ctx.Deadline(); ok {
@@ -174,13 +186,18 @@ func sendMailWithOptions(ctx context.Context, addr string, a smtp.Auth, from str
 		}
 		secured = true
 	}
-	if a != nil && !secured {
+	if !secured {
 		loopback := isLoopbackHost
 		if opts.isLoopback != nil {
 			loopback = opts.isLoopback
 		}
 		if !loopback(host) {
-			return fmt.Errorf("smtp server %s does not support STARTTLS; refusing to send credentials in plaintext", host)
+			if a != nil {
+				return fmt.Errorf("smtp server %s does not support STARTTLS; refusing to send credentials in plaintext", host)
+			}
+			if !opts.allowPlaintext {
+				return fmt.Errorf("smtp server %s does not support STARTTLS; refusing to send alert in plaintext (set %s=true to allow)", host, envSMTPAllowPlaintext)
+			}
 		}
 	}
 

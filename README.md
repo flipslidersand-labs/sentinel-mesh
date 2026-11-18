@@ -1,6 +1,12 @@
 # sentinel-mesh
 
-[![CI](https://github.com/flipslidersand/sentinel-mesh/actions/workflows/ci.yml/badge.svg)](https://github.com/flipslidersand/sentinel-mesh/actions/workflows/ci.yml)
+[![CI](https://github.com/flipslidersand-labs/sentinel-mesh/actions/workflows/ci.yml/badge.svg)](https://github.com/flipslidersand-labs/sentinel-mesh/actions/workflows/ci.yml)
+
+> 日本語の概要は [下の「日本語」節](#日本語) にあります。
+
+**Version:** v0.1.0 (latest tag). Changes since then: [CHANGELOG — Unreleased](CHANGELOG.md#unreleased).
+
+**Docs:** [Specification](docs/spec.md) · [Data model](docs/data-model.md) · [Tech stack](docs/tech-stack.md) · [Implementation guide](docs/implementation-guide.md) · [ADRs](docs/adr/) · [CHANGELOG](CHANGELOG.md)
 
 eBPF-based distributed observability platform for kernel-level system monitoring.
 
@@ -28,16 +34,17 @@ A **Rust Agent** collects kernel events via eBPF and streams them over gRPC to a
 ## Build
 
 ```bash
+# Run from the repository root.
+
 # Rust Agent (mock mode — no kernel privileges required)
-cd rust-agent/agent
-cargo build --release
+# The crate is a workspace member, so the binary lands in rust-agent/target/release/sentinel-agent
+(cd rust-agent && cargo build --release -p sentinel-agent)
 
-# Rust Agent (real eBPF mode — requires CAP_BPF)
-cargo build --release --features ebpf
+# Rust Agent (real eBPF mode — requires CAP_BPF; see rust-agent/agent/Cargo.toml [features] for prerequisites)
+(cd rust-agent && cargo build --release -p sentinel-agent --features ebpf)
 
-# Go Collector
-cd go-collector
-go build ./cmd/collector
+# Go Collector (binary: go-collector/collector)
+(cd go-collector && go build ./cmd/collector)
 ```
 
 ## Quick Start
@@ -48,9 +55,8 @@ go build ./cmd/collector
 cd go-collector
 ./collector serve --grpc-addr :50051 --http-addr :8081 --data-dir /tmp/sentinel-data --rules ../rules.yaml --grpc-auth disabled --http-auth disabled
 
-# Terminal 2: Start the Rust Agent (mock mode)
-cd rust-agent/agent
-./sentinel-agent --mock --mock-rate 5
+# Terminal 2: Start the Rust Agent (mock mode), from the repository root
+./rust-agent/target/release/sentinel-agent --mock --mock-rate 5
 # → streams 5 mock kernel events/sec to localhost:50051
 
 # Query the REST API
@@ -299,6 +305,7 @@ Triggered alerts (from both the rules engine and the anomaly detector) can be fo
 | `SENTINEL_SMTP_TO`             | Email   | Comma-separated recipients (required for email).                           |
 | `SENTINEL_SMTP_USER`           | Email   | SMTP username. Omit for unauthenticated relays.                            |
 | `SENTINEL_SMTP_PASSWORD`       | Email   | SMTP password (PLAIN auth, used only when user is set).                    |
+| `SENTINEL_SMTP_ALLOW_PLAINTEXT`  | Email   | `true` allows non-loopback SMTP servers without STARTTLS (default: refused). Credentials are still never sent without STARTTLS to non-loopback hosts. |
 | `SENTINEL_NOTIFY_MIN_SEVERITY` | Both    | Minimum severity to notify (default `warning`).                            |
 | `SENTINEL_NOTIFY_COOLDOWN`     | Both    | Min gap between notifications per (rule, node); Go duration, default `5m`. |
 
@@ -346,6 +353,7 @@ sentinel-mesh/
 ├── test-integration.sh      # Integration test script
 ├── CHANGELOG.md
 ├── AGENTS.md
+├── CLAUDE.md                # Build/test commands and pitfalls for coding agents
 ├── LICENSE
 ├── .github/                 # CI workflow, dependabot, PR template
 ├── errors/                  # Troubleshooting notes (rust/, tooling/)
@@ -487,5 +495,49 @@ bash scripts/deploy-agent.sh --collector 192.0.2.10:50051 <host>
 | 9     | Multi-node deploy scripts + systemd service    | ✅ Done |
 
 ## License
+
+MIT
+
+---
+
+## 日本語
+
+### 概要
+
+sentinel-mesh は、カーネルレベルのイベントを eBPF で集める分散観測基盤です。
+**Rust Agent** が eBPF(またはモック)でカーネルイベント(exec / tcp / file)を収集して gRPC で送り、
+**Go Collector** が BadgerDB に保存して REST API と Web UI(React)を提供します。
+ハートビートが途絶えた Agent は自動で inactive になります。アラートルール(`rules.yaml`)、
+スライディング窓による異常検知、Slack / メール通知、OpenTelemetry のメトリクス・トレース、
+複数リージョンの集約(`--aggregate`)に対応しています。
+
+### 構成
+
+| 要素 | 役割 |
+| --- | --- |
+| `rust-agent/` | Rust 製 Agent(tokio + tonic)。`agent-ebpf/` は aya の eBPF プログラム |
+| `go-collector/` | Go 製 Collector(cobra CLI: `serve` / `token`)。gRPC 受信・保存・REST API・アラート・異常検知・通知 |
+| `web/` | Web UI(React + TypeScript + Vite) |
+| `proto/` | gRPC の定義(`sentinel.proto`) |
+| `scripts/` | ビルド・Collector の導入・Agent の配備・デモ用スクリプト |
+
+### セットアップと動かし方
+
+必要なもの: Rust 1.82+、Go 1.26+。実際の eBPF モードには `CAP_BPF` が要ります(モックモードは不要)。
+ビルドとローカルでの起動手順は、上の英語の [Build](#build) と [Quick Start](#quick-start) を
+そのまま使えます(リポジトリのルートで実行)。
+
+注意: Collector は既定で gRPC・REST とも認証必須(`--grpc-auth=required` / `--http-auth=required`)です。
+ローカルのデモでは `--grpc-auth disabled --http-auth disabled` を付けます。本番では Agent ごとに
+`sentinel-collector token issue <node_id>` でトークンを発行し、REST には `SENTINEL_API_TOKEN` を設定します
+(詳細は英語の [gRPC TLS & Authentication](#grpc-tls--authentication))。
+
+### ドキュメント
+
+- 仕様: [docs/spec.md](docs/spec.md) / データモデル: [docs/data-model.md](docs/data-model.md)
+- 技術スタック: [docs/tech-stack.md](docs/tech-stack.md) / 実装ガイド: [docs/implementation-guide.md](docs/implementation-guide.md)
+- 設計判断の記録: [docs/adr/](docs/adr/) / 変更履歴: [CHANGELOG.md](CHANGELOG.md)(現在の版は v0.1.0、以降の変更は Unreleased)
+
+### ライセンス
 
 MIT
