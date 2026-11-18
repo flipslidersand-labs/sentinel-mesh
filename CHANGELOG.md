@@ -38,6 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **go-collector:** `RuleSet.Validate` now rejects `gt`/`lt` conditions whose `value` is not
+  numeric (e.g. `"10k"`), instead of loading a rule that can never fire (#375).
+||||||| f4e74e3
 - **Deploy:** `scripts/install-collector.sh` now runs the collector as the unprivileged
   system user `sentinel` with systemd hardening (`NoNewPrivileges`, `ProtectSystem=strict`,
   `ProtectHome`, `PrivateTmp`, ...; ports below 1024 stay bindable via
