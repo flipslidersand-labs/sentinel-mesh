@@ -4,7 +4,12 @@
 // out with 401s (#120).
 const STORAGE_KEY = "sentinel-mesh:api-token";
 
+// Fallback used only when localStorage rejects a write. `null` means "defer to
+// localStorage"; a string (even "") overrides whatever storage holds.
+let memoryToken: string | null = null;
+
 export function getToken(): string {
+  if (memoryToken !== null) return memoryToken;
   try {
     return localStorage.getItem(STORAGE_KEY) ?? "";
   } catch {
@@ -14,7 +19,9 @@ export function getToken(): string {
   }
 }
 
-export function setToken(token: string): void {
+/** Stores the token. Returns true when persisted to localStorage, false when
+ * storage failed and the token is only kept in memory for this tab. */
+export function setToken(token: string): boolean {
   const trimmed = token.trim();
   try {
     if (trimmed) {
@@ -22,9 +29,11 @@ export function setToken(token: string): void {
     } else {
       localStorage.removeItem(STORAGE_KEY);
     }
+    memoryToken = null;
+    return true;
   } catch {
-    // Persistence best-effort only; the token still works for the current
-    // page session via the in-memory value callers pass around.
+    memoryToken = trimmed;
+    return false;
   }
 }
 

@@ -38,6 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Web UI:** a failed localStorage write now keeps the API token in memory for the
+  current tab and the widget says "This tab only" instead of "Saved" (#377).
+||||||| f4e74e3
 - **go-collector:** `RuleSet.Validate` now rejects `gt`/`lt` conditions whose `value` is not
   numeric (e.g. `"10k"`), instead of loading a rule that can never fire (#375).
 ||||||| f4e74e3
