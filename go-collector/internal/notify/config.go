@@ -10,14 +10,15 @@ import (
 
 // Environment variables consumed by DispatcherFromEnv.
 const (
-	envSlackWebhook = "SENTINEL_SLACK_WEBHOOK_URL"
-	envSMTPAddr     = "SENTINEL_SMTP_ADDR" // host:port
-	envSMTPUser     = "SENTINEL_SMTP_USER"
-	envSMTPPassword = "SENTINEL_SMTP_PASSWORD" //nolint:gosec // env var name, not a credential
-	envSMTPFrom     = "SENTINEL_SMTP_FROM"
-	envSMTPTo       = "SENTINEL_SMTP_TO" // comma-separated
-	envCooldown     = "SENTINEL_NOTIFY_COOLDOWN"
-	envMinSeverity  = "SENTINEL_NOTIFY_MIN_SEVERITY"
+	envSlackWebhook       = "SENTINEL_SLACK_WEBHOOK_URL"
+	envSMTPAddr           = "SENTINEL_SMTP_ADDR" // host:port
+	envSMTPUser           = "SENTINEL_SMTP_USER"
+	envSMTPPassword       = "SENTINEL_SMTP_PASSWORD"        //nolint:gosec // env var name, not a credential
+	envSMTPAllowPlaintext = "SENTINEL_SMTP_ALLOW_PLAINTEXT" // "true" permits non-loopback SMTP without STARTTLS
+	envSMTPFrom           = "SENTINEL_SMTP_FROM"
+	envSMTPTo             = "SENTINEL_SMTP_TO" // comma-separated
+	envCooldown           = "SENTINEL_NOTIFY_COOLDOWN"
+	envMinSeverity        = "SENTINEL_NOTIFY_MIN_SEVERITY"
 )
 
 const defaultCooldown = 5 * time.Minute
@@ -38,11 +39,12 @@ func DispatcherFromEnv(logger *zap.Logger) *Dispatcher {
 		from := strings.TrimSpace(os.Getenv(envSMTPFrom))
 		if from != "" && len(to) > 0 {
 			notifiers = append(notifiers, NewEmailNotifier(EmailConfig{
-				Addr:     addr,
-				Username: strings.TrimSpace(os.Getenv(envSMTPUser)),
-				Password: os.Getenv(envSMTPPassword),
-				From:     from,
-				To:       to,
+				Addr:           addr,
+				Username:       strings.TrimSpace(os.Getenv(envSMTPUser)),
+				Password:       os.Getenv(envSMTPPassword),
+				From:           from,
+				AllowPlaintext: strings.EqualFold(strings.TrimSpace(os.Getenv(envSMTPAllowPlaintext)), "true"),
+				To:             to,
 			}))
 		} else if logger != nil {
 			logger.Warn("SMTP notifier skipped: " + envSMTPFrom + " and " + envSMTPTo + " are required")

@@ -42,7 +42,22 @@ const (
 	// maxConcurrentStreams/maxRecvMsgSize bound server-wide resource use
 	// against a flood of connections or oversized messages (#75).
 	maxConcurrentStreams uint32 = 256
-	maxRecvMsgSize       int    = 4 * 1024 * 1024 // 4MB
+	//
+	// maxRecvMsgSize is derived from the validated field limits (#361), not
+	// guessed. Every string field is capped at maxRegisterFieldLength (256
+	// bytes) and costs at most 259 bytes on the wire (1 tag + 2 length
+	// varint + 256 data). The largest legitimate messages are:
+	//   - KernelEvent/TCP: node_id, event_id + comm, src_ip, dst_ip,
+	//     direction = 6 strings = 1554 B, plus timestamp (11), type (2),
+	//     payload tag/len (3), pid/ports (~16)  => about 1.6 KB
+	//   - KernelEvent/EXEC, FILE: 5 strings = 1295 B + numerics => about 1.4 KB
+	//   - RegisterRequest: 5 strings = 1295 B
+	// 8 KB leaves roughly 5x headroom for new fields while being 512x
+	// smaller than the old 4 MB. The limit is checked on the wire size,
+	// before decoding and before the per-stream rate limiter, so an
+	// oversized frame is rejected with ResourceExhausted without being
+	// decoded.
+	maxRecvMsgSize int = 8 * 1024
 
 	// grpcShutdownGracePeriod bounds how long Serve's shutdown goroutine
 	// waits for srv.GracefulStop() before falling back to the forceful
@@ -116,6 +131,20 @@ type server struct {
 	nodeLimiters  nodeLimiters     // per-authenticated-node event rate limit shared across streams (#254)
 	defaultRegion string           // used when an agent registers without a region
 	log           *zap.Logger
+}
+
+// limitServerOptions returns the resource-limit server options. A single
+// agent could otherwise open unbounded concurrent StreamEvents connections
+// or send oversized messages, exhausting collector resources (#75, #361).
+func limitServerOptions() []grpc.ServerOption {
+	return []grpc.ServerOption{
+		grpc.MaxConcurrentStreams(maxConcurrentStreams),
+		grpc.MaxRecvMsgSize(maxRecvMsgSize),
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             10 * time.Second,
+			PermitWithoutStream: true,
+		}),
+	}
 }
 
 // maxRegisterFieldLength bounds free-form string fields accepted from
@@ -401,7 +430,7 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 			continue
 		}
 
-		s.reg.Heartbeat(event.NodeId)
+		s.reg.HeartbeatOrRegister(event.NodeId, peerIP(stream.Context()), s.defaultRegion)
 
 		storedEvent := store.Event{
 			EventID:   event.EventId,
@@ -664,16 +693,8 @@ func Serve(ctx context.Context, cfg Config, deps Deps) error {
 	opts = append(opts,
 		grpc.ChainUnaryInterceptor(unaryAuthInterceptor(st, authEnabled, authLim)),
 		grpc.ChainStreamInterceptor(streamAuthInterceptor(st, authEnabled, authLim)),
-		// A single agent could otherwise open unbounded concurrent
-		// StreamEvents connections or send oversized messages, exhausting
-		// collector resources (#75).
-		grpc.MaxConcurrentStreams(maxConcurrentStreams),
-		grpc.MaxRecvMsgSize(maxRecvMsgSize),
-		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
-			MinTime:             10 * time.Second,
-			PermitWithoutStream: true,
-		}),
 	)
+	opts = append(opts, limitServerOptions()...)
 	srv := grpc.NewServer(opts...)
 
 	s := &server{st: st, reg: deps.Registry, engine: deps.Engine, detector: deps.Detector, notifier: deps.Notifier, metrics: metrics, tracer: deps.Tracer, defaultRegion: cfg.DefaultRegion, log: log, authFail: authLim}

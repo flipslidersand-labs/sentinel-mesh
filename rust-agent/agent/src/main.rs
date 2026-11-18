@@ -24,8 +24,8 @@ struct Args {
     #[arg(long, default_value_t = false)]
     mock: bool,
 
-    /// Events per second in mock mode
-    #[arg(long, default_value_t = 2)]
+    /// Events per second in mock mode (1..=1000)
+    #[arg(long, default_value_t = 2, value_parser = clap::value_parser!(u64).range(1..=1000))]
     mock_rate: u64,
 
     /// Region this node belongs to (falls back to $SENTINEL_REGION, then empty)
@@ -99,4 +99,27 @@ async fn main() -> Result<()> {
         rx,
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_rate(v: &str) -> Result<Args, clap::Error> {
+        Args::try_parse_from(["sentinel-agent", "--mock-rate", v])
+    }
+
+    #[test]
+    fn mock_rate_rejects_out_of_range() {
+        // 1001+ made 1000/rate == 0 and tokio::time::interval panicked (#271).
+        for v in ["0", "1001", "5000", "-1"] {
+            assert!(parse_rate(v).is_err(), "--mock-rate {v} must be rejected");
+        }
+    }
+
+    #[test]
+    fn mock_rate_accepts_bounds() {
+        assert_eq!(parse_rate("1").unwrap().mock_rate, 1);
+        assert_eq!(parse_rate("1000").unwrap().mock_rate, 1000);
+    }
 }

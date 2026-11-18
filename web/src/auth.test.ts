@@ -74,4 +74,30 @@ describe("auth token storage", () => {
     expect(getToken()).toBe("");
     expect(() => setToken("x")).not.toThrow();
   });
+
+  it("falls back to an in-memory token when localStorage rejects writes", () => {
+    const token = "x".repeat(32);
+    const failing = {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error("QuotaExceededError");
+      },
+      removeItem: () => {
+        throw new Error("denied");
+      },
+    } as unknown as Storage;
+    Object.defineProperty(globalThis, "localStorage", {
+      value: failing,
+      configurable: true,
+    });
+    expect(setToken(token)).toBe(false);
+    expect(getToken()).toBe(token);
+    expect(authHeaders()).toEqual({ Authorization: `Bearer ${token}` });
+    expect(setToken("")).toBe(false);
+    expect(getToken()).toBe("");
+    // Recover: a successful write returns to localStorage as the source of truth.
+    installFakeLocalStorage();
+    expect(setToken(token)).toBe(true);
+    expect(getToken()).toBe(token);
+  });
 });
