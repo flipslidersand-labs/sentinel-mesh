@@ -318,3 +318,29 @@ func TestList_CancelledContextReturnsNilWithoutRacing(t *testing.T) {
 		}
 	}
 }
+
+// TestClose_WaitsForAbandonedViewGoroutines is the regression test for the
+// "panic: DB Closed" CI failure of #351: List* returns on a cancelled ctx while
+// its goroutine is still starting, and Close must not close the DB under it.
+func TestClose_WaitsForAbandonedViewGoroutines(t *testing.T) {
+	st, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	bg := context.Background()
+	for i := 0; i < 50; i++ {
+		id := strconv.Itoa(i)
+		if err := st.SaveEvent(bg, Event{EventID: id, NodeID: "n"}); err != nil {
+			t.Fatalf("SaveEvent: %v", err)
+		}
+	}
+	ctx, cancel := context.WithCancel(bg)
+	cancel()
+	for i := 0; i < 200; i++ {
+		st.ListEvents(ctx, "", 100) //nolint:errcheck
+		st.ListAlerts(ctx, "", 100) //nolint:errcheck
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}

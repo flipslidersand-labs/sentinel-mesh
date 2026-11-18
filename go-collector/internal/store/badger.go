@@ -50,6 +50,11 @@ type Store struct {
 	db        *badger.DB
 	retention time.Duration
 
+	// inflight counts runWithContext goroutines still touching db, so Close
+	// can wait for them instead of closing the DB underneath a running View
+	// ("DB Closed" panic, #351).
+	inflight sync.WaitGroup
+
 	// countersMu/counters back Stats(): an in-memory per-type count,
 	// incremented in SaveEvent and seeded once at startup by loadCounters,
 	// so Stats() no longer has to scan every event on every call (#77).
@@ -170,6 +175,19 @@ func runWithContext(ctx context.Context, fn func() error) error {
 	}
 }
 
+// run is runWithContext, tracked so Close waits for the goroutine fn runs on.
+// fn must not start a db transaction once ctx is done.
+func (s *Store) run(ctx context.Context, fn func() error) error {
+	s.inflight.Add(1)
+	return runWithContext(ctx, func() error {
+		defer s.inflight.Done()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return fn()
+	})
+}
+
 // timeKeyLayout is RFC3339 with a fixed 9-digit fraction. RFC3339Nano trims
 // trailing zeros, so "…:00Z" sorted after "…:00.5Z" (byte 'Z' > '.') and
 // events within the same second came back in the wrong order, letting a
@@ -199,7 +217,7 @@ func (s *Store) SaveEvent(ctx context.Context, e Event) error {
 	// display; it's just no longer trusted for ordering/storage identity.
 	received := time.Now().UTC()
 	key := []byte(fmt.Sprintf("event:%s:%s", timeKey(received), e.EventID))
-	if err := runWithContext(ctx, func() error {
+	if err := s.run(ctx, func() error {
 		return s.db.Update(func(tx *badger.Txn) error {
 			return tx.SetEntry(badger.NewEntry(key, val).WithTTL(s.retention))
 		})
@@ -220,7 +238,7 @@ func (s *Store) ListEvents(ctx context.Context, node string, limit int) ([]Event
 	// Non-nil so callers that JSON-marshal the result (the /api/events
 	// handler) return "[]" rather than "null" when there are no matches.
 	events := make([]Event, 0)
-	err := runWithContext(ctx, func() error {
+	err := s.run(ctx, func() error {
 		return s.db.View(func(tx *badger.Txn) error {
 			opts := badger.DefaultIteratorOptions
 			opts.Reverse = true
@@ -236,6 +254,9 @@ func (s *Store) ListEvents(ctx context.Context, node string, limit int) ([]Event
 				// whole "event:" prefix (#153).
 				if node != "" && scanned >= maxNodeFilterScan {
 					break
+				}
+				if err := ctx.Err(); err != nil {
+					return err
 				}
 				scanned++
 				var e Event
@@ -291,7 +312,7 @@ func (s *Store) SaveAlert(ctx context.Context, a Alert) error {
 		return err
 	}
 	key := []byte(fmt.Sprintf("alert:%s:%s", timeKey(a.Timestamp), a.AlertID))
-	return runWithContext(ctx, func() error {
+	return s.run(ctx, func() error {
 		return s.db.Update(func(tx *badger.Txn) error {
 			return tx.SetEntry(badger.NewEntry(key, val).WithTTL(s.retention))
 		})
@@ -306,7 +327,7 @@ func (s *Store) ListAlerts(ctx context.Context, node string, limit int) ([]Alert
 	// Non-nil so callers that JSON-marshal the result (the /api/alerts
 	// handler) return "[]" rather than "null" when there are no matches.
 	alerts := make([]Alert, 0)
-	err := runWithContext(ctx, func() error {
+	err := s.run(ctx, func() error {
 		return s.db.View(func(tx *badger.Txn) error {
 			opts := badger.DefaultIteratorOptions
 			opts.Reverse = true
@@ -322,6 +343,9 @@ func (s *Store) ListAlerts(ctx context.Context, node string, limit int) ([]Alert
 				// walk of the "alert:" prefix (#153).
 				if node != "" && scanned >= maxNodeFilterScan {
 					break
+				}
+				if err := ctx.Err(); err != nil {
+					return err
 				}
 				scanned++
 				var a Alert
@@ -350,5 +374,6 @@ func (s *Store) ListAlerts(ctx context.Context, node string, limit int) ([]Alert
 func (s *Store) Close() error {
 	close(s.gcStop)
 	<-s.gcDone
+	s.inflight.Wait()
 	return s.db.Close()
 }
