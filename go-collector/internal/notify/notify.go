@@ -40,6 +40,12 @@ var severityRank = map[string]int{
 	"error":    2,
 }
 
+// knownSeverity reports whether s is a recognized severity name.
+func knownSeverity(s string) bool {
+	_, ok := severityRank[strings.ToLower(strings.TrimSpace(s))]
+	return ok
+}
+
 func rankOf(severity string) int {
 	return severityRank[strings.ToLower(strings.TrimSpace(severity))]
 }

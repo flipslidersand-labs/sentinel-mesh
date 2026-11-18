@@ -65,6 +65,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The agent IP is derived from the gRPC peer, not a client-supplied field (#178).
 - `deploy-agent.sh` no longer leaks the gRPC bearer token (#174); Slack send
   errors no longer include the webhook URL (#256).
+- Notifications fail closed on invalid config: a negative `SENTINEL_NOTIFY_COOLDOWN` or an
+  unknown `SENTINEL_NOTIFY_MIN_SEVERITY` now disables notifications with an error log
+  instead of notifying on every alert (#379).
 
 ## [0.1.0] - 2026-08-17
 

@@ -78,3 +78,38 @@ func TestDispatcherFromEnv_InvalidCooldownFallsBack(t *testing.T) {
 		t.Errorf("invalid cooldown should fall back to default, got %v", d.cooldown)
 	}
 }
+
+// A negative cooldown or an unknown min severity is a misconfiguration; the
+// dispatcher must fail closed (no notifiers) rather than notify everything.
+func TestDispatcherFromEnv_NegativeCooldownFailsClosed(t *testing.T) {
+	t.Setenv(envSlackWebhook, "https://example.com/hook")
+	t.Setenv(envCooldown, "-5m")
+	if DispatcherFromEnv(nil).Enabled() {
+		t.Error("negative cooldown must disable notifications")
+	}
+}
+
+func TestDispatcherFromEnv_ZeroCooldownAllowed(t *testing.T) {
+	t.Setenv(envSlackWebhook, "https://example.com/hook")
+	t.Setenv(envCooldown, "0s")
+	d := DispatcherFromEnv(nil)
+	if !d.Enabled() || d.cooldown != 0 {
+		t.Errorf("zero cooldown should be accepted, enabled=%v cooldown=%v", d.Enabled(), d.cooldown)
+	}
+}
+
+func TestDispatcherFromEnv_UnknownMinSeverityFailsClosed(t *testing.T) {
+	t.Setenv(envSlackWebhook, "https://example.com/hook")
+	t.Setenv(envMinSeverity, "critcal")
+	if DispatcherFromEnv(nil).Enabled() {
+		t.Error("unknown min severity must disable notifications")
+	}
+}
+
+func TestDispatcherFromEnv_KnownMinSeverityCaseInsensitive(t *testing.T) {
+	t.Setenv(envSlackWebhook, "https://example.com/hook")
+	t.Setenv(envMinSeverity, "Critical")
+	if !DispatcherFromEnv(nil).Enabled() {
+		t.Error("known severity should be accepted")
+	}
+}

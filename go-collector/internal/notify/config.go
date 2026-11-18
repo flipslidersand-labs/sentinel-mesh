@@ -52,18 +52,36 @@ func DispatcherFromEnv(logger *zap.Logger) *Dispatcher {
 	cooldown := defaultCooldown
 	if v := strings.TrimSpace(os.Getenv(envCooldown)); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
+			if d < 0 {
+				return disabledDispatcher(logger, envCooldown+" must be >= 0 (0 disables the cooldown)", v)
+			}
 			cooldown = d
 		} else if logger != nil {
 			logger.Warn("invalid "+envCooldown+", using default", zap.String("value", v))
 		}
 	}
 
+	minSeverity := strings.TrimSpace(os.Getenv(envMinSeverity))
+	if minSeverity != "" && !knownSeverity(minSeverity) {
+		return disabledDispatcher(logger, "unknown "+envMinSeverity, minSeverity)
+	}
+
 	return NewDispatcher(Options{
 		Notifiers:   notifiers,
 		Cooldown:    cooldown,
-		MinSeverity: strings.TrimSpace(os.Getenv(envMinSeverity)),
+		MinSeverity: minSeverity,
 		Logger:      logger,
 	})
+}
+
+// disabledDispatcher fails closed on invalid notification config: it returns a
+// Dispatcher with no notifiers (Enabled() == false) and logs an error, rather
+// than notifying with a misinterpreted setting.
+func disabledDispatcher(logger *zap.Logger, msg, value string) *Dispatcher {
+	if logger != nil {
+		logger.Error("notifications disabled: "+msg, zap.String("value", value))
+	}
+	return NewDispatcher(Options{Logger: logger})
 }
 
 func splitAndTrim(csv string) []string {
