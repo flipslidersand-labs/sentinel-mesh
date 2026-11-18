@@ -61,3 +61,34 @@ func TestNewTracesProvider_Empty(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// シグナルでキャンセル済みの ctx を渡しても Close が未送信 span を flush する (#376)。
+func TestTracesProvider_CloseFlushesWithCanceledCtx(t *testing.T) {
+	got := make(chan struct{}, 8)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case got <- struct{}{}:
+		default:
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	tp, err := NewTracesProvider(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("NewTracesProvider: %v", err)
+	}
+	_, span := tp.Tracer().Start(context.Background(), "pending-span")
+	span.End() // バッチ内に滞留(5s の定期 flush より前)
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := tp.Close(canceled); err != nil {
+		t.Fatalf("Close with canceled ctx: %v", err)
+	}
+	select {
+	case <-got:
+	default:
+		t.Fatal("pending span was not flushed on Close with canceled ctx")
+	}
+}
