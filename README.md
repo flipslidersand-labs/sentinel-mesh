@@ -244,7 +244,9 @@ Unauthenticated gRPC requires the explicit `--grpc-auth=disabled`.
 # token issue/revoke/list require the collector to be stopped first — BadgerDB
 # takes an exclusive lock on --data-dir, so they can't run alongside `serve`.
 export SENTINEL_API_TOKEN="$(openssl rand -hex 32)"  # required by --http-auth=required (default); gates the REST API only, NOT gRPC
-sentinel-collector token issue web-01 --data-dir /var/lib/sentinel-mesh
+# Run token commands as the service user (`sudo -u sentinel`): as root they would create
+# root-owned files in --data-dir that the unprivileged `sentinel` service cannot open.
+sudo -u sentinel sentinel-collector token issue web-01 --data-dir /var/lib/sentinel
 # prints the token once — copy it now, it's never shown again
 sentinel-collector serve --grpc-auth=required --grpc-tls-cert cert.pem --grpc-tls-key key.pem
 
@@ -257,7 +259,7 @@ Or deploy via `scripts/deploy-agent.sh`, which wires this up for you (see its `-
 full per-agent-token workflow):
 
 ```bash
-TOKEN=$(sentinel-collector token issue web-01 --data-dir /var/lib/sentinel-mesh)
+TOKEN=$(sudo -u sentinel sentinel-collector token issue web-01 --data-dir /var/lib/sentinel)
 ./scripts/deploy-agent.sh --tls --node-id web-01 --grpc-token "$TOKEN" \
   --collector collector.internal:50051 web-01-host
 ```
@@ -265,8 +267,8 @@ TOKEN=$(sentinel-collector token issue web-01 --data-dir /var/lib/sentinel-mesh)
 To revoke a compromised or decommissioned agent's access:
 
 ```bash
-sentinel-collector token revoke web-01 --data-dir /var/lib/sentinel-mesh
-sentinel-collector token list --data-dir /var/lib/sentinel-mesh   # confirm status
+sudo -u sentinel sentinel-collector token revoke web-01 --data-dir /var/lib/sentinel
+sudo -u sentinel sentinel-collector token list --data-dir /var/lib/sentinel   # confirm status
 ```
 
 ## Heartbeat Tracking
@@ -305,6 +307,7 @@ Triggered alerts (from both the rules engine and the anomaly detector) can be fo
 | `SENTINEL_SMTP_TO`             | Email   | Comma-separated recipients (required for email).                           |
 | `SENTINEL_SMTP_USER`           | Email   | SMTP username. Omit for unauthenticated relays.                            |
 | `SENTINEL_SMTP_PASSWORD`       | Email   | SMTP password (PLAIN auth, used only when user is set).                    |
+| `SENTINEL_SMTP_ALLOW_PLAINTEXT`  | Email   | `true` allows non-loopback SMTP servers without STARTTLS (default: refused). Credentials are still never sent without STARTTLS to non-loopback hosts. |
 | `SENTINEL_NOTIFY_MIN_SEVERITY` | Both    | Minimum severity to notify (default `warning`).                            |
 | `SENTINEL_NOTIFY_COOLDOWN`     | Both    | Min gap between notifications per (rule, node); Go duration, default `5m`. |
 
@@ -443,7 +446,9 @@ bash scripts/build.sh
 
 #### `scripts/install-collector.sh`
 
-Deploys the collector binary to a remote host and installs as a systemd service.
+Deploys the collector binary to a remote host and installs as a systemd service running as the
+unprivileged `sentinel` user with systemd hardening (the data dir is chowned to it; TLS files
+must be readable by `sentinel` and not under `/home`).
 
 ```bash
 bash scripts/install-collector.sh <SSH_HOST> [OPTIONS]

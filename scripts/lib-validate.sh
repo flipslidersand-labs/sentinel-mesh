@@ -18,6 +18,14 @@ validate_ident() {
   [[ "$value" =~ ^[A-Za-z0-9._-]+$ ]] || die "$name must match ^[A-Za-z0-9._-]+\$: '$value'"
 }
 
+# Secret values (e.g. --grpc-token): same charset as validate_ident, but the
+# error names only the field and never echoes the value, so a rejected token
+# does not land in CI logs or terminal history (#363, follow-up to #174).
+validate_secret() {
+  local name="$1" value="$2"
+  [[ "$value" =~ ^[A-Za-z0-9._-]+$ ]] || die "$name must match ^[A-Za-z0-9._-]+\$ (value not shown)"
+}
+
 # SSH/SCP target host (or SSH config alias). Rejects a leading '-', which
 # ssh/scp would otherwise interpret as an option (e.g. `-oProxyCommand=...`),
 # letting an attacker-controlled hostname run arbitrary local commands (#66).
@@ -25,6 +33,17 @@ validate_host() {
   local name="$1" value="$2"
   [[ "$value" != -* ]] || die "$name must not start with '-': '$value'"
   [[ "$value" =~ ^[A-Za-z0-9._@-]+$ ]] || die "$name must match ^[A-Za-z0-9._@-]+\$: '$value'"
+}
+
+# IPv4 dotted quad, each octet 0..255 (no leading zeros beyond a single "0").
+# Used for addresses interpolated into a systemd unit (e.g. --upstreams) (#367).
+validate_ip() {
+  local name="$1" value="$2" re='^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})$'
+  local i
+  [[ "$value" =~ $re ]] || die "$name must be an IPv4 address: '$value'"
+  for i in 1 2 3 4; do
+    (( BASH_REMATCH[i] <= 255 )) || die "$name must be an IPv4 address: '$value'"
+  done
 }
 
 # host:port pair with a required host (e.g. the collector address agents dial).

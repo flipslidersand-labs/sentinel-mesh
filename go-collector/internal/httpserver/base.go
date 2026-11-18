@@ -10,8 +10,21 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// securityHeaders sets defensive response headers on every response (UI and
+// API). The bundled Vite build has no inline script or style, so a strict
+// same-origin CSP is sufficient.
+func securityHeaders() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		h := c.Writer.Header()
+		h.Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "no-referrer")
+		c.Next()
+	}
+}
+
 // NewBaseRouter builds a gin engine with the common scaffolding: Recovery,
-// default-deny CORS (only corsOrigins are allowed; empty means no CORS
+// security headers, default-deny CORS (only corsOrigins are allowed; empty means no CORS
 // middleware), the static SPA (/assets, /, /favicon.svg), a NoRoute handler
 // (JSON 404 under /api/, SPA index.html otherwise) and /healthz returning
 // healthz as JSON. Callers register their own routes (and any auth) on the
@@ -20,6 +33,7 @@ func NewBaseRouter(staticDir string, corsOrigins []string, healthz gin.H) *gin.E
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
+	r.Use(securityHeaders())
 
 	// CORS: default deny. Only allow explicitly configured origins. Same-origin
 	// requests (the bundled UI) carry no Origin header and are unaffected.
