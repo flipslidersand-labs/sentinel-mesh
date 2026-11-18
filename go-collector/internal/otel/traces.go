@@ -4,12 +4,16 @@ import (
 	"context"
 	"net/url"
 	"strings"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/sdk/trace"
 	tracesdk "go.opentelemetry.io/otel/trace"
 )
+
+// closeTimeout bounds how long Close waits to flush pending spans (#376).
+const closeTimeout = 5 * time.Second
 
 // TracesProvider holds OTel traces state.
 type TracesProvider struct {
@@ -65,7 +69,11 @@ func (tp *TracesProvider) Tracer() tracesdk.Tracer {
 	return tp.tracer
 }
 
-// Close shuts down the trace provider.
+// Close shuts down the trace provider, flushing pending spans. Callers often
+// invoke it from a defer after SIGINT/SIGTERM already canceled their ctx, so
+// cancellation is detached and replaced by closeTimeout (#376).
 func (tp *TracesProvider) Close(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), closeTimeout)
+	defer cancel()
 	return tp.closer(ctx)
 }

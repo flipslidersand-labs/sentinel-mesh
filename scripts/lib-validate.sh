@@ -35,6 +35,17 @@ validate_host() {
   [[ "$value" =~ ^[A-Za-z0-9._@-]+$ ]] || die "$name must match ^[A-Za-z0-9._@-]+\$: '$value'"
 }
 
+# IPv4 dotted quad, each octet 0..255 (no leading zeros beyond a single "0").
+# Used for addresses interpolated into a systemd unit (e.g. --upstreams) (#367).
+validate_ip() {
+  local name="$1" value="$2" re='^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})$'
+  local i
+  [[ "$value" =~ $re ]] || die "$name must be an IPv4 address: '$value'"
+  for i in 1 2 3 4; do
+    (( BASH_REMATCH[i] <= 255 )) || die "$name must be an IPv4 address: '$value'"
+  done
+}
+
 # host:port pair with a required host (e.g. the collector address agents dial).
 validate_hostport() {
   local name="$1" value="$2"

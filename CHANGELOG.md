@@ -38,6 +38,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Web UI:** a failed localStorage write now keeps the API token in memory for the
+  current tab and the widget says "This tab only" instead of "Saved" (#377).
+||||||| f4e74e3
+- **go-collector:** `RuleSet.Validate` now rejects `gt`/`lt` conditions whose `value` is not
+  numeric (e.g. `"10k"`), instead of loading a rule that can never fire (#375).
+||||||| f4e74e3
+- **Deploy:** `scripts/install-collector.sh` now runs the collector as the unprivileged
+  system user `sentinel` with systemd hardening (`NoNewPrivileges`, `ProtectSystem=strict`,
+  `ProtectHome`, `PrivateTmp`, ...; ports below 1024 stay bindable via
+  `CAP_NET_BIND_SERVICE`) instead of root (#365). Migration: re-run the installer; it
+  creates the user and chowns `--data-dir`. TLS cert/key given by `--grpc-tls-*` must be
+  readable by `sentinel` and outside `/home`, otherwise the installer stops with a hint.
+
+||||||| a460005
 - **BREAKING (go-collector):** the SMTP notifier now requires STARTTLS for every
   non-loopback server, even without credentials; if the server does not advertise
   it the alert is not sent (previously sent in plaintext, open to downgrade) (#362).
@@ -60,6 +74,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/metrics` is behind the same bearer auth as `/api/*` (only `/healthz` is open). The
   installer now fails (with the journal tail) if the unit is not active after start, and the
   README/`serve --help` examples were fixed so they start (#279).
+- **go-collector:** `TracesProvider.Close` no longer uses the signal-canceled context, so
+  pending spans are flushed on SIGTERM (5s timeout) (#376).
+||||||| 9c17729
 - **go-collector:** anomaly window counts use a binary search over the sorted
   timestamps instead of a linear scan (#296).
 
@@ -68,12 +85,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **go-collector:** `--otel-endpoint` for traces accepts a value with a scheme
   (e.g. `http://localhost:4318`) (#280).
 - **go-collector:** a corrupted token record no longer breaks `token list`; it is
-  skipped (#283).
+  skipped (#283); corrupted event/alert records are skipped (with one warning) by
+  `store.New`, `ListEvents` and `ListAlerts` instead of failing them (#372).
 - **Agent:** on collector disconnect the agent logs how many unacknowledged events
   were discarded (#281); mock-source events dropped by a full channel are counted
   and warned about (#284); the eBPF source uses the same drop counter (#291).
 - **deploy:** `scripts/deploy-agent.sh` validates `--mock-rate` as an integer in
   1..1000 (#310).
+- **go-collector:** alerting `eq`/`contains`/`regex` now stringify JSON numbers in plain decimal, so values of 1e6 or more (e.g. pid 1234567) no longer become `1.234567e+06` and match rules (#370).
+
+### Fixed
+
+- **go-collector:** `ListTokens` and `getAgentToken` no longer return results the
+  background goroutine may still be writing after the context ends; they return
+  nil on error (#382).
 
 ### Security
 
@@ -106,6 +131,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   errors no longer include the webhook URL (#256).
 - A negative `SENTINEL_NOTIFY_COOLDOWN` or an unknown `SENTINEL_NOTIFY_MIN_SEVERITY`
   now fails collector startup instead of notifying on every alert (#379).
+||||||| f4e74e3
+- gRPC `MaxRecvMsgSize` lowered from 4 MB to 8 KB, derived from the validated field
+  limits (largest legitimate message is about 1.6 KB); oversized messages are
+  rejected with `ResourceExhausted` (#361).
+||||||| f4e74e3
+- `demo-multi-region.sh` validates `SENTINEL_*_IP` (IPv4) and hosts before
+  embedding them in the root aggregator unit, and passes `--` to ssh (#367).
 ||||||| a460005
 - REST 500 responses return a fixed `internal error` message instead of the store
   error text (#297); the aggregator's `RegionStatus.error` carries a fixed

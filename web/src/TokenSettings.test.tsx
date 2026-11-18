@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getToken } from "./auth";
 import { TokenSettings } from "./TokenSettings";
 
@@ -68,5 +68,24 @@ describe("TokenSettings", () => {
 
     expect(localStorage.getItem(KEY)).toBeNull();
     expect(screen.getByRole("button", { name: "API Token: not set" })).toBeTruthy();
+  });
+
+  it("warns instead of 'Saved' when localStorage rejects the write", () => {
+    const token = "x".repeat(32);
+    const spy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("QuotaExceededError");
+    });
+    render(<TokenSettings />);
+    const input = openPanel();
+    fireEvent.change(input, { target: { value: token } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(screen.queryByRole("button", { name: "Saved" })).toBeNull();
+    expect(screen.getByRole("alert").textContent).toMatch(/this tab only/);
+    expect(getToken()).toBe(token);
+    spy.mockRestore();
+    // reset module-level fallback
+    fireEvent.change(input, { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: /Save|This tab/ }));
   });
 });
