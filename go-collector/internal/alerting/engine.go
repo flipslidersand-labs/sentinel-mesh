@@ -96,10 +96,10 @@ func (e *Engine) matchCondition(payload map[string]interface{}, cond Condition) 
 
 	switch cond.Operator {
 	case "eq":
-		return fmt.Sprintf("%v", value) == cond.Value
+		return valueToString(value) == cond.Value
 
 	case "contains":
-		return strings.Contains(fmt.Sprintf("%v", value), cond.Value)
+		return strings.Contains(valueToString(value), cond.Value)
 
 	case "regex":
 		re, err := regexp.Compile(cond.Value)
@@ -107,7 +107,7 @@ func (e *Engine) matchCondition(payload map[string]interface{}, cond Condition) 
 			e.logger.Debug("invalid regex in condition", zap.Error(err))
 			return false
 		}
-		return re.MatchString(fmt.Sprintf("%v", value))
+		return re.MatchString(valueToString(value))
 
 	case "gt":
 		return e.compareNumeric(value, cond.Value, func(a, b float64) bool {
@@ -169,4 +169,14 @@ func toFloat64(v interface{}) (float64, error) {
 	default:
 		return 0, fmt.Errorf("cannot convert %T to float64", v)
 	}
+}
+
+// valueToString renders a payload value for string comparison. float64 values
+// (all JSON numbers) use plain decimal notation so that large integers such as
+// pid 1234567 are not rendered as "1.234567e+06".
+func valueToString(v interface{}) string {
+	if f, ok := v.(float64); ok {
+		return strconv.FormatFloat(f, 'f', -1, 64)
+	}
+	return fmt.Sprintf("%v", v)
 }

@@ -54,6 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and warned about (#284); the eBPF source uses the same drop counter (#291).
 - **deploy:** `scripts/deploy-agent.sh` validates `--mock-rate` as an integer in
   1..1000 (#310).
+- **go-collector:** alerting `eq`/`contains`/`regex` now stringify JSON numbers in plain decimal, so values of 1e6 or more (e.g. pid 1234567) no longer become `1.234567e+06` and match rules (#370).
 
 ### Security
 
