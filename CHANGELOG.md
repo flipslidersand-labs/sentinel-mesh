@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **go-collector:** a node evicted from the registry while its stream stays
+  connected is re-created on its next event (default region, empty hostname)
+  instead of vanishing from `/api/nodes` until reconnect (#371).
 - **go-collector:** `sentinel-collector token issue|revoke|list` subcommands and a
   per-agent token store in BadgerDB (#195, #198). gRPC auth resolves the agent
   identity (`node_id`) from the presented token (#196); see ADR-005 (#188).
