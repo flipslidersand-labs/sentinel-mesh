@@ -238,7 +238,9 @@ Unauthenticated gRPC requires the explicit `--grpc-auth=disabled`.
 # token issue/revoke/list require the collector to be stopped first — BadgerDB
 # takes an exclusive lock on --data-dir, so they can't run alongside `serve`.
 export SENTINEL_API_TOKEN="$(openssl rand -hex 32)"  # required by --http-auth=required (default); gates the REST API only, NOT gRPC
-sentinel-collector token issue web-01 --data-dir /var/lib/sentinel-mesh
+# Run token commands as the service user (`sudo -u sentinel`): as root they would create
+# root-owned files in --data-dir that the unprivileged `sentinel` service cannot open.
+sudo -u sentinel sentinel-collector token issue web-01 --data-dir /var/lib/sentinel
 # prints the token once — copy it now, it's never shown again
 sentinel-collector serve --grpc-auth=required --grpc-tls-cert cert.pem --grpc-tls-key key.pem
 
@@ -251,7 +253,7 @@ Or deploy via `scripts/deploy-agent.sh`, which wires this up for you (see its `-
 full per-agent-token workflow):
 
 ```bash
-TOKEN=$(sentinel-collector token issue web-01 --data-dir /var/lib/sentinel-mesh)
+TOKEN=$(sudo -u sentinel sentinel-collector token issue web-01 --data-dir /var/lib/sentinel)
 ./scripts/deploy-agent.sh --tls --node-id web-01 --grpc-token "$TOKEN" \
   --collector collector.internal:50051 web-01-host
 ```
@@ -259,8 +261,8 @@ TOKEN=$(sentinel-collector token issue web-01 --data-dir /var/lib/sentinel-mesh)
 To revoke a compromised or decommissioned agent's access:
 
 ```bash
-sentinel-collector token revoke web-01 --data-dir /var/lib/sentinel-mesh
-sentinel-collector token list --data-dir /var/lib/sentinel-mesh   # confirm status
+sudo -u sentinel sentinel-collector token revoke web-01 --data-dir /var/lib/sentinel
+sudo -u sentinel sentinel-collector token list --data-dir /var/lib/sentinel   # confirm status
 ```
 
 ## Heartbeat Tracking

@@ -52,6 +52,27 @@ check "useradd"  "$TMP/remote-scripts" "useradd --system"
 check "chown"    "$TMP/remote-scripts" 'chown -R "$user": "$data"'
 check "data dir passed to remote" "$TMP/ssh-calls" "sentinel /srv/sm-data"
 
+# Dangerous --data-dir values must be rejected before any ssh is reached.
+for bad in / /var/lib /var/lib/ /opt /etc /usr /usr/lib /home/x /var/lib/../etc /srv//x; do
+  : > "$TMP/ssh-calls"
+  if bash "$TMP/scripts/install-collector.sh" testhost --data-dir "$bad" >/dev/null 2>&1; then
+    echo "FAIL accepted --data-dir $bad"; fail=1
+  elif [[ -s "$TMP/ssh-calls" ]]; then
+    echo "FAIL ssh reached for --data-dir $bad"; fail=1
+  else
+    echo "ok   reject --data-dir $bad"
+  fi
+done
+for good in /var/lib/sentinel /srv/sm-data /opt/sentinel/data; do
+  if bash "$TMP/scripts/install-collector.sh" testhost --data-dir "$good" >/dev/null 2>&1; then
+    echo "ok   accept --data-dir $good"
+  else
+    echo "FAIL rejected --data-dir $good"; fail=1
+  fi
+done
+check "stop before chown" "$TMP/remote-scripts" "systemctl stop sentinel-collector"
+check "user-group"        "$TMP/remote-scripts" "--user-group"
+
 if command -v systemd-analyze >/dev/null 2>&1 && [[ -s "$TMP/unit" ]]; then
   # ExecStart binary is absent locally; only flag syntax/directive errors.
   va="$(systemd-analyze verify "$TMP/unit" 2>&1 | grep -iE 'unknown (key|section)|Unknown lvalue|Invalid|Failed to parse' || true)"

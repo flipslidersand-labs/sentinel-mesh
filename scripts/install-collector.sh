@@ -80,6 +80,29 @@ validate_ident "--region" "$REGION"
 validate_listen_addr "--grpc-addr" "$GRPC_ADDR"
 validate_listen_addr "--http-addr" "$HTTP_ADDR"
 validate_abs_path "--data-dir" "$DATA_DIR"
+
+# The installer runs `chown -R` / `chmod 700` on --data-dir: refuse paths that
+# are, or sit directly in, a system directory (#365). Needs >= 2 components
+# (/var/lib/<name> ok, /var/lib not), no '.'/'..' parts, and not a known system dir.
+data_norm="${DATA_DIR%"${DATA_DIR##*[!/]}"}"
+if [[ "$data_norm" == */./* || "$data_norm" == */../* || "$data_norm" == */. || "$data_norm" == */.. || "$data_norm" == *//* ]]; then
+  echo "Error: --data-dir must be a normalized path (no '.', '..' or '//'): '${DATA_DIR}'" >&2
+  exit 1
+fi
+data_depth="$(awk -F/ '{n=0; for(i=1;i<=NF;i++) if($i!="") n++; print n}' <<<"$data_norm")"
+case "$data_norm" in
+  /usr|/usr/*|/etc|/etc/*|/bin|/sbin|/lib|/lib64|/boot|/dev|/proc|/sys|/root|/root/*|/home|/home/*|\
+  /var/lib|/var/log|/var/run|/var/tmp|/var/cache|/var/spool|/var/mail|/run|/run/*|/opt|/srv|/tmp|/mnt|/media)
+    if [[ "$data_norm" != /usr/local/* && "$data_norm" != /srv/* && "$data_norm" != /opt/* && "$data_norm" != /mnt/* && "$data_norm" != /media/* && "$data_norm" != /tmp/* ]] \
+       || [[ "$data_depth" -lt 2 ]] || [[ "$data_norm" == /usr/local/bin* || "$data_norm" == /usr/local/sbin* || "$data_norm" == /usr/local/lib* ]]; then
+      echo "Error: --data-dir '${DATA_DIR}' is a system directory; use a dedicated directory such as /var/lib/sentinel" >&2
+      exit 1
+    fi ;;
+esac
+if [[ "$data_depth" -lt 2 ]]; then
+  echo "Error: --data-dir '${DATA_DIR}' is too shallow; use a dedicated directory such as /var/lib/sentinel" >&2
+  exit 1
+fi
 [[ -n "$GRPC_TLS_CERT" ]] && validate_path "--grpc-tls-cert" "$GRPC_TLS_CERT"
 [[ -n "$GRPC_TLS_KEY" ]] && validate_path "--grpc-tls-key" "$GRPC_TLS_KEY"
 
@@ -124,7 +147,11 @@ ssh -- "$SSH_HOST" bash -s -- "$SERVICE_USER" "$DATA_DIR" "$GRPC_TLS_CERT" "$GRP
 set -euo pipefail
 user="$1"; data="$2"; cert="$3"; key="$4"
 if ! id -u "$user" >/dev/null 2>&1; then
-  sudo useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$user"
+  sudo useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$user"
+fi
+# An older root-based service may still hold the data dir: stop it before chown.
+if systemctl is-active --quiet sentinel-collector; then
+  sudo systemctl stop sentinel-collector
 fi
 sudo mkdir -p "$data"
 sudo chown -R "$user": "$data"
