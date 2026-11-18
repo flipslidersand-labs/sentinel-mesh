@@ -27,8 +27,9 @@ type Notifier interface {
 }
 
 // severityRank orders severities so a minimum-severity filter can be applied.
-// Unknown severities rank as 0 (lowest) so they are only sent when the
-// threshold is also at its lowest.
+// An unknown alert severity ranks as 0 (lowest) so it is only sent when the
+// threshold is also at its lowest. An unknown minimum severity is rejected at
+// startup by DispatcherFromEnv (see knownSeverity).
 var severityRank = map[string]int{
 	"info":     0,
 	"low":      0,

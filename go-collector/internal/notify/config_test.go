@@ -13,7 +13,10 @@ func TestDispatcherFromEnv_NoConfig(t *testing.T) {
 	} {
 		t.Setenv(k, "")
 	}
-	d := DispatcherFromEnv(nil)
+	d, err := DispatcherFromEnv(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if d == nil {
 		t.Fatal("DispatcherFromEnv must never return nil")
 	}
@@ -28,7 +31,7 @@ func TestDispatcherFromEnv_NoConfig(t *testing.T) {
 func TestDispatcherFromEnv_Slack(t *testing.T) {
 	t.Setenv(envSlackWebhook, "https://hooks.slack.com/services/xxx")
 	t.Setenv(envSMTPAddr, "")
-	d := DispatcherFromEnv(nil)
+	d, _ := DispatcherFromEnv(nil)
 	if !d.Enabled() || len(d.notifiers) != 1 {
 		t.Fatalf("expected 1 slack notifier, got %d", len(d.notifiers))
 	}
@@ -42,13 +45,13 @@ func TestDispatcherFromEnv_EmailRequiresFromAndTo(t *testing.T) {
 	t.Setenv(envSMTPAddr, "smtp.example.com:587")
 	t.Setenv(envSMTPFrom, "") // missing → email skipped
 	t.Setenv(envSMTPTo, "ops@example.com")
-	if DispatcherFromEnv(nil).Enabled() {
+	if d, _ := DispatcherFromEnv(nil); d.Enabled() {
 		t.Fatal("email without From should be skipped")
 	}
 
 	t.Setenv(envSMTPFrom, "alerts@example.com")
 	t.Setenv(envSMTPTo, "ops@example.com, oncall@example.com")
-	d := DispatcherFromEnv(nil)
+	d, _ := DispatcherFromEnv(nil)
 	if len(d.notifiers) != 1 || d.notifiers[0].Name() != "email" {
 		t.Fatalf("expected 1 email notifier, got %v", d.notifiers)
 	}
@@ -62,7 +65,7 @@ func TestDispatcherFromEnv_CooldownAndSeverity(t *testing.T) {
 	t.Setenv(envSlackWebhook, "https://example.com/hook")
 	t.Setenv(envCooldown, "30s")
 	t.Setenv(envMinSeverity, "critical")
-	d := DispatcherFromEnv(nil)
+	d, _ := DispatcherFromEnv(nil)
 	if d.cooldown != 30*time.Second {
 		t.Errorf("cooldown = %v, want 30s", d.cooldown)
 	}
@@ -74,42 +77,42 @@ func TestDispatcherFromEnv_CooldownAndSeverity(t *testing.T) {
 func TestDispatcherFromEnv_InvalidCooldownFallsBack(t *testing.T) {
 	t.Setenv(envSlackWebhook, "https://example.com/hook")
 	t.Setenv(envCooldown, "not-a-duration")
-	if d := DispatcherFromEnv(nil); d.cooldown != defaultCooldown {
+	if d, _ := DispatcherFromEnv(nil); d.cooldown != defaultCooldown {
 		t.Errorf("invalid cooldown should fall back to default, got %v", d.cooldown)
 	}
 }
 
 // A negative cooldown or an unknown min severity is a misconfiguration; the
-// dispatcher must fail closed (no notifiers) rather than notify everything.
-func TestDispatcherFromEnv_NegativeCooldownFailsClosed(t *testing.T) {
+// config error rather than silently notifying everything or nothing.
+func TestDispatcherFromEnv_NegativeCooldownIsError(t *testing.T) {
 	t.Setenv(envSlackWebhook, "https://example.com/hook")
 	t.Setenv(envCooldown, "-5m")
-	if DispatcherFromEnv(nil).Enabled() {
-		t.Error("negative cooldown must disable notifications")
+	if _, err := DispatcherFromEnv(nil); err == nil {
+		t.Error("negative cooldown must be an error")
 	}
 }
 
 func TestDispatcherFromEnv_ZeroCooldownAllowed(t *testing.T) {
 	t.Setenv(envSlackWebhook, "https://example.com/hook")
 	t.Setenv(envCooldown, "0s")
-	d := DispatcherFromEnv(nil)
+	d, _ := DispatcherFromEnv(nil)
 	if !d.Enabled() || d.cooldown != 0 {
 		t.Errorf("zero cooldown should be accepted, enabled=%v cooldown=%v", d.Enabled(), d.cooldown)
 	}
 }
 
-func TestDispatcherFromEnv_UnknownMinSeverityFailsClosed(t *testing.T) {
+func TestDispatcherFromEnv_UnknownMinSeverityIsError(t *testing.T) {
 	t.Setenv(envSlackWebhook, "https://example.com/hook")
 	t.Setenv(envMinSeverity, "critcal")
-	if DispatcherFromEnv(nil).Enabled() {
-		t.Error("unknown min severity must disable notifications")
+	if _, err := DispatcherFromEnv(nil); err == nil {
+		t.Error("unknown min severity must be an error")
 	}
 }
 
 func TestDispatcherFromEnv_KnownMinSeverityCaseInsensitive(t *testing.T) {
 	t.Setenv(envSlackWebhook, "https://example.com/hook")
 	t.Setenv(envMinSeverity, "Critical")
-	if !DispatcherFromEnv(nil).Enabled() {
-		t.Error("known severity should be accepted")
+	if d, err := DispatcherFromEnv(nil); err != nil || !d.Enabled() {
+		t.Errorf("known severity should be accepted, err=%v", err)
 	}
 }
