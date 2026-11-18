@@ -372,3 +372,33 @@ func TestAggregator_RegionErrorTimeout(t *testing.T) {
 		t.Errorf("want unreachable with Error=timeout, got %+v", regions)
 	}
 }
+
+// TestParseUpstreams_RejectsUserinfo verifies that URLs carrying userinfo are
+// rejected and that no error message leaks the credentials (#364).
+func TestParseUpstreams_RejectsUserinfo(t *testing.T) {
+	specs := []string{
+		"us-east=http://alice:s3cret-pw@example.com:8081",
+		"us-east=http://s3cret-pw@example.com:8081",
+		"us-east=http://:s3cret-pw@example.com:8081",
+		"us-east=ftp://alice:s3cret-pw@example.com",   // other validation failure
+		"us-east=http://alice:s3cret-pw@exa mple.com", // url.Parse failure
+		"http://alice:s3cret-pw@example.com:8081",     // missing region=
+		"http://alice:s3cret-pw@example.com:81/?x=1",  // "=" in URL, no region prefix
+	}
+	for _, spec := range specs {
+		_, err := ParseUpstreams([]string{spec})
+		if err == nil {
+			t.Errorf("expected error for %q", spec)
+			continue
+		}
+		for _, leak := range []string{"s3cret-pw", "alice"} {
+			if strings.Contains(err.Error(), leak) {
+				t.Errorf("error for %q leaks %q: %v", spec, leak, err)
+			}
+		}
+	}
+	if _, err := ParseUpstreams([]string{"us-east=http://alice:pw@example.com"}); err == nil ||
+		!strings.Contains(err.Error(), "userinfo") {
+		t.Errorf("expected userinfo error, got %v", err)
+	}
+}
