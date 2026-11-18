@@ -44,8 +44,10 @@ const (
 // is cancelled, at which point it gracefully shuts srv down (bounded by
 // httpShutdownTimeout) so callers don't hang on SIGINT/SIGTERM (#117). Any
 // ListenAndServe error other than the expected http.ErrServerClosed is
-// logged as an error.
-func runHTTPServerUntilDone(ctx context.Context, srv *http.Server, name string, logger *zap.Logger) {
+// returned (and logged) so callers can fail the process (#318). It returns
+// only after the server has fully stopped, including in-flight requests
+// (#316).
+func runHTTPServerUntilDone(ctx context.Context, srv *http.Server, name string, logger *zap.Logger) error {
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- srv.ListenAndServe()
@@ -55,6 +57,7 @@ func runHTTPServerUntilDone(ctx context.Context, srv *http.Server, name string, 
 	case err := <-errCh:
 		if err != nil && err != http.ErrServerClosed {
 			logger.Error(name+" stopped", zap.Error(err))
+			return fmt.Errorf("%s: %w", name, err)
 		}
 	case <-ctx.Done():
 		logger.Info(name + " shutting down")
@@ -65,6 +68,31 @@ func runHTTPServerUntilDone(ctx context.Context, srv *http.Server, name string, 
 		}
 		<-errCh
 	}
+	return nil
+}
+
+// runRESTAndGRPC runs rest in a goroutine and grpc in the caller's goroutine,
+// both bound to ctx. If either fails, ctx is cancelled (via cancel) so the
+// other stops too. It returns only after BOTH have returned, so callers can
+// safely close shared resources (store, tracer) afterwards (#316, #318).
+// The first non-nil error is returned.
+func runRESTAndGRPC(ctx context.Context, cancel context.CancelFunc,
+	rest, grpc func(context.Context) error) error {
+	restDone := make(chan error, 1)
+	go func() {
+		err := rest(ctx)
+		if err != nil {
+			cancel()
+		}
+		restDone <- err
+	}()
+	grpcErr := grpc(ctx)
+	cancel() // gRPC returned (failure or shutdown): make sure REST stops too.
+	restErr := <-restDone
+	if grpcErr != nil {
+		return grpcErr
+	}
+	return restErr
 }
 
 // newHTTPServer builds an http.Server with explicit read/write/idle
@@ -253,10 +281,6 @@ TLS for the gRPC server is optional but, when enabled, both
 			// REST API in background, tied to ctx for graceful shutdown (#117).
 			router := exporter.Router(st, reg, detector, staticDir, corsOrigins, apiToken)
 			httpServer := newHTTPServer(httpAddr, router)
-			go func() {
-				logger.Info("REST API listening", zap.String("addr", httpAddr))
-				runHTTPServerUntilDone(ctx, httpServer, "REST API", logger)
-			}()
 
 			// gRPC server (blocking, but ctx-aware so SIGINT/SIGTERM gracefully
 			// stops it instead of hanging forever — #117).
@@ -272,12 +296,20 @@ TLS for the gRPC server is optional but, when enabled, both
 			if !grpcAuthEnabled {
 				logger.Warn("gRPC server is UNAUTHENTICATED (--grpc-auth=disabled) — use --grpc-auth=required and issue per-agent tokens via `token issue`")
 			}
-			return receiver.Serve(ctx, receiver.Config{
-				Addr: grpcAddr, TLSCertFile: grpcTLSCert, TLSKeyFile: grpcTLSKey,
-				AuthEnabled: grpcAuthEnabled, DefaultRegion: defaultRegion,
-			}, receiver.Deps{
-				Store: st, Registry: reg, Engine: engine, Detector: detector, Notifier: notifier,
-				Metrics: metricsProvider, Tracer: tracesProvider.Tracer(), Logger: logger,
+			// REST failures (e.g. port in use) cancel ctx and fail the process;
+			// we wait for REST to finish stopping before the deferred
+			// st.Close() runs (#316, #318).
+			return runRESTAndGRPC(ctx, cancel, func(ctx context.Context) error {
+				logger.Info("REST API listening", zap.String("addr", httpAddr))
+				return runHTTPServerUntilDone(ctx, httpServer, "REST API", logger)
+			}, func(ctx context.Context) error {
+				return receiver.Serve(ctx, receiver.Config{
+					Addr: grpcAddr, TLSCertFile: grpcTLSCert, TLSKeyFile: grpcTLSKey,
+					AuthEnabled: grpcAuthEnabled, DefaultRegion: defaultRegion,
+				}, receiver.Deps{
+					Store: st, Registry: reg, Engine: engine, Detector: detector, Notifier: notifier,
+					Metrics: metricsProvider, Tracer: tracesProvider.Tracer(), Logger: logger,
+				})
 			})
 		},
 	}
@@ -358,6 +390,5 @@ func runAggregate(cmd *cobra.Command, logger *zap.Logger, apiToken string, restU
 
 	httpServer := newHTTPServer(httpAddr, aggregator.Router(agg, staticDir, corsOrigins, apiToken))
 	logger.Info("aggregator REST API listening", zap.String("addr", httpAddr))
-	runHTTPServerUntilDone(ctx, httpServer, "aggregator REST API", logger)
-	return nil
+	return runHTTPServerUntilDone(ctx, httpServer, "aggregator REST API", logger)
 }
