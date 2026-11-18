@@ -430,7 +430,7 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 			continue
 		}
 
-		s.reg.Heartbeat(event.NodeId)
+		s.reg.HeartbeatOrRegister(event.NodeId, peerIP(stream.Context()), s.defaultRegion)
 
 		storedEvent := store.Event{
 			EventID:   event.EventId,
