@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **go-collector:** `RuleSet.Validate` now rejects `gt`/`lt` conditions whose `value` is not
+  numeric (e.g. `"10k"`), instead of loading a rule that can never fire (#375).
 - **BREAKING (go-collector):** gRPC authentication is now controlled by the new
   `--grpc-auth=required|disabled` flag (default `required`) instead of being
   implicitly enabled by `SENTINEL_API_TOKEN` (#222). With `required` and no

@@ -151,3 +151,29 @@ func TestUnknownFieldWarnings(t *testing.T) {
 		t.Fatalf("want 2 warnings (bad, wrongtype), got %v", w)
 	}
 }
+
+func TestValidateNonNumericThreshold(t *testing.T) {
+	for _, op := range []string{"gt", "lt"} {
+		for _, v := range []string{"10k", "", "abc", " 10"} {
+			rule := validRule()
+			rule.Conditions = []Condition{{Field: "pid", Operator: op, Value: v}}
+			rs := &RuleSet{Rules: []Rule{rule}}
+			if err := rs.Validate(); err == nil {
+				t.Errorf("op=%s value=%q: expected error for non-numeric threshold", op, v)
+			}
+		}
+	}
+}
+
+func TestValidateNumericThreshold(t *testing.T) {
+	for _, op := range []string{"gt", "lt"} {
+		for _, v := range []string{"10", "-1.5", "1e3"} {
+			rule := validRule()
+			rule.Conditions = []Condition{{Field: "pid", Operator: op, Value: v}}
+			rs := &RuleSet{Rules: []Rule{rule}}
+			if err := rs.Validate(); err != nil {
+				t.Errorf("op=%s value=%q: unexpected error %v", op, v, err)
+			}
+		}
+	}
+}
