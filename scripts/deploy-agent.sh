@@ -136,7 +136,7 @@ validate_hostport "--collector" "$COLLECTOR_ADDR"
 validate_mock_rate "--mock-rate" "$MOCK_RATE"
 [[ -n "$REGION" ]] && validate_ident "--region" "$REGION"
 [[ -n "$NODE_ID_OVERRIDE" ]] && validate_ident "--node-id" "$NODE_ID_OVERRIDE"
-[[ -n "$GRPC_TOKEN" ]] && validate_ident "--grpc-token" "$GRPC_TOKEN"
+[[ -n "$GRPC_TOKEN" ]] && validate_secret "--grpc-token" "$GRPC_TOKEN"
 [[ -n "$GRPC_CA_CERT" ]] && validate_path "--grpc-ca-cert" "$GRPC_CA_CERT"
 
 # ── Systemd unit template ─────────────────────────────────────────────────────
