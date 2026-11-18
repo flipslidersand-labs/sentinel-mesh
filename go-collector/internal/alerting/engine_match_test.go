@@ -136,3 +136,32 @@ func TestToFloat64(t *testing.T) {
 		})
 	}
 }
+
+func TestMatchConditionLargeNumberNotExponent(t *testing.T) {
+	e := New(nil, zap.NewNop())
+	payload := map[string]interface{}{
+		"pid":  float64(1234567),
+		"big":  float64(4194304),
+		"frac": 1.5,
+	}
+	tests := []struct {
+		name string
+		cond Condition
+		want bool
+	}{
+		{"eq 7-digit pid", Condition{Field: "pid", Operator: "eq", Value: "1234567"}, true},
+		{"eq pid_max", Condition{Field: "big", Operator: "eq", Value: "4194304"}, true},
+		{"regex 7-digit pid", Condition{Field: "pid", Operator: "regex", Value: `^1234567$`}, true},
+		{"contains 7-digit pid", Condition{Field: "pid", Operator: "contains", Value: "34567"}, true},
+		{"not exponent text", Condition{Field: "pid", Operator: "eq", Value: "1.234567e+06"}, false},
+		{"gt unchanged", Condition{Field: "pid", Operator: "gt", Value: "1000000"}, true},
+		{"fraction unchanged", Condition{Field: "frac", Operator: "eq", Value: "1.5"}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := e.matchCondition(payload, tc.cond); got != tc.want {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
