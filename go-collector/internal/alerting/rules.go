@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 )
@@ -82,6 +83,13 @@ func (rs *RuleSet) Validate() error {
 			if cond.Operator == "regex" {
 				if _, err := regexp.Compile(cond.Value); err != nil {
 					return fmt.Errorf("rule[%d] (id=%q): condition[%d]: invalid regex %q: %w", i, rule.ID, j, cond.Value, err)
+				}
+			}
+			if cond.Operator == "gt" || cond.Operator == "lt" {
+				// Same parse as Engine.compareNumeric so Validate and
+				// matching never disagree.
+				if _, err := strconv.ParseFloat(cond.Value, 64); err != nil {
+					return fmt.Errorf("rule[%d] (id=%q): condition[%d]: operator %q requires a numeric value, got %q: %w", i, rule.ID, j, cond.Operator, cond.Value, err)
 				}
 			}
 		}

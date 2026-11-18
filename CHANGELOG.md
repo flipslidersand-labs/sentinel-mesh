@@ -40,6 +40,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Web UI:** a failed localStorage write now keeps the API token in memory for the
   current tab and the widget says "This tab only" instead of "Saved" (#377).
+||||||| f4e74e3
+- **go-collector:** `RuleSet.Validate` now rejects `gt`/`lt` conditions whose `value` is not
+  numeric (e.g. `"10k"`), instead of loading a rule that can never fire (#375).
+||||||| f4e74e3
+- **Deploy:** `scripts/install-collector.sh` now runs the collector as the unprivileged
+  system user `sentinel` with systemd hardening (`NoNewPrivileges`, `ProtectSystem=strict`,
+  `ProtectHome`, `PrivateTmp`, ...; ports below 1024 stay bindable via
+  `CAP_NET_BIND_SERVICE`) instead of root (#365). Migration: re-run the installer; it
+  creates the user and chowns `--data-dir`. TLS cert/key given by `--grpc-tls-*` must be
+  readable by `sentinel` and outside `/home`, otherwise the installer stops with a hint.
+
 ||||||| a460005
 - **BREAKING (go-collector):** the SMTP notifier now requires STARTTLS for every
   non-loopback server, even without credentials; if the server does not advertise
@@ -78,6 +89,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **deploy:** `scripts/deploy-agent.sh` validates `--mock-rate` as an integer in
   1..1000 (#310).
 
+### Fixed
+
+- **go-collector:** `ListTokens` and `getAgentToken` no longer return results the
+  background goroutine may still be writing after the context ends; they return
+  nil on error (#382).
+
 ### Security
 
 - **go-collector:** the aggregator rejects upstream URLs that contain userinfo
@@ -107,6 +124,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The agent IP is derived from the gRPC peer, not a client-supplied field (#178).
 - `deploy-agent.sh` no longer leaks the gRPC bearer token (#174); Slack send
   errors no longer include the webhook URL (#256).
+- gRPC `MaxRecvMsgSize` lowered from 4 MB to 8 KB, derived from the validated field
+  limits (largest legitimate message is about 1.6 KB); oversized messages are
+  rejected with `ResourceExhausted` (#361).
+||||||| f4e74e3
+- `demo-multi-region.sh` validates `SENTINEL_*_IP` (IPv4) and hosts before
+  embedding them in the root aggregator unit, and passes `--` to ssh (#367).
+||||||| a460005
 - REST 500 responses return a fixed `internal error` message instead of the store
   error text (#297); the aggregator's `RegionStatus.error` carries a fixed
   classification instead of the raw upstream error (#306); the rate-limit log
