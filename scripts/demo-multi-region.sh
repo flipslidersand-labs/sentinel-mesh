@@ -12,6 +12,12 @@
 # Usage:
 #   ./scripts/demo-multi-region.sh [--mock]
 #
+# NOTE: the collectors and aggregator run with auth disabled and listen on all
+# interfaces (the aggregator polls the collectors across hosts, so loopback-only
+# is not possible). Use only on an isolated demo network, and remove afterwards:
+#   sudo systemctl disable --now sentinel-aggregator sentinel-collector
+# SENTINEL_MINIPC_IP / SENTINEL_YUKI_IP must be IPv4 addresses (#367).
+#
 # Requirements:
 #   - scripts/build.sh already run
 #   - SSH key access to minipc and yuki-private
@@ -20,6 +26,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPTS="$REPO_ROOT/scripts"
+# shellcheck source=scripts/lib-validate.sh
+source "$SCRIPTS/lib-validate.sh"
 
 MOCK=false
 while [[ $# -gt 0 ]]; do
@@ -38,6 +46,13 @@ MINIPC_IP="${SENTINEL_MINIPC_IP:-192.0.2.10}"
 YUKI_HOST="yuki-private"
 YUKI_IP="${SENTINEL_YUKI_IP:-192.0.2.11}"
 
+# These values are interpolated into a root systemd unit and ssh arguments:
+# validate before any use (#65, #367). Fail closed.
+validate_host "MINIPC_HOST" "$MINIPC_HOST"
+validate_host "YUKI_HOST" "$YUKI_HOST"
+validate_ip "SENTINEL_MINIPC_IP" "$MINIPC_IP"
+validate_ip "SENTINEL_YUKI_IP" "$YUKI_IP"
+
 WEST_GRPC="${MINIPC_IP}:50051"
 WEST_HTTP="http://${MINIPC_IP}:8081"
 EAST_GRPC="${YUKI_IP}:50052"
@@ -54,7 +69,7 @@ echo "==> Step 2a: Deploy asia-west collector → $MINIPC_HOST"
 bash "$SCRIPTS/install-collector.sh" "$MINIPC_HOST" \
   --region asia-west --grpc-addr :50051 --http-addr :8081 --grpc-auth disabled --http-auth disabled
 
-if ssh -o ConnectTimeout=5 -o BatchMode=yes "$YUKI_HOST" true 2>/dev/null; then
+if ssh -o ConnectTimeout=5 -o BatchMode=yes -- "$YUKI_HOST" true 2>/dev/null; then
   echo ""
   echo "==> Step 2b: Deploy asia-east collector → $YUKI_HOST"
   bash "$SCRIPTS/install-collector.sh" "$YUKI_HOST" \
@@ -73,7 +88,9 @@ if [[ -n "$EAST_HTTP" ]]; then
   UPSTREAMS="${UPSTREAMS},asia-east=${EAST_HTTP}"
 fi
 
-ssh "$MINIPC_HOST" "sudo tee /etc/systemd/system/sentinel-aggregator.service > /dev/null" <<EOF
+# Client-side expansion is intended; every value is validated above.
+# shellcheck disable=SC2087
+ssh -- "$MINIPC_HOST" "sudo tee /etc/systemd/system/sentinel-aggregator.service > /dev/null" <<EOF
 [Unit]
 Description=SentinelMesh Aggregator
 After=network.target sentinel-collector.service
@@ -87,7 +104,7 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 EOF
-ssh "$MINIPC_HOST" "sudo systemctl daemon-reload && sudo systemctl enable --now sentinel-aggregator"
+ssh -- "$MINIPC_HOST" "sudo systemctl daemon-reload && sudo systemctl enable --now sentinel-aggregator"
 
 # ── Step 4: Deploy agents ──────────────────────────────────────────────────────
 echo ""
