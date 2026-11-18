@@ -48,7 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **go-collector:** `--otel-endpoint` for traces accepts a value with a scheme
   (e.g. `http://localhost:4318`) (#280).
 - **go-collector:** a corrupted token record no longer breaks `token list`; it is
-  skipped (#283).
+  skipped (#283); corrupted event/alert records are skipped (with one warning) by
+  `store.New`, `ListEvents` and `ListAlerts` instead of failing them (#372).
 - **Agent:** on collector disconnect the agent logs how many unacknowledged events
   were discarded (#281); mock-source events dropped by a full channel are counted
   and warned about (#284); the eBPF source uses the same drop counter (#291).
