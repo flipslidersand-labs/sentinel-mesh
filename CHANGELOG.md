@@ -38,6 +38,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Agent:** a permanently rejected registration (`ok=false` or an
+  InvalidArgument/Unauthenticated/PermissionDenied status) now logs the
+  collector's reason and exits non-zero instead of retrying forever; transient
+  errors still back off and retry (#380).
+||||||| 167904e
 - **Web UI:** a failed localStorage write now keeps the API token in memory for the
   current tab and the widget says "This tab only" instead of "Saved" (#377).
 ||||||| f4e74e3
