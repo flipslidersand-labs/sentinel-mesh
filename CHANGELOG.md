@@ -92,6 +92,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   option-like hosts (#88).
 - The aggregator sends the bearer token when polling upstream collectors, so
   cross-region aggregation keeps working with REST auth enabled (#179).
+- HTTP responses (UI and API) now carry `Content-Security-Policy` (`default-src 'self'; frame-ancestors 'none'`),
+  `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer` (#366).
 - `/metrics` is gated behind bearer auth like `/api/*` (#180; see Changed, #279).
 - `StreamEvents` validates `node_id` / `event_id` / payload strings (#166) and
   applies its rate limit before validation (#173); the limit is a shared bucket
