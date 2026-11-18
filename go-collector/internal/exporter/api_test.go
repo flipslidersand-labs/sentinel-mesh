@@ -64,6 +64,37 @@ func TestMetrics_RequiresBearerTokenWhenConfigured(t *testing.T) {
 	}
 }
 
+// TestAuthFailBudget_SharedBetweenMetricsAndAPI verifies /metrics and /api/*
+// draw from one failed-auth budget per source (#360), not one each.
+func TestAuthFailBudget_SharedBetweenMetricsAndAPI(t *testing.T) {
+	st, reg := testRouter(t)
+	r := Router(st, reg, nil, t.TempDir(), nil, "s3cr3t")
+	get := func(path string) int {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer wrong")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w.Code
+	}
+	// Burst is 5: spend 3 on /metrics and 2 on /api, then both must be limited.
+	for i := 0; i < 3; i++ {
+		if got := get("/metrics"); got != http.StatusUnauthorized {
+			t.Fatalf("/metrics attempt %d = %d, want 401", i, got)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		if got := get("/api/nodes"); got != http.StatusUnauthorized {
+			t.Fatalf("/api attempt %d = %d, want 401", i, got)
+		}
+	}
+	if got := get("/metrics"); got != http.StatusTooManyRequests {
+		t.Errorf("/metrics after shared budget spent = %d, want 429", got)
+	}
+	if got := get("/api/nodes"); got != http.StatusTooManyRequests {
+		t.Errorf("/api after shared budget spent = %d, want 429", got)
+	}
+}
+
 // TestHealthz_StaysOpenWhenTokenConfigured verifies the liveness probe
 // endpoint is unaffected by bearer auth even when a token is configured —
 // only /api/* and /metrics are gated.
