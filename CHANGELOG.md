@@ -42,6 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   InvalidArgument/Unauthenticated/PermissionDenied status) now logs the
   collector's reason and exits non-zero instead of retrying forever; transient
   errors still back off and retry (#380).
+||||||| 167904e
+- **Web UI:** a failed localStorage write now keeps the API token in memory for the
+  current tab and the widget says "This tab only" instead of "Saved" (#377).
 ||||||| f4e74e3
 - **go-collector:** `RuleSet.Validate` now rejects `gt`/`lt` conditions whose `value` is not
   numeric (e.g. `"10k"`), instead of loading a rule that can never fire (#375).
@@ -76,6 +79,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/metrics` is behind the same bearer auth as `/api/*` (only `/healthz` is open). The
   installer now fails (with the journal tail) if the unit is not active after start, and the
   README/`serve --help` examples were fixed so they start (#279).
+- **go-collector:** `TracesProvider.Close` no longer uses the signal-canceled context, so
+  pending spans are flushed on SIGTERM (5s timeout) (#376).
+||||||| 9c17729
 - **go-collector:** anomaly window counts use a binary search over the sorted
   timestamps instead of a linear scan (#296).
 
@@ -84,12 +90,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **go-collector:** `--otel-endpoint` for traces accepts a value with a scheme
   (e.g. `http://localhost:4318`) (#280).
 - **go-collector:** a corrupted token record no longer breaks `token list`; it is
-  skipped (#283).
+  skipped (#283); corrupted event/alert records are skipped (with one warning) by
+  `store.New`, `ListEvents` and `ListAlerts` instead of failing them (#372).
 - **Agent:** on collector disconnect the agent logs how many unacknowledged events
   were discarded (#281); mock-source events dropped by a full channel are counted
   and warned about (#284); the eBPF source uses the same drop counter (#291).
 - **deploy:** `scripts/deploy-agent.sh` validates `--mock-rate` as an integer in
   1..1000 (#310).
+- **go-collector:** alerting `eq`/`contains`/`regex` now stringify JSON numbers in plain decimal, so values of 1e6 or more (e.g. pid 1234567) no longer become `1.234567e+06` and match rules (#370).
 
 ### Fixed
 

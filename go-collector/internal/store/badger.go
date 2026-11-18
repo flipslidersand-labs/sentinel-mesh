@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -134,7 +135,8 @@ func (s *Store) runValueLogGC() {
 // loadCounters scans existing events once, at startup, to seed the in-memory
 // type counters Stats() serves from thereafter (#77).
 func (s *Store) loadCounters() error {
-	return s.db.View(func(tx *badger.Txn) error {
+	skipped := 0
+	err := s.db.View(func(tx *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions
 		opts.PrefetchValues = true
 		it := tx.NewIterator(opts)
@@ -142,15 +144,27 @@ func (s *Store) loadCounters() error {
 
 		for it.Seek([]byte("event:")); it.ValidForPrefix([]byte("event:")); it.Next() {
 			var e Event
+			var decodeErr error
 			if err := it.Item().Value(func(v []byte) error {
-				return json.Unmarshal(v, &e)
+				decodeErr = json.Unmarshal(v, &e)
+				return nil
 			}); err != nil {
 				return err
+			}
+			if decodeErr != nil {
+				skipped++
+				continue
 			}
 			s.counters[e.Type]++
 		}
 		return nil
 	})
+	// A record that is not valid JSON is skipped so one damaged event can't
+	// stop the collector from starting (#372).
+	if err == nil && skipped > 0 {
+		slog.Warn("event records could not be decoded and were skipped from the counters", "count", skipped)
+	}
+	return err
 }
 
 // runWithContext runs fn on its own goroutine and returns as soon as either
@@ -248,6 +262,7 @@ func (s *Store) ListEvents(ctx context.Context, node string, limit int) ([]Event
 			prefix := []byte("event:")
 			it.Seek(append(prefix, 0xFF))
 			scanned := 0
+			skipped := 0
 			for ; it.ValidForPrefix(prefix) && len(events) < limit; it.Next() {
 				// A node filter can match rarely (or never); without a scan cap
 				// this loop would otherwise keep reading until it exhausts the
@@ -260,15 +275,25 @@ func (s *Store) ListEvents(ctx context.Context, node string, limit int) ([]Event
 				}
 				scanned++
 				var e Event
+				var decodeErr error
 				if err := it.Item().Value(func(v []byte) error {
-					return json.Unmarshal(v, &e)
+					decodeErr = json.Unmarshal(v, &e)
+					return nil
 				}); err != nil {
 					return err
+				}
+				if decodeErr != nil {
+					skipped++
+					continue
 				}
 				if node != "" && e.NodeID != node {
 					continue
 				}
 				events = append(events, e)
+			}
+			// One warning per call, not per record (#372).
+			if skipped > 0 {
+				slog.Warn("event records could not be decoded and were skipped", "count", skipped)
 			}
 			return nil
 		})
@@ -337,6 +362,7 @@ func (s *Store) ListAlerts(ctx context.Context, node string, limit int) ([]Alert
 			prefix := []byte("alert:")
 			it.Seek(append(prefix, 0xFF))
 			scanned := 0
+			skipped := 0
 			for ; it.ValidForPrefix(prefix) && len(alerts) < limit; it.Next() {
 				// See the matching comment in ListEvents: cap the scan so a
 				// rarely (or never) matching node filter can't force a full
@@ -349,15 +375,25 @@ func (s *Store) ListAlerts(ctx context.Context, node string, limit int) ([]Alert
 				}
 				scanned++
 				var a Alert
+				var decodeErr error
 				if err := it.Item().Value(func(v []byte) error {
-					return json.Unmarshal(v, &a)
+					decodeErr = json.Unmarshal(v, &a)
+					return nil
 				}); err != nil {
 					return err
+				}
+				if decodeErr != nil {
+					skipped++
+					continue
 				}
 				if node != "" && a.NodeID != node {
 					continue
 				}
 				alerts = append(alerts, a)
+			}
+			// One warning per call, not per record (#372).
+			if skipped > 0 {
+				slog.Warn("alert records could not be decoded and were skipped", "count", skipped)
 			}
 			return nil
 		})
