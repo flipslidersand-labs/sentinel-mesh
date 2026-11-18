@@ -104,6 +104,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The agent IP is derived from the gRPC peer, not a client-supplied field (#178).
 - `deploy-agent.sh` no longer leaks the gRPC bearer token (#174); Slack send
   errors no longer include the webhook URL (#256).
+- `demo-multi-region.sh` validates `SENTINEL_*_IP` (IPv4) and hosts before
+  embedding them in the root aggregator unit, and passes `--` to ssh (#367).
+||||||| a460005
 - REST 500 responses return a fixed `internal error` message instead of the store
   error text (#297); the aggregator's `RegionStatus.error` carries a fixed
   classification instead of the raw upstream error (#306); the rate-limit log
