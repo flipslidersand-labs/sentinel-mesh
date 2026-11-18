@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Web UI:** a failed localStorage write now keeps the API token in memory for the
+  current tab and the widget says "This tab only" instead of "Saved" (#377).
 - **BREAKING (go-collector):** gRPC authentication is now controlled by the new
   `--grpc-auth=required|disabled` flag (default `required`) instead of being
   implicitly enabled by `SENTINEL_API_TOKEN` (#222). With `required` and no
