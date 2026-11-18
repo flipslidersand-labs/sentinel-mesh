@@ -133,7 +133,7 @@ func (s *Store) RevokeToken(ctx context.Context, nodeID string) error {
 func (s *Store) ListTokens(ctx context.Context) ([]AgentToken, error) {
 	tokens := make([]AgentToken, 0)
 	var brokenKeys []string
-	err := runWithContext(ctx, func() error {
+	err := s.run(ctx, func() error {
 		return s.db.View(func(tx *badger.Txn) error {
 			opts := badger.DefaultIteratorOptions
 			prefix := []byte("agenttoken:")
@@ -209,7 +209,7 @@ func (s *Store) LookupNodeID(ctx context.Context, token string) (nodeID string, 
 func (s *Store) loadTokenIndex() {
 	idx := make(map[string]string)
 	var brokenKeys []string
-	err := runWithContext(context.Background(), func() error {
+	err := s.run(context.Background(), func() error {
 		return s.db.View(func(tx *badger.Txn) error {
 			prefix := []byte("agenttoken:")
 			it := tx.NewIterator(badger.DefaultIteratorOptions)
@@ -249,7 +249,7 @@ func (s *Store) loadTokenIndex() {
 
 func (s *Store) getAgentToken(ctx context.Context, nodeID string) (*AgentToken, error) {
 	var rec *AgentToken
-	err := runWithContext(ctx, func() error {
+	err := s.run(ctx, func() error {
 		return s.db.View(func(tx *badger.Txn) error {
 			item, err := tx.Get(agentTokenKey(nodeID))
 			if errors.Is(err, badger.ErrKeyNotFound) {
@@ -288,7 +288,7 @@ func (s *Store) putAgentToken(ctx context.Context, rec AgentToken) error {
 	// Agent token records are credentials, not observability data — they
 	// must not expire under the same retention TTL as events/alerts (#77),
 	// or a long-lived agent's token would silently stop authenticating.
-	return runWithContext(ctx, func() error {
+	return s.run(ctx, func() error {
 		return s.db.Update(func(tx *badger.Txn) error {
 			return tx.Set(agentTokenKey(rec.NodeID), val)
 		})

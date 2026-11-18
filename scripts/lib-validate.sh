@@ -18,6 +18,14 @@ validate_ident() {
   [[ "$value" =~ ^[A-Za-z0-9._-]+$ ]] || die "$name must match ^[A-Za-z0-9._-]+\$: '$value'"
 }
 
+# Secret values (e.g. --grpc-token): same charset as validate_ident, but the
+# error names only the field and never echoes the value, so a rejected token
+# does not land in CI logs or terminal history (#363, follow-up to #174).
+validate_secret() {
+  local name="$1" value="$2"
+  [[ "$value" =~ ^[A-Za-z0-9._-]+$ ]] || die "$name must match ^[A-Za-z0-9._-]+\$ (value not shown)"
+}
+
 # SSH/SCP target host (or SSH config alias). Rejects a leading '-', which
 # ssh/scp would otherwise interpret as an option (e.g. `-oProxyCommand=...`),
 # letting an attacker-controlled hostname run arbitrary local commands (#66).
