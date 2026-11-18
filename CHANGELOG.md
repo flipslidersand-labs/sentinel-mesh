@@ -83,6 +83,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **deploy:** `scripts/deploy-agent.sh` validates `--mock-rate` as an integer in
   1..1000 (#310).
 
+### Fixed
+
+- **go-collector:** `ListTokens` and `getAgentToken` no longer return results the
+  background goroutine may still be writing after the context ends; they return
+  nil on error (#382).
+
 ### Security
 
 - **go-collector:** the aggregator rejects upstream URLs that contain userinfo
