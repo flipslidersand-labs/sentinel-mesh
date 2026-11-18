@@ -225,3 +225,48 @@ func assertStatus(t *testing.T, reg *registry.Registry, nodeID, want string) {
 	}
 	t.Errorf("node %s not found", nodeID)
 }
+
+func TestHeartbeatOrRegisterRecreatesEvictedNode(t *testing.T) {
+	reg := registry.New()
+	if err := reg.Register("node-a", "h", "203.0.113.5", "1.0", "eu"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reg.StartHeartbeatChecker(ctx, 20*time.Millisecond, 5*time.Millisecond, 20*time.Millisecond)
+	deadline := time.Now().Add(3 * time.Second)
+	for len(reg.List()) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("node was not evicted")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	reg.Heartbeat("node-a")
+	if len(reg.List()) != 0 {
+		t.Fatal("Heartbeat must stay a no-op for unknown nodes")
+	}
+	reg.HeartbeatOrRegister("node-a", "198.51.100.7", "")
+	got := reg.ListByRegion("")
+	if len(got) != 1 || got[0].NodeID != "node-a" || got[0].Status != "active" || got[0].IP != "198.51.100.7" {
+		t.Fatalf("node not recreated: %+v", got)
+	}
+}
+
+func TestRegisterFillsAttributesOfRecreatedNode(t *testing.T) {
+	reg := registry.New()
+	reg.HeartbeatOrRegister("node-a", "198.51.100.7", "")
+	if err := reg.Register("node-a", "host-a", "203.0.113.5", "1.2.3", "eu"); err != nil {
+		t.Fatal(err)
+	}
+	got := reg.List()
+	if len(got) != 1 || got[0].Hostname != "host-a" || got[0].Version != "1.2.3" || got[0].IP != "203.0.113.5" || got[0].Region != "eu" {
+		t.Fatalf("attributes not filled: %+v", got)
+	}
+	if err := reg.Register("node-a", "", "", "", "eu"); err != nil {
+		t.Fatal(err)
+	}
+	if got := reg.List()[0]; got.Hostname != "host-a" || got.Version != "1.2.3" {
+		t.Fatalf("empty values must not erase: %+v", got)
+	}
+}

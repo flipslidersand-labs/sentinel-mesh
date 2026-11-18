@@ -131,12 +131,12 @@ func (s *Store) RevokeToken(ctx context.Context, nodeID string) error {
 // the whole list unusable (#276). The warning carries only record keys and a
 // count, never hashes or token values. Other errors (iteration/IO) still fail.
 func (s *Store) ListTokens(ctx context.Context) ([]AgentToken, error) {
-	// The closure's locals are handed out only after runWithContext returns
+	// The closure's locals are handed out only after s.run returns
 	// nil. If ctx ends first, the goroutine may still be running, so the
 	// caller must never read them (#382).
 	var result []AgentToken
 	var brokenKeys []string
-	err := runWithContext(ctx, func() error {
+	err := s.run(ctx, func() error {
 		tokens := make([]AgentToken, 0)
 		var broken []string
 		err := s.db.View(func(tx *badger.Txn) error {
@@ -222,7 +222,7 @@ func (s *Store) LookupNodeID(ctx context.Context, token string) (nodeID string, 
 func (s *Store) loadTokenIndex() {
 	idx := make(map[string]string)
 	var brokenKeys []string
-	err := runWithContext(context.Background(), func() error {
+	err := s.run(context.Background(), func() error {
 		return s.db.View(func(tx *badger.Txn) error {
 			prefix := []byte("agenttoken:")
 			it := tx.NewIterator(badger.DefaultIteratorOptions)
@@ -262,9 +262,9 @@ func (s *Store) loadTokenIndex() {
 
 func (s *Store) getAgentToken(ctx context.Context, nodeID string) (*AgentToken, error) {
 	// out is written by the goroutine only on success and read by the caller
-	// only after runWithContext returned nil (#382).
+	// only after s.run returned nil (#382).
 	var out *AgentToken
-	err := runWithContext(ctx, func() error {
+	err := s.run(ctx, func() error {
 		var rec *AgentToken
 		err := s.db.View(func(tx *badger.Txn) error {
 			item, err := tx.Get(agentTokenKey(nodeID))
@@ -312,7 +312,7 @@ func (s *Store) putAgentToken(ctx context.Context, rec AgentToken) error {
 	// Agent token records are credentials, not observability data — they
 	// must not expire under the same retention TTL as events/alerts (#77),
 	// or a long-lived agent's token would silently stop authenticating.
-	return runWithContext(ctx, func() error {
+	return s.run(ctx, func() error {
 		return s.db.Update(func(tx *badger.Txn) error {
 			return tx.Set(agentTokenKey(rec.NodeID), val)
 		})
