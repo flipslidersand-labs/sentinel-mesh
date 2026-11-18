@@ -14,7 +14,7 @@ edition = "2021"
 ebpf = ["dep:aya"]
 
 [dependencies]
-aya          = { version = "0.12", features = ["async_tokio"], optional = true }
+aya          = { version = "0.13", features = ["async_tokio"], optional = true }
 tokio        = { workspace = true }
 tonic        = { workspace = true }
 prost        = { workspace = true }
