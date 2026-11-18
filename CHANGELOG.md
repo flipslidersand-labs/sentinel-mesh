@@ -74,6 +74,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/metrics` is behind the same bearer auth as `/api/*` (only `/healthz` is open). The
   installer now fails (with the journal tail) if the unit is not active after start, and the
   README/`serve --help` examples were fixed so they start (#279).
+- **go-collector:** `TracesProvider.Close` no longer uses the signal-canceled context, so
+  pending spans are flushed on SIGTERM (5s timeout) (#376).
+||||||| 9c17729
 - **go-collector:** anomaly window counts use a binary search over the sorted
   timestamps instead of a linear scan (#296).
 
