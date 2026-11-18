@@ -9,9 +9,10 @@ export function TokenSettings() {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState(() => getToken());
   const [saved, setSaved] = useState(false);
+  const [memoryOnly, setMemoryOnly] = useState(false);
 
   function save() {
-    setToken(draft);
+    setMemoryOnly(!setToken(draft));
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);
   }
@@ -42,8 +43,14 @@ export function TokenSettings() {
             }}
           />
           <button type="button" onClick={save}>
-            {saved ? "Saved" : "Save"}
+            {saved ? (memoryOnly ? "This tab only" : "Saved") : "Save"}
           </button>
+          {memoryOnly && (
+            <p className="token-settings-hint" role="alert">
+              Could not save to localStorage; the token is valid for this tab
+              only and will be lost on reload.
+            </p>
+          )}
           <p className="token-settings-hint">
             Stored in this browser's localStorage only and sent as
             <code> Authorization: Bearer &lt;token&gt;</code> on every API
