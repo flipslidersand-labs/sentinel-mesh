@@ -85,6 +85,34 @@ func (r *Registry) Heartbeat(nodeID string) {
 	}
 }
 
+// HeartbeatOrRegister refreshes a known node like Heartbeat. If the node is not
+// in the registry (e.g. evicted while its stream stayed connected, #371), it is
+// re-created from the given identity so it reappears in List/ListByRegion.
+// Hostname and version are unknown here and are left empty; region falls back
+// to DefaultRegion when empty. A later Register restores the full attributes.
+func (r *Registry) HeartbeatOrRegister(nodeID, ip, region string) {
+	if nodeID == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now().UTC()
+	if n, ok := r.nodes[nodeID]; ok {
+		n.LastSeen = now
+		n.Status = "active"
+		n.inactiveSince = time.Time{}
+		return
+	}
+	r.nodes[nodeID] = &AgentNode{
+		NodeID:     nodeID,
+		IP:         ip,
+		Region:     normalizeRegion(region),
+		Registered: now,
+		LastSeen:   now,
+		Status:     "active",
+	}
+}
+
 func (r *Registry) SetInactive(nodeID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
