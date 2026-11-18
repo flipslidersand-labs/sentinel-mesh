@@ -41,6 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   installer now fails (with the journal tail) if the unit is not active after start, and the
   README/`serve --help` examples were fixed so they start (#279).
 
+### Fixed
+
+- **go-collector:** `ListTokens` and `getAgentToken` no longer return results the
+  background goroutine may still be writing after the context ends; they return
+  nil on error (#382).
+
 ### Security
 
 - Per-agent bearer tokens for the gRPC channel instead of a shared token

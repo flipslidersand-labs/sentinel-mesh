@@ -131,10 +131,15 @@ func (s *Store) RevokeToken(ctx context.Context, nodeID string) error {
 // the whole list unusable (#276). The warning carries only record keys and a
 // count, never hashes or token values. Other errors (iteration/IO) still fail.
 func (s *Store) ListTokens(ctx context.Context) ([]AgentToken, error) {
-	tokens := make([]AgentToken, 0)
+	// The closure's locals are handed out only after runWithContext returns
+	// nil. If ctx ends first, the goroutine may still be running, so the
+	// caller must never read them (#382).
+	var result []AgentToken
 	var brokenKeys []string
 	err := runWithContext(ctx, func() error {
-		return s.db.View(func(tx *badger.Txn) error {
+		tokens := make([]AgentToken, 0)
+		var broken []string
+		err := s.db.View(func(tx *badger.Txn) error {
 			opts := badger.DefaultIteratorOptions
 			prefix := []byte("agenttoken:")
 			it := tx.NewIterator(opts)
@@ -150,19 +155,27 @@ func (s *Store) ListTokens(ctx context.Context) ([]AgentToken, error) {
 					return err
 				}
 				if decodeErr != nil {
-					brokenKeys = append(brokenKeys, string(item.KeyCopy(nil)))
+					broken = append(broken, string(item.KeyCopy(nil)))
 					continue
 				}
 				tokens = append(tokens, rec)
 			}
 			return nil
 		})
+		if err != nil {
+			return err
+		}
+		result, brokenKeys = tokens, broken
+		return nil
 	})
-	if err == nil && len(brokenKeys) > 0 {
+	if err != nil {
+		return nil, err
+	}
+	if len(brokenKeys) > 0 {
 		slog.Warn("agent token records could not be decoded and were skipped from the list",
 			"count", len(brokenKeys), "keys", brokenKeys)
 	}
-	return tokens, err
+	return result, nil
 }
 
 // LookupNodeID resolves a presented plaintext token to its owning node_id.
@@ -248,9 +261,12 @@ func (s *Store) loadTokenIndex() {
 }
 
 func (s *Store) getAgentToken(ctx context.Context, nodeID string) (*AgentToken, error) {
-	var rec *AgentToken
+	// out is written by the goroutine only on success and read by the caller
+	// only after runWithContext returned nil (#382).
+	var out *AgentToken
 	err := runWithContext(ctx, func() error {
-		return s.db.View(func(tx *badger.Txn) error {
+		var rec *AgentToken
+		err := s.db.View(func(tx *badger.Txn) error {
 			item, err := tx.Get(agentTokenKey(nodeID))
 			if errors.Is(err, badger.ErrKeyNotFound) {
 				return nil
@@ -267,8 +283,16 @@ func (s *Store) getAgentToken(ctx context.Context, nodeID string) (*AgentToken, 
 				return nil
 			})
 		})
+		if err != nil {
+			return err
+		}
+		out = rec
+		return nil
 	})
-	return rec, err
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // writeAgentToken persists rec; tests replace putTokenFn to inject write
