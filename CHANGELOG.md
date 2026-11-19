@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **license:** declare `license = "MIT"` in the Rust agent manifests and `web/package.json` to match `LICENSE` (#328).
 - **BREAKING (go-collector, #360):** `SENTINEL_API_TOKEN` must now be at least 32 bytes;
   the collector refuses to start with a shorter value (e.g. use `openssl rand -hex 32`).
   Rotate any shorter token before upgrading. This also applies with `--http-auth disabled`: a
