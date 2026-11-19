@@ -14,10 +14,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Rotate any shorter token before upgrading. This also applies with `--http-auth disabled`: a
   `SENTINEL_API_TOKEN` that is set but shorter than 32 bytes is a startup error.
 
-### Added
-
-- **CI:** `go mod tidy` consistency check for `go-collector` (fails if `go.mod`/`go.sum` would change) (#330).
-
 ### Security
 
 - **go-collector:** REST API now throttles repeated failed bearer-auth attempts per source
@@ -25,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CI:** `go mod tidy` consistency check for `go-collector` (fails if `go.mod`/`go.sum` would change) (#330).
 - **go-collector:** a node evicted from the registry while its stream stays
   connected is re-created on its next event (default region, empty hostname)
   instead of vanishing from `/api/nodes` until reconnect (#371).
