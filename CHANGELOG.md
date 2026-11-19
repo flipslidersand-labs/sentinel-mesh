@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the collector refuses to start with a shorter value (e.g. use `openssl rand -hex 32`).
   Rotate any shorter token before upgrading. This also applies with `--http-auth disabled`: a
   `SENTINEL_API_TOKEN` that is set but shorter than 32 bytes is a startup error.
+- **scripts (#358):** `install-collector.sh` and `deploy-agent.sh` now stage uploads in a per-run
+  remote `mktemp -d` directory (removed on exit) instead of fixed `/tmp` paths, and install binaries
+  with `install -o root -g root -m 755` and static files with `rsync --no-links` as root:root.
 
 ### Security
 
@@ -42,21 +45,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   InvalidArgument/Unauthenticated/PermissionDenied status) now logs the
   collector's reason and exits non-zero instead of retrying forever; transient
   errors still back off and retry (#380).
-||||||| 167904e
 - **Web UI:** a failed localStorage write now keeps the API token in memory for the
   current tab and the widget says "This tab only" instead of "Saved" (#377).
-||||||| f4e74e3
 - **go-collector:** `RuleSet.Validate` now rejects `gt`/`lt` conditions whose `value` is not
   numeric (e.g. `"10k"`), instead of loading a rule that can never fire (#375).
-||||||| f4e74e3
 - **Deploy:** `scripts/install-collector.sh` now runs the collector as the unprivileged
   system user `sentinel` with systemd hardening (`NoNewPrivileges`, `ProtectSystem=strict`,
   `ProtectHome`, `PrivateTmp`, ...; ports below 1024 stay bindable via
   `CAP_NET_BIND_SERVICE`) instead of root (#365). Migration: re-run the installer; it
   creates the user and chowns `--data-dir`. TLS cert/key given by `--grpc-tls-*` must be
   readable by `sentinel` and outside `/home`, otherwise the installer stops with a hint.
-
-||||||| a460005
 - **BREAKING (go-collector):** the SMTP notifier now requires STARTTLS for every
   non-loopback server, even without credentials; if the server does not advertise
   it the alert is not sent (previously sent in plaintext, open to downgrade) (#362).
@@ -81,12 +79,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   README/`serve --help` examples were fixed so they start (#279).
 - **go-collector:** `TracesProvider.Close` no longer uses the signal-canceled context, so
   pending spans are flushed on SIGTERM (5s timeout) (#376).
-||||||| 9c17729
 - **go-collector:** anomaly window counts use a binary search over the sorted
   timestamps instead of a linear scan (#296).
 
 ### Fixed
 
+- **agent:** `ok=false` acks from the collector are counted and logged as one
+  summary line per 10 s instead of one line per event, so exceeding the per-node
+  rate limit no longer floods the journal (#378).
+- **go-collector:** with `--cors-origins` set, CORS preflight now allows the `Authorization` header, so browsers can call the bearer-authenticated API cross-origin (#350).
 - **go-collector:** `--otel-endpoint` for traces accepts a value with a scheme
   (e.g. `http://localhost:4318`) (#280).
 - **go-collector:** a corrupted token record no longer breaks `token list`; it is
@@ -136,14 +137,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   errors no longer include the webhook URL (#256).
 - A negative `SENTINEL_NOTIFY_COOLDOWN` or an unknown `SENTINEL_NOTIFY_MIN_SEVERITY`
   now fails collector startup instead of notifying on every alert (#379).
-||||||| f4e74e3
 - gRPC `MaxRecvMsgSize` lowered from 4 MB to 8 KB, derived from the validated field
   limits (largest legitimate message is about 1.6 KB); oversized messages are
   rejected with `ResourceExhausted` (#361).
-||||||| f4e74e3
 - `demo-multi-region.sh` validates `SENTINEL_*_IP` (IPv4) and hosts before
   embedding them in the root aggregator unit, and passes `--` to ssh (#367).
-||||||| a460005
 - REST 500 responses return a fixed `internal error` message instead of the store
   error text (#297); the aggregator's `RegionStatus.error` carries a fixed
   classification instead of the raw upstream error (#306); the rate-limit log
