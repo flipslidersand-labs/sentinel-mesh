@@ -2,8 +2,9 @@
 # Deploy and start sentinel-agent on one or more remote hosts via systemd.
 #
 # Uses the binary produced by scripts/build.sh (dist/sentinel-agent), so run
-# that first. Real eBPF mode is the default; pass --mock for hosts without
-# CAP_BPF or for a quick end-to-end smoke test.
+# that first. Real eBPF mode is the default, but build.sh output is mock-only
+# (no --features ebpf), so pass --mock with it (non-mock deploy of such a
+# binary is refused). --mock is also for hosts without CAP_BPF.
 #
 # Usage:
 #   ./scripts/deploy-agent.sh [OPTIONS] HOST...
@@ -123,6 +124,20 @@ if [[ ! -f "$BINARY" ]]; then
 fi
 
 source "$REPO_ROOT/scripts/lib-validate.sh"
+
+# Refuse to deploy a mock-only binary in real eBPF mode (#349). scripts/build.sh
+# builds WITHOUT --features ebpf; such a binary exits 1 right after start
+# ("compiled without --features ebpf", rust-agent/agent/src/main.rs), so the
+# systemd unit would crash-loop. Detection is a fixed-string match on that
+# message, which exists in the binary only when the feature is compiled out
+# (#[cfg(not(feature = "ebpf"))]). It is a heuristic tied to main.rs's text:
+# if that message changes, update EBPF_MISSING_MARKER here too.
+EBPF_MISSING_MARKER="compiled without --features ebpf"
+if ! $MOCK && grep -aqF -- "$EBPF_MISSING_MARKER" "$BINARY"; then
+  echo "Error: $BINARY was built without eBPF support (mock-only build) and would exit right after start in real eBPF mode." >&2
+  echo "       Pass --mock to deploy it in mock mode, or rebuild the agent with --features ebpf." >&2
+  exit 1
+fi
 
 # A leading '-' in a host would be interpreted by ssh/scp as an option
 # (e.g. -oProxyCommand=...), letting it run arbitrary local commands (#66).

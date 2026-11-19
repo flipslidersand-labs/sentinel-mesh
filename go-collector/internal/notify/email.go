@@ -140,6 +140,11 @@ func isLoopbackHost(host string) bool {
 // connection to a non-loopback host (fail-closed, see issue #215). Without
 // STARTTLS, non-loopback hosts are refused even without credentials unless
 // opts.allowPlaintext is set (issue #362).
+//
+// When credentials are supplied but the server does not advertise the AUTH
+// extension, sending fails (fail-closed, like net/smtp.SendMail's "server
+// doesn't support AUTH"); the message is never sent unauthenticated (issue
+// #247). Without credentials, AUTH is not required.
 func sendMailWithOptions(ctx context.Context, addr string, a smtp.Auth, from string, to []string, msg []byte, opts smtpOptions) error {
 	var dialer net.Dialer
 	if deadline, ok := ctx.Deadline(); ok {
@@ -202,10 +207,11 @@ func sendMailWithOptions(ctx context.Context, addr string, a smtp.Auth, from str
 	}
 
 	if a != nil {
-		if ok, _ := c.Extension("AUTH"); ok {
-			if err := c.Auth(a); err != nil {
-				return err
-			}
+		if ok, _ := c.Extension("AUTH"); !ok {
+			return fmt.Errorf("smtp server %s does not advertise AUTH; refusing to send without authenticating", host)
+		}
+		if err := c.Auth(a); err != nil {
+			return err
 		}
 	}
 	if err := c.Mail(from); err != nil {
