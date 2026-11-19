@@ -332,56 +332,66 @@ async fn run_session(
 
     let mut rejects = RejectTracker::new(REJECT_REPORT_INTERVAL);
 
-    loop {
-        tokio::select! {
-            biased;
+    // Run the pump as a block so that every exit path (clean end or any
+    // error) flushes pending rejection counts before returning.
+    let result: Result<()> = async {
+        loop {
+            tokio::select! {
+                biased;
 
-            ack = response.message() => {
-                match ack? {
-                    Some(a) => {
-                        stats.acked += 1;
-                        if !a.ok {
-                            if let Some(r) = rejects.record(Instant::now()) {
-                                log_rejects(r);
-                            }
-                        }
-                    }
-                    // Server closed the stream — a connection failure, not a
-                    // clean shutdown; retry.
-                    None => anyhow::bail!("collector closed the event stream"),
-                }
-            }
-
-            maybe_event = rx.recv() => {
-                match maybe_event {
-                    Some(mut event) => {
-                        stats.taken += 1;
-                        event.node_id = node_id.to_string();
-                        if bridge_tx.send(event).await.is_err() {
-                            anyhow::bail!("outbound stream to collector closed");
-                        }
-                    }
-                    // Every event-source Sender was dropped — there will
-                    // never be another event. Close the outbound stream
-                    // cleanly, drain remaining acks, then signal "done".
-                    None => {
-                        drop(bridge_tx);
-                        while let Some(ack) = response.message().await? {
+                ack = response.message() => {
+                    match ack? {
+                        Some(a) => {
                             stats.acked += 1;
-                            if !ack.ok {
+                            if !a.ok {
                                 if let Some(r) = rejects.record(Instant::now()) {
                                     log_rejects(r);
                                 }
                             }
                         }
-                        if let Some(r) = rejects.flush(Instant::now()) {
-                            log_rejects(r);
+                        // Server closed the stream — a connection failure, not a
+                        // clean shutdown; retry.
+                        None => anyhow::bail!("collector closed the event stream"),
+                    }
+                }
+
+                maybe_event = rx.recv() => {
+                    match maybe_event {
+                        Some(mut event) => {
+                            stats.taken += 1;
+                            event.node_id = node_id.to_string();
+                            if bridge_tx.send(event).await.is_err() {
+                                anyhow::bail!("outbound stream to collector closed");
+                            }
                         }
-                        return Ok(());
+                        // Every event-source Sender was dropped — there will
+                        // never be another event. Close the outbound stream
+                        // cleanly, drain remaining acks, then signal "done".
+                        None => {
+                            drop(bridge_tx);
+                            while let Some(ack) = response.message().await? {
+                                stats.acked += 1;
+                                if !ack.ok {
+                                    if let Some(r) = rejects.record(Instant::now()) {
+                                        log_rejects(r);
+                                    }
+                                }
+                            }
+                            return Ok(());
+                        }
                     }
                 }
             }
         }
+    }
+    .await;
+    flush_rejects_on_exit(&mut rejects, Instant::now());
+    result
+}
+
+fn flush_rejects_on_exit(rejects: &mut RejectTracker, now: Instant) {
+    if let Some(r) = rejects.flush(now) {
+        log_rejects(r);
     }
 }
 
@@ -443,6 +453,17 @@ fn log_rejects((since_last, total): (u64, u64)) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_rejects_are_flushed_on_exit() {
+        let t0 = Instant::now();
+        let mut d = RejectTracker::new(Duration::from_secs(10));
+        d.record(t0);
+        d.record(t0 + Duration::from_secs(1));
+        assert_eq!(d.unreported, 1);
+        flush_rejects_on_exit(&mut d, t0 + Duration::from_secs(2));
+        assert_eq!(d.unreported, 0);
+    }
 
     #[test]
     fn reject_tracker_throttles_with_injected_clock() {
