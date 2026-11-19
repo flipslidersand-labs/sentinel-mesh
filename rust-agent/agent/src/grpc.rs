@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use tokio::sync::mpsc::Receiver;
@@ -330,6 +330,8 @@ async fn run_session(
 
     let mut response = client.stream_events(outbound).await?.into_inner();
 
+    let mut rejects = RejectTracker::new(REJECT_REPORT_INTERVAL);
+
     loop {
         tokio::select! {
             biased;
@@ -339,7 +341,9 @@ async fn run_session(
                     Some(a) => {
                         stats.acked += 1;
                         if !a.ok {
-                            eprintln!("collector rejected event");
+                            if let Some(r) = rejects.record(Instant::now()) {
+                                log_rejects(r);
+                            }
                         }
                     }
                     // Server closed the stream — a connection failure, not a
@@ -365,8 +369,13 @@ async fn run_session(
                         while let Some(ack) = response.message().await? {
                             stats.acked += 1;
                             if !ack.ok {
-                                eprintln!("collector rejected event");
+                                if let Some(r) = rejects.record(Instant::now()) {
+                                    log_rejects(r);
+                                }
                             }
+                        }
+                        if let Some(r) = rejects.flush(Instant::now()) {
+                            log_rejects(r);
                         }
                         return Ok(());
                     }
@@ -376,9 +385,83 @@ async fn run_session(
     }
 }
 
+/// Minimum gap between "collector rejected events" log lines, so a node above
+/// the collector's per-node rate limit does not flood the journal (#378).
+const REJECT_REPORT_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Counts `ok=false` acks. Same scheme as `events::DropTracker`: the first
+/// rejection is reported immediately, later ones are batched and reported at
+/// most once per `interval`.
+struct RejectTracker {
+    total: u64,
+    unreported: u64,
+    last_report: Option<Instant>,
+    interval: Duration,
+}
+
+impl RejectTracker {
+    fn new(interval: Duration) -> Self {
+        Self {
+            total: 0,
+            unreported: 0,
+            last_report: None,
+            interval,
+        }
+    }
+
+    /// Record one rejected ack; returns `(since_last, total)` when it is time to log.
+    fn record(&mut self, now: Instant) -> Option<(u64, u64)> {
+        self.total += 1;
+        self.unreported += 1;
+        let due = match self.last_report {
+            None => true,
+            Some(t) => now.saturating_duration_since(t) >= self.interval,
+        };
+        if due {
+            self.flush(now)
+        } else {
+            None
+        }
+    }
+
+    /// Report rejections not yet logged (e.g. when the stream ends).
+    fn flush(&mut self, now: Instant) -> Option<(u64, u64)> {
+        if self.unreported == 0 {
+            return None;
+        }
+        let r = (self.unreported, self.total);
+        self.unreported = 0;
+        self.last_report = Some(now);
+        Some(r)
+    }
+}
+
+fn log_rejects((since_last, total): (u64, u64)) {
+    eprintln!("warn: collector rejected {since_last} event(s) since last report ({total} total)");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reject_tracker_throttles_with_injected_clock() {
+        let t0 = Instant::now();
+        let mut d = RejectTracker::new(Duration::from_secs(10));
+        // First rejection is reported immediately.
+        assert_eq!(d.record(t0), Some((1, 1)));
+        // A burst inside the interval is silent.
+        for i in 1..=1000 {
+            assert_eq!(d.record(t0 + Duration::from_millis(i)), None);
+        }
+        // Nothing to flush-report early via record; once the interval has
+        // elapsed the next rejection reports the whole batch in one line.
+        assert_eq!(d.record(t0 + Duration::from_secs(10)), Some((1001, 1002)));
+        // Nothing pending -> flush is empty; a pending one is flushed.
+        assert_eq!(d.flush(t0 + Duration::from_secs(11)), None);
+        assert_eq!(d.record(t0 + Duration::from_secs(12)), None);
+        assert_eq!(d.flush(t0 + Duration::from_secs(12)), Some((1, 1003)));
+    }
 
     #[test]
     fn jittered_stays_within_25_percent() {

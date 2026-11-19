@@ -87,6 +87,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **agent:** `ok=false` acks from the collector are counted and logged as one
+  summary line per 10 s instead of one line per event, so exceeding the per-node
+  rate limit no longer floods the journal (#378).
 - **go-collector:** `--otel-endpoint` for traces accepts a value with a scheme
   (e.g. `http://localhost:4318`) (#280).
 - **go-collector:** a corrupted token record no longer breaks `token list`; it is
