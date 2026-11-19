@@ -124,8 +124,24 @@ if [[ ! -f "$BINARY" ]]; then
   exit 1
 fi
 
-REMOTE_TMP_BIN="/tmp/sentinel-collector"
-REMOTE_TMP_STATIC="/tmp/sentinel-static"
+# Staging area on the target: a fresh random 0700 dir from `mktemp -d` on every
+# run, never a fixed /tmp path another local user could pre-create or swap (#358).
+# Removed on exit, including on failure.
+REMOTE_TMP=""
+cleanup_remote_tmp() {
+  if [[ -n "$REMOTE_TMP" ]]; then
+    ssh -n -- "$SSH_HOST" rm -rf -- "$REMOTE_TMP" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_remote_tmp EXIT
+REMOTE_TMP="$(ssh -n -- "$SSH_HOST" mktemp -d)"
+if [[ ! "$REMOTE_TMP" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
+  echo "Error: unexpected remote mktemp output: '$REMOTE_TMP'" >&2
+  REMOTE_TMP=""
+  exit 1
+fi
+REMOTE_TMP_BIN="$REMOTE_TMP/sentinel-collector"
+REMOTE_TMP_STATIC="$REMOTE_TMP/static"
 
 # Remote commands are sent as positional args to `bash -s --` inside a
 # single-quoted heredoc, so the remote shell never re-parses an interpolated
@@ -170,16 +186,25 @@ REMOTE
 scp -- "$BINARY" "$SSH_HOST:$REMOTE_TMP_BIN"
 ssh -- "$SSH_HOST" bash -s -- "$REMOTE_TMP_BIN" "$REMOTE_BIN" <<'REMOTE'
 set -euo pipefail
-sudo mv "$1" "$2"
-sudo chmod +x "$2"
+sudo install -o root -g root -m 755 "$1" "$2"
+rm -f "$1"
 REMOTE
 
 if [[ -d "$STATIC_DIR" ]]; then
   echo "==> Uploading UI static files..."
+  ssh -n -- "$SSH_HOST" mkdir -p -- "$REMOTE_TMP_STATIC"
   scp -r -- "$STATIC_DIR/." "$SSH_HOST:$REMOTE_TMP_STATIC/"
   ssh -- "$SSH_HOST" bash -s -- "$REMOTE_TMP_STATIC" "$REMOTE_STATIC" <<'REMOTE'
 set -euo pipefail
-sudo rsync -a "$1/" "$2/"
+# No symlinks; never keep the deploy user's uid/gid. `--chown` needs rsync
+# >= 3.1, so use it only when available and otherwise chown afterwards.
+rsync_help="$(rsync --help 2>&1 || true)"
+if [[ "$rsync_help" == *--chown* ]]; then
+  sudo rsync -rt --no-links --chown=root:root --chmod=D755,F644 "$1/" "$2/"
+else
+  sudo rsync -rt --no-links --no-owner --no-group --chmod=D755,F644 "$1/" "$2/"
+  sudo chown -R root:root "$2"
+fi
 rm -rf "$1"
 REMOTE
 fi

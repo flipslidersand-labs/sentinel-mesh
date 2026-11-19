@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the collector refuses to start with a shorter value (e.g. use `openssl rand -hex 32`).
   Rotate any shorter token before upgrading. This also applies with `--http-auth disabled`: a
   `SENTINEL_API_TOKEN` that is set but shorter than 32 bytes is a startup error.
+- **scripts (#358):** `install-collector.sh` and `deploy-agent.sh` now stage uploads in a per-run
+  remote `mktemp -d` directory (removed on exit) instead of fixed `/tmp` paths, and install binaries
+  with `install -o root -g root -m 755` and static files with `rsync --no-links` as root:root.
 
 ### Security
 
