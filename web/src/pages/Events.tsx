@@ -27,8 +27,10 @@ export function Events() {
   const [range, setRange] = useState<RangeKey>("all");
 
   // node + limit are applied server-side; type + time-range are client-side.
-  const { data, error, loading } = usePolling<Event[]>(() =>
-    api.events(node || undefined, limit),
+  const { data, error, loading } = usePolling<Event[]>(
+    () => api.events(node || undefined, limit),
+    undefined,
+    [node, limit],
   );
 
   const rangeMs = rangeMsFor(range);
