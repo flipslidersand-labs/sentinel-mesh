@@ -2,8 +2,9 @@
 # Deploy and start sentinel-agent on one or more remote hosts via systemd.
 #
 # Uses the binary produced by scripts/build.sh (dist/sentinel-agent), so run
-# that first. Real eBPF mode is the default; pass --mock for hosts without
-# CAP_BPF or for a quick end-to-end smoke test.
+# that first. Real eBPF mode is the default, but build.sh output is mock-only
+# (no --features ebpf), so pass --mock with it (non-mock deploy of such a
+# binary is refused). --mock is also for hosts without CAP_BPF.
 #
 # Usage:
 #   ./scripts/deploy-agent.sh [OPTIONS] HOST...
@@ -124,6 +125,20 @@ fi
 
 source "$REPO_ROOT/scripts/lib-validate.sh"
 
+# Refuse to deploy a mock-only binary in real eBPF mode (#349). scripts/build.sh
+# builds WITHOUT --features ebpf; such a binary exits 1 right after start
+# ("compiled without --features ebpf", rust-agent/agent/src/main.rs), so the
+# systemd unit would crash-loop. Detection is a fixed-string match on that
+# message, which exists in the binary only when the feature is compiled out
+# (#[cfg(not(feature = "ebpf"))]). It is a heuristic tied to main.rs's text:
+# if that message changes, update EBPF_MISSING_MARKER here too.
+EBPF_MISSING_MARKER="compiled without --features ebpf"
+if ! $MOCK && grep -aqF -- "$EBPF_MISSING_MARKER" "$BINARY"; then
+  echo "Error: $BINARY was built without eBPF support (mock-only build) and would exit right after start in real eBPF mode." >&2
+  echo "       Pass --mock to deploy it in mock mode, or rebuild the agent with --features ebpf." >&2
+  exit 1
+fi
+
 # A leading '-' in a host would be interpreted by ssh/scp as an option
 # (e.g. -oProxyCommand=...), letting it run arbitrary local commands (#66).
 for host in "${HOSTS[@]}"; do
@@ -183,6 +198,15 @@ UNIT
 }
 
 # ── Deploy to each host ───────────────────────────────────────────────────────
+# host:dir of a staging dir not yet removed; cleaned on exit if a step fails.
+REMOTE_TMP_PENDING=""
+cleanup_pending() {
+  if [[ -n "$REMOTE_TMP_PENDING" ]]; then
+    ssh -n -- "${REMOTE_TMP_PENDING%%:*}" rm -rf -- "${REMOTE_TMP_PENDING#*:}" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_pending EXIT
+
 deploy_to() {
   local host="$1"
   local node_id="$NODE_ID_OVERRIDE"
@@ -201,12 +225,21 @@ deploy_to() {
   # interpolated value as command text (#66). ssh/scp get a `--` guard so a
   # (validated, non-'-'-leading) host can never be misread as an option.
   echo "[${host}] uploading binary ..."
-  scp -- "$BINARY" "${host}:/tmp/sentinel-agent"
-  ssh -- "$host" bash -s -- "$REMOTE_BIN" <<'REMOTE'
+  # Stage in a fresh random 0700 dir from `mktemp -d` (never a fixed /tmp
+  # path), install as root:root, and always remove the staging dir (#358).
+  remote_tmp="$(ssh -n -- "$host" mktemp -d)"
+  if [[ ! "$remote_tmp" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
+    echo "[${host}] unexpected remote mktemp output: '${remote_tmp}'" >&2
+    return 1
+  fi
+  REMOTE_TMP_PENDING="${host}:${remote_tmp}"
+  scp -- "$BINARY" "${host}:${remote_tmp}/sentinel-agent"
+  ssh -- "$host" bash -s -- "${remote_tmp}/sentinel-agent" "$REMOTE_BIN" <<'REMOTE'
 set -euo pipefail
-sudo install -m 755 /tmp/sentinel-agent "$1"
-rm -f /tmp/sentinel-agent
+sudo install -o root -g root -m 755 "$1" "$2"
 REMOTE
+  ssh -n -- "$host" rm -rf -- "$remote_tmp" || true
+  REMOTE_TMP_PENDING=""
 
   echo "[${host}] installing gRPC token env file ..."
   if [[ -n "${GRPC_TOKEN:-}" ]]; then
