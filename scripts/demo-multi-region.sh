@@ -83,6 +83,8 @@ fi
 echo ""
 echo "==> Step 3: Deploy aggregator → $MINIPC_HOST :8083"
 
+# Demo only: upstreams are plaintext http:// on non-loopback hosts, so the
+# aggregator needs --aggregate-allow-insecure-http (#359); use TLS in production.
 UPSTREAMS="asia-west=${WEST_HTTP}"
 if [[ -n "$EAST_HTTP" ]]; then
   UPSTREAMS="${UPSTREAMS},asia-east=${EAST_HTTP}"
@@ -96,7 +98,7 @@ Description=SentinelMesh Aggregator
 After=network.target sentinel-collector.service
 
 [Service]
-ExecStart=/usr/local/bin/sentinel-collector serve --aggregate --http-auth disabled --http-addr :8083 --upstreams ${UPSTREAMS} --poll-interval 10s
+ExecStart=/usr/local/bin/sentinel-collector serve --aggregate --aggregate-allow-insecure-http --http-auth disabled --http-addr :8083 --upstreams ${UPSTREAMS} --poll-interval 10s
 WorkingDirectory=/opt/sentinel-collector
 Restart=always
 RestartSec=5

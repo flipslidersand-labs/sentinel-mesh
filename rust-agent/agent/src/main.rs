@@ -63,22 +63,22 @@ async fn main() -> Result<()> {
 
     let (tx, rx) = tokio::sync::mpsc::channel(256);
 
-    // Start event source
-    if args.mock {
+    // Start event source; keep the handle so its exit is not silent (#348)
+    let source = if args.mock {
         println!("mode: mock ({} events/sec)", args.mock_rate);
-        tokio::spawn(events::mock_source(tx, args.mock_rate));
+        tokio::spawn(events::mock_source(tx, args.mock_rate))
     } else {
         #[cfg(feature = "ebpf")]
         {
             println!("mode: eBPF (requires CAP_BPF)");
-            tokio::spawn(events::ebpf_source(tx));
+            tokio::spawn(events::ebpf_source(tx))
         }
         #[cfg(not(feature = "ebpf"))]
         {
             eprintln!("error: compiled without --features ebpf; use --mock for testing");
             std::process::exit(1);
         }
-    }
+    };
 
     if args.collector.starts_with("http://") {
         eprintln!("warning: connecting to collector over plaintext (http://) — use https:// once the collector has --grpc-tls-cert/--grpc-tls-key configured");
@@ -90,15 +90,40 @@ async fn main() -> Result<()> {
     }
 
     // Connect and stream to collector
-    grpc::stream_to_collector(
-        args.collector,
-        node_id,
-        region,
-        args.grpc_token,
-        args.grpc_ca_cert,
-        rx,
+    supervise_source(
+        source,
+        grpc::stream_to_collector(
+            args.collector,
+            node_id,
+            region,
+            args.grpc_token,
+            args.grpc_ca_cert,
+            rx,
+        ),
     )
     .await
+}
+
+/// Run `stream` while watching the event source task. Sources run forever, so any
+/// exit (load/attach failure, panic, early return) is an error: returning Err makes
+/// the process exit non-zero so systemd `Restart=` can recover, instead of sending
+/// heartbeats with zero events (#348).
+async fn supervise_source<F>(mut source: tokio::task::JoinHandle<()>, stream: F) -> Result<()>
+where
+    F: std::future::Future<Output = Result<()>>,
+{
+    tokio::select! {
+        // Sources run forever, so the stream ending with Ok(()) means the channel
+        // closed because the source died (tx dropped): that is an error too.
+        r = stream => match r {
+            Ok(()) => Err(anyhow::anyhow!("event source closed the channel")),
+            e => e,
+        },
+        j = &mut source => match j {
+            Ok(()) => Err(anyhow::anyhow!("event source exited unexpectedly")),
+            Err(e) => Err(anyhow::anyhow!("event source task failed: {e}")),
+        },
+    }
 }
 
 #[cfg(test)]
@@ -107,6 +132,42 @@ mod tests {
 
     fn parse_rate(v: &str) -> Result<Args, clap::Error> {
         Args::try_parse_from(["sentinel-agent", "--mock-rate", v])
+    }
+
+    #[tokio::test]
+    async fn source_exit_is_an_error() {
+        let source = tokio::spawn(async {});
+        let r = supervise_source(source, std::future::pending::<Result<()>>()).await;
+        assert!(r.unwrap_err().to_string().contains("event source"));
+    }
+
+    #[tokio::test]
+    async fn source_exit_with_closed_channel_is_always_an_error() {
+        // Source exit drops tx -> stream sees rx closed and returns Ok(()); both
+        // select! branches become ready, so repeat to catch the race.
+        for _ in 0..100 {
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<u8>(1);
+            let source = tokio::spawn(async move { drop(tx) });
+            let stream = async move {
+                rx.recv().await;
+                Ok(())
+            };
+            assert!(supervise_source(source, stream).await.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn source_panic_is_an_error() {
+        let source = tokio::spawn(async { panic!("boom") });
+        let r = supervise_source(source, std::future::pending::<Result<()>>()).await;
+        assert!(r.is_err());
+    }
+
+    #[tokio::test]
+    async fn stream_result_wins_while_source_runs() {
+        let source = tokio::spawn(std::future::pending::<()>());
+        let r = supervise_source(source, async { Err(anyhow::anyhow!("stream down")) }).await;
+        assert_eq!(r.unwrap_err().to_string(), "stream down");
     }
 
     #[test]

@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -161,5 +162,47 @@ func TestWarnIgnoredNormalModeFlags_NoWarningsWhenUnset(t *testing.T) {
 
 	if logs.Len() != 0 {
 		t.Errorf("expected no warnings, got: %v", logs.All())
+	}
+}
+
+func TestServeCmd_HTTPTLSFlagsRequiredTogether(t *testing.T) {
+	for _, name := range []string{"http-tls-cert", "http-tls-key"} {
+		cmd := serveCmd()
+		if err := cmd.Flags().Set(name, "/tmp/x.pem"); err != nil {
+			t.Fatalf("set %s: %v", name, err)
+		}
+		if err := cmd.ValidateFlagGroups(); err == nil {
+			t.Errorf("expected error when only --%s is set", name)
+		}
+	}
+}
+
+// Aggregate mode must refuse a non-loopback http:// upstream by default and
+// accept it only with --aggregate-allow-insecure-http (#359).
+func TestServeCmd_AggregateRejectsInsecureHTTPUpstream(t *testing.T) {
+	t.Setenv("SENTINEL_API_TOKEN", strings.Repeat("x", 32))
+	cmd := serveCmd()
+	cmd.SetArgs([]string{"--aggregate", "--upstreams=r=http://192.0.2.10:8081", "--http-addr=:0"})
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--aggregate-allow-insecure-http") {
+		t.Fatalf("expected insecure-http rejection, got %v", err)
+	}
+}
+
+// A missing/unreadable REST TLS pair must fail startup before any listener
+// or store is opened (#359).
+func TestServeCmd_HTTPTLSBadFilesFailFast(t *testing.T) {
+	t.Setenv("SENTINEL_API_TOKEN", strings.Repeat("x", 32))
+	cmd := serveCmd()
+	missing := filepath.Join(t.TempDir(), "nope.pem")
+	cmd.SetArgs([]string{"--http-tls-cert=" + missing, "--http-tls-key=" + missing,
+		"--http-addr=:0", "--grpc-addr=:0", "--data-dir=" + t.TempDir()})
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--http-tls-cert/--http-tls-key") {
+		t.Fatalf("expected TLS load error, got %v", err)
 	}
 }

@@ -40,6 +40,8 @@ func NewBaseRouter(staticDir string, corsOrigins []string, healthz gin.H) *gin.E
 	if len(corsOrigins) > 0 {
 		corsConfig := cors.DefaultConfig()
 		corsConfig.AllowOrigins = corsOrigins
+		// API routes require "Authorization: Bearer", which DefaultConfig does not allow.
+		corsConfig.AddAllowHeaders("Authorization")
 		r.Use(cors.New(corsConfig))
 	}
 
