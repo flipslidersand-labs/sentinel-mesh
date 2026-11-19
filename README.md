@@ -125,10 +125,10 @@ Options:
   --aggregate                Run as a cross-region aggregator
   --upstreams <region=url>   Region collectors to poll (repeatable)
   --poll-interval <DUR>      How often to poll upstreams [default: 10s]
+                             (--upstreams/--poll-interval require --aggregate)
   --aggregate-allow-insecure-http
                              Allow plaintext http:// upstreams on non-loopback hosts
                              (default: rejected; loopback and https:// are always allowed)
-                             (--upstreams/--poll-interval require --aggregate)
 
   # In --aggregate mode, these normal-mode flags are ignored (a warning is logged
   # if set): --grpc-addr, --data-dir, --rules, --grpc-tls-cert, --grpc-tls-key,

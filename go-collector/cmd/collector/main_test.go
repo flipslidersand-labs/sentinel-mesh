@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -187,5 +188,21 @@ func TestServeCmd_AggregateRejectsInsecureHTTPUpstream(t *testing.T) {
 	err := cmd.Execute()
 	if err == nil || !strings.Contains(err.Error(), "--aggregate-allow-insecure-http") {
 		t.Fatalf("expected insecure-http rejection, got %v", err)
+	}
+}
+
+// A missing/unreadable REST TLS pair must fail startup before any listener
+// or store is opened (#359).
+func TestServeCmd_HTTPTLSBadFilesFailFast(t *testing.T) {
+	t.Setenv("SENTINEL_API_TOKEN", strings.Repeat("x", 32))
+	cmd := serveCmd()
+	missing := filepath.Join(t.TempDir(), "nope.pem")
+	cmd.SetArgs([]string{"--http-tls-cert=" + missing, "--http-tls-key=" + missing,
+		"--http-addr=:0", "--grpc-addr=:0", "--data-dir=" + t.TempDir()})
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--http-tls-cert/--http-tls-key") {
+		t.Fatalf("expected TLS load error, got %v", err)
 	}
 }

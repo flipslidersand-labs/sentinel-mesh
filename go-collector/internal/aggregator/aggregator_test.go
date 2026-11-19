@@ -409,6 +409,7 @@ func TestParseUpstreams_InsecureHTTP(t *testing.T) {
 	allowed := []string{
 		"a=http://127.0.0.1:8081", "a=http://127.5.6.7:8081", "a=http://[::1]:8081",
 		"a=http://localhost:8081", "a=http://LOCALHOST.:8081",
+		"a=http://[::ffff:127.0.0.1]:8081", // IPv4-mapped loopback is intentionally allowed
 		"a=https://192.0.2.10:8081", "a=https://example.com",
 	}
 	for _, spec := range allowed {

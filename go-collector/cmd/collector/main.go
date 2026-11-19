@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net/http"
 	"os"
@@ -112,6 +113,7 @@ func newHTTPServer(addr string, handler http.Handler) *http.Server {
 	return &http.Server{
 		Addr:              addr,
 		Handler:           handler,
+		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12},
 		ReadHeaderTimeout: httpReadHeaderTimeout,
 		ReadTimeout:       httpReadTimeout,
 		WriteTimeout:      httpWriteTimeout,
@@ -221,11 +223,17 @@ because the bearer token would otherwise cross the network in plaintext.`,
 			}
 			defer logger.Sync() //nolint:errcheck
 
+			// Validate REST TLS files before opening the store or any listener.
+			httpTLSCert, httpTLSKey, err := httpTLSFlags(cmd, logger, "REST API")
+			if err != nil {
+				return err
+			}
+
 			// Aggregate mode: no gRPC/store — poll upstream region collectors and
 			// serve a merged read-only view.
 			if aggregate {
 				warnIgnoredNormalModeFlags(cmd, grpcAddr, logger)
-				return runAggregate(cmd, logger, apiToken, restUnauth)
+				return runAggregate(cmd, logger, apiToken, restUnauth, httpTLSCert, httpTLSKey)
 			}
 
 			st, err := store.New(dataDir)
@@ -309,7 +317,6 @@ because the bearer token would otherwise cross the network in plaintext.`,
 			// REST API in background, tied to ctx for graceful shutdown (#117).
 			router := exporter.Router(st, reg, detector, staticDir, corsOrigins, apiToken)
 			httpServer := newHTTPServer(httpAddr, router)
-			httpTLSCert, httpTLSKey := httpTLSFlags(cmd, logger, "REST API")
 
 			// gRPC server (blocking, but ctx-aware so SIGINT/SIGTERM gracefully
 			// stops it instead of hanging forever — #117).
@@ -382,13 +389,25 @@ func parseGRPCAuthMode(v string) (bool, error) {
 // httpTLSFlags returns the REST API TLS cert/key paths and logs a warning
 // when REST is served without TLS (#359). The flags are required together
 // (enforced by cobra), so both are empty or both are set.
-func httpTLSFlags(cmd *cobra.Command, logger *zap.Logger, name string) (string, string) {
+func httpTLSFlags(cmd *cobra.Command, logger *zap.Logger, name string) (string, string, error) {
 	cert, _ := cmd.Flags().GetString("http-tls-cert")
 	key, _ := cmd.Flags().GetString("http-tls-key")
+	if cert != "" && key != "" {
+		return cert, key, validateTLSFiles(cert, key)
+	}
 	if cert == "" || key == "" {
 		logger.Warn(name + " is running WITHOUT TLS — the bearer token is sent in plaintext; set --http-tls-cert/--http-tls-key to require it")
 	}
-	return cert, key
+	return cert, key, nil
+}
+
+// validateTLSFiles loads the cert/key pair so an unreadable or mismatched
+// pair fails at startup, before any listener is opened (#359).
+func validateTLSFiles(cert, key string) error {
+	if _, err := tls.LoadX509KeyPair(cert, key); err != nil {
+		return fmt.Errorf("load --http-tls-cert/--http-tls-key: %w", err)
+	}
+	return nil
 }
 
 // warnIgnoredNormalModeFlags logs a warning for each normal-mode-only flag
@@ -407,7 +426,7 @@ func warnIgnoredNormalModeFlags(cmd *cobra.Command, grpcAddr string, logger *zap
 
 // runAggregate starts the cross-region aggregator: it polls upstream region
 // collectors' REST APIs and serves a merged read-only view on --http-addr.
-func runAggregate(cmd *cobra.Command, logger *zap.Logger, apiToken string, restUnauth bool) error {
+func runAggregate(cmd *cobra.Command, logger *zap.Logger, apiToken string, restUnauth bool, httpTLSCert, httpTLSKey string) error {
 	httpAddr, _ := cmd.Flags().GetString("http-addr")
 	specs, _ := cmd.Flags().GetStringSlice("upstreams")
 	interval, _ := cmd.Flags().GetDuration("poll-interval")
@@ -435,7 +454,6 @@ func runAggregate(cmd *cobra.Command, logger *zap.Logger, apiToken string, restU
 		zap.Int("upstreams", len(upstreams)), zap.Duration("poll_interval", interval))
 
 	httpServer := newHTTPServer(httpAddr, aggregator.Router(agg, staticDir, corsOrigins, apiToken))
-	httpTLSCert, httpTLSKey := httpTLSFlags(cmd, logger, "aggregator REST API")
 	logger.Info("aggregator REST API listening", zap.String("addr", httpAddr))
 	return runHTTPServerTLSUntilDone(ctx, httpServer, "aggregator REST API", httpTLSCert, httpTLSKey, logger)
 }

@@ -52,4 +52,11 @@ else
   echo "FAIL ssh calls missing '--':"; cat "$TMP/stub-calls" 2>/dev/null; fail=1
 fi
 
+# Demo upstreams are non-loopback http://, so the aggregator unit must opt in (#359).
+if grep -q 'serve --aggregate --aggregate-allow-insecure-http ' "$TMP/scripts/demo-multi-region.sh"; then
+  echo "ok   aggregator unit passes --aggregate-allow-insecure-http"
+else
+  echo "FAIL aggregator ExecStart lacks --aggregate-allow-insecure-http"; fail=1
+fi
+
 exit "$fail"
