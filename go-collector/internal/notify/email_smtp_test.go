@@ -121,13 +121,10 @@ func TestSendMailContext_DialFailure(t *testing.T) {
 	}
 }
 
-// Auth is attempted on loopback when the server advertises AUTH, and skipped
-// when it does not.
-//
-// The "auth + server lacks AUTH" case records CURRENT behavior only (the
-// message is sent without authenticating). net/smtp.SendMail would instead
-// return "server doesn't support AUTH". The intended spec is undecided and
-// is tracked in #247; this expectation may change.
+// Auth is attempted when the server advertises AUTH. With credentials but a
+// server that does not advertise AUTH, sending fails closed (same as
+// net/smtp.SendMail: "server doesn't support AUTH") and no message is
+// delivered (issue #247). Without credentials, no auth is attempted.
 func TestSendMailContext_AuthBranches(t *testing.T) {
 	cert, _ := newTestCert(t)
 	for _, tc := range []struct {
@@ -135,16 +132,22 @@ func TestSendMailContext_AuthBranches(t *testing.T) {
 		noAuth   bool
 		auth     smtp.Auth
 		wantAuth bool
+		wantErr  bool
 	}{
-		{"auth + server advertises AUTH", false, plainAnyAuth{}, true},
-		{"auth + server lacks AUTH", true, plainAnyAuth{}, false},
-		{"no auth", false, nil, false},
+		{"auth + server advertises AUTH", false, plainAnyAuth{}, true, false},
+		{"auth + server lacks AUTH", true, plainAnyAuth{}, false, true},
+		{"no auth", false, nil, false, false},
+		{"no auth + server lacks AUTH", true, nil, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := startFakeSMTP(t, false, cert)
 			s.noAuthExt = tc.noAuth
 			err := sendMailContext(context.Background(), s.ln.Addr().String(), tc.auth, "a@x", []string{"b@x"}, []byte("x\r\n"))
-			if err != nil {
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "AUTH") {
+					t.Fatalf("want AUTH error, got %v", err)
+				}
+			} else if err != nil {
 				t.Fatalf("send: %v", err)
 			}
 			s.mu.Lock()
@@ -152,8 +155,8 @@ func TestSendMailContext_AuthBranches(t *testing.T) {
 			if s.authPlainOK != tc.wantAuth {
 				t.Errorf("auth attempted = %v, want %v", s.authPlainOK, tc.wantAuth)
 			}
-			if !s.gotData {
-				t.Error("message not delivered")
+			if s.gotData == tc.wantErr {
+				t.Errorf("gotData = %v, want %v", s.gotData, !tc.wantErr)
 			}
 		})
 	}
