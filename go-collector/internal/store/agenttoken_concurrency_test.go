@@ -132,3 +132,70 @@ func TestRevokeToken_WriteFailureRestoresIndex(t *testing.T) {
 		t.Fatal("token still valid after successful revoke")
 	}
 }
+
+// Concurrent IssueToken for one node_id: exactly one wins, the rest get
+// ErrTokenExists, and the winner's token is the one that authenticates (#323).
+func TestIssueToken_ConcurrentSameNodeSingleWinner(t *testing.T) {
+	st := newConcurrencyStore(t)
+	ctx := context.Background()
+	const n = 16
+
+	type res struct {
+		tok string
+		err error
+	}
+	results := make([]res, n)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			results[i].tok, results[i].err = st.IssueToken(ctx, "node-x")
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	var winner string
+	wins := 0
+	for _, r := range results {
+		switch {
+		case r.err == nil:
+			wins++
+			winner = r.tok
+		case !errors.Is(r.err, ErrTokenExists):
+			t.Fatalf("unexpected error: %v", r.err)
+		}
+	}
+	if wins != 1 {
+		t.Fatalf("successful issues = %d, want 1", wins)
+	}
+	if id, ok, err := st.LookupNodeID(ctx, winner); err != nil || !ok || id != "node-x" {
+		t.Fatalf("winner token lookup = (%q, %v, %v)", id, ok, err)
+	}
+}
+
+// Reissue after revoke overwrites the revoked record (same key); the revoke
+// history is not kept. Pinned so the IssueToken doc comment stays accurate.
+func TestIssueToken_ReissueOverwritesRevokedRecord(t *testing.T) {
+	st := newConcurrencyStore(t)
+	ctx := context.Background()
+	if _, err := st.IssueToken(ctx, "node-y"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RevokeToken(ctx, "node-y"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.IssueToken(ctx, "node-y"); err != nil {
+		t.Fatal(err)
+	}
+	recs, err := st.ListTokens(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 1 || recs[0].RevokedAt != nil {
+		t.Fatalf("records = %+v, want a single active record", recs)
+	}
+}
