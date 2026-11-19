@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -44,7 +45,11 @@ var regionNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 // URLs with a host are accepted — this is operator-supplied config, not
 // attacker input, but rejecting other schemes (file://, unix://, ...) up
 // front is cheap and removes a class of misconfiguration (#76).
-func ParseUpstreams(specs []string) ([]Upstream, error) {
+//
+// A plaintext http:// upstream sends the bearer token unencrypted, so it is
+// rejected unless the host is loopback (127.0.0.0/8, ::1, localhost) or
+// allowInsecureHTTP is true (#359).
+func ParseUpstreams(specs []string, allowInsecureHTTP bool) ([]Upstream, error) {
 	out := make([]Upstream, 0, len(specs))
 	// Error messages deliberately never include the spec or URL: the value
 	// may carry credentials in userinfo (#364).
@@ -71,6 +76,9 @@ func ParseUpstreams(specs []string) ([]Upstream, error) {
 		}
 		if parsed.User != nil {
 			return nil, fmt.Errorf("invalid upstream %q: userinfo (user:pass@) is not allowed in the URL; use bearer auth", region)
+		}
+		if parsed.Scheme == "http" && !allowInsecureHTTP && !isLoopbackHost(parsed.Hostname()) {
+			return nil, fmt.Errorf("invalid upstream %q: plaintext http:// to a non-loopback host would send the bearer token unencrypted; use https:// or pass --aggregate-allow-insecure-http", region)
 		}
 		out = append(out, Upstream{Region: region, URL: rawURL})
 	}
@@ -316,4 +324,16 @@ func (a *Aggregator) Regions() []RegionStatus {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Region < out[j].Region })
 	return out
+}
+
+// isLoopbackHost reports whether host is "localhost" or a loopback IP
+// literal (127.0.0.0/8, ::1). Other hostnames are never treated as loopback
+// since resolution is under the resolver's control.
+func isLoopbackHost(host string) bool {
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
