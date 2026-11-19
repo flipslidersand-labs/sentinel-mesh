@@ -24,8 +24,10 @@ export function Alerts() {
   const [range, setRange] = useState<RangeKey>("all");
 
   // node is applied server-side; severity + rule + time-range are client-side.
-  const { data, error, loading } = usePolling<Alert[]>(() =>
-    api.alerts(node || undefined),
+  const { data, error, loading } = usePolling<Alert[]>(
+    () => api.alerts(node || undefined),
+    undefined,
+    [node],
   );
 
   const rangeMs = rangeMsFor(range);
