@@ -130,11 +130,11 @@ fi
 REMOTE_TMP=""
 cleanup_remote_tmp() {
   if [[ -n "$REMOTE_TMP" ]]; then
-    ssh -- "$SSH_HOST" rm -rf -- "$REMOTE_TMP" >/dev/null 2>&1 || true
+    ssh -n -- "$SSH_HOST" rm -rf -- "$REMOTE_TMP" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup_remote_tmp EXIT
-REMOTE_TMP="$(ssh -- "$SSH_HOST" mktemp -d)"
+REMOTE_TMP="$(ssh -n -- "$SSH_HOST" mktemp -d)"
 if [[ ! "$REMOTE_TMP" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
   echo "Error: unexpected remote mktemp output: '$REMOTE_TMP'" >&2
   REMOTE_TMP=""
@@ -192,13 +192,14 @@ REMOTE
 
 if [[ -d "$STATIC_DIR" ]]; then
   echo "==> Uploading UI static files..."
-  ssh -- "$SSH_HOST" mkdir -p -- "$REMOTE_TMP_STATIC"
+  ssh -n -- "$SSH_HOST" mkdir -p -- "$REMOTE_TMP_STATIC"
   scp -r -- "$STATIC_DIR/." "$SSH_HOST:$REMOTE_TMP_STATIC/"
   ssh -- "$SSH_HOST" bash -s -- "$REMOTE_TMP_STATIC" "$REMOTE_STATIC" <<'REMOTE'
 set -euo pipefail
 # No symlinks; never keep the deploy user's uid/gid. `--chown` needs rsync
 # >= 3.1, so use it only when available and otherwise chown afterwards.
-if rsync --help 2>&1 | grep -q -- '--chown'; then
+rsync_help="$(rsync --help 2>&1 || true)"
+if [[ "$rsync_help" == *--chown* ]]; then
   sudo rsync -rt --no-links --chown=root:root --chmod=D755,F644 "$1/" "$2/"
 else
   sudo rsync -rt --no-links --no-owner --no-group --chmod=D755,F644 "$1/" "$2/"

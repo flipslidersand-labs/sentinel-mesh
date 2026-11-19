@@ -187,7 +187,7 @@ UNIT
 REMOTE_TMP_PENDING=""
 cleanup_pending() {
   if [[ -n "$REMOTE_TMP_PENDING" ]]; then
-    ssh -- "${REMOTE_TMP_PENDING%%:*}" rm -rf -- "${REMOTE_TMP_PENDING#*:}" >/dev/null 2>&1 || true
+    ssh -n -- "${REMOTE_TMP_PENDING%%:*}" rm -rf -- "${REMOTE_TMP_PENDING#*:}" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup_pending EXIT
@@ -212,7 +212,7 @@ deploy_to() {
   echo "[${host}] uploading binary ..."
   # Stage in a fresh random 0700 dir from `mktemp -d` (never a fixed /tmp
   # path), install as root:root, and always remove the staging dir (#358).
-  remote_tmp="$(ssh -- "$host" mktemp -d)"
+  remote_tmp="$(ssh -n -- "$host" mktemp -d)"
   if [[ ! "$remote_tmp" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
     echo "[${host}] unexpected remote mktemp output: '${remote_tmp}'" >&2
     return 1
@@ -223,7 +223,7 @@ deploy_to() {
 set -euo pipefail
 sudo install -o root -g root -m 755 "$1" "$2"
 REMOTE
-  ssh -- "$host" rm -rf -- "$remote_tmp" || true
+  ssh -n -- "$host" rm -rf -- "$remote_tmp" || true
   REMOTE_TMP_PENDING=""
 
   echo "[${host}] installing gRPC token env file ..."
