@@ -113,7 +113,12 @@ where
     F: std::future::Future<Output = Result<()>>,
 {
     tokio::select! {
-        r = stream => r,
+        // Sources run forever, so the stream ending with Ok(()) means the channel
+        // closed because the source died (tx dropped): that is an error too.
+        r = stream => match r {
+            Ok(()) => Err(anyhow::anyhow!("event source closed the channel")),
+            e => e,
+        },
         j = &mut source => match j {
             Ok(()) => Err(anyhow::anyhow!("event source exited unexpectedly")),
             Err(e) => Err(anyhow::anyhow!("event source task failed: {e}")),
@@ -134,6 +139,21 @@ mod tests {
         let source = tokio::spawn(async {});
         let r = supervise_source(source, std::future::pending::<Result<()>>()).await;
         assert!(r.unwrap_err().to_string().contains("event source"));
+    }
+
+    #[tokio::test]
+    async fn source_exit_with_closed_channel_is_always_an_error() {
+        // Source exit drops tx -> stream sees rx closed and returns Ok(()); both
+        // select! branches become ready, so repeat to catch the race.
+        for _ in 0..100 {
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<u8>(1);
+            let source = tokio::spawn(async move { drop(tx) });
+            let stream = async move {
+                rx.recv().await;
+                Ok(())
+            };
+            assert!(supervise_source(source, stream).await.is_err());
+        }
     }
 
     #[tokio::test]
