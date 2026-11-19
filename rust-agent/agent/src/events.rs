@@ -335,7 +335,9 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
                         .load()
                         .and_then(|_| tp.attach("syscalls", "sys_enter_openat"))
                     {
-                        eprintln!("warn: openat tracepoint: {e}");
+                        eprintln!(
+                            "warn: openat enter tracepoint failed, FILE events are disabled: {e}"
+                        );
                     }
                 }
                 Err(e) => eprintln!("warn: \"sentinel_openat\" is not a tracepoint program: {e}"),
