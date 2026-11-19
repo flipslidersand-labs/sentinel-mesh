@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the collector refuses to start with a shorter value (e.g. use `openssl rand -hex 32`).
   Rotate any shorter token before upgrading. This also applies with `--http-auth disabled`: a
   `SENTINEL_API_TOKEN` that is set but shorter than 32 bytes is a startup error.
+- **BREAKING (go-collector, #359):** `--aggregate` now rejects `http://` upstreams on
+  non-loopback hosts (anything other than 127.0.0.0/8, `::1`, `localhost`), because the
+  bearer token would be sent in plaintext. Migration: serve the region collectors over TLS
+  (new `--http-tls-cert`/`--http-tls-key`) and use `https://` upstreams, or pass the new
+  `--aggregate-allow-insecure-http` to keep plaintext on a trusted network.
 
 ### Security
 
@@ -21,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **go-collector:** `--http-tls-cert`/`--http-tls-key` serve the REST API (normal and
+  `--aggregate` mode) over TLS; they must be given together. Without them the REST API stays
+  plaintext and a warning is logged, as with gRPC (#359).
 - **go-collector:** a node evicted from the registry while its stream stays
   connected is re-created on its next event (default region, empty hostname)
   instead of vanishing from `/api/nodes` until reconnect (#371).

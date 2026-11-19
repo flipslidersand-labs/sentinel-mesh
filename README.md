@@ -104,6 +104,9 @@ sentinel-collector serve [OPTIONS]
 Options:
   --grpc-addr <ADDR>         gRPC listen address [default: :50051]
   --http-addr <ADDR>         REST API listen address [default: :8081]
+  --http-tls-cert <PATH>     REST API TLS certificate (PEM); requires --http-tls-key
+  --http-tls-key <PATH>      REST API TLS private key (PEM); requires --http-tls-cert
+                             (without both, the REST API and its bearer token are plaintext; a warning is logged)
   --data-dir <PATH>          BadgerDB data directory [default: /tmp/sentinel-data]
   --heartbeat-timeout <DUR>  Inactivity before agent is marked inactive [default: 60s]
   --rules <PATH>             Alerting rules YAML file [default: none]
@@ -122,6 +125,9 @@ Options:
   --aggregate                Run as a cross-region aggregator
   --upstreams <region=url>   Region collectors to poll (repeatable)
   --poll-interval <DUR>      How often to poll upstreams [default: 10s]
+  --aggregate-allow-insecure-http
+                             Allow plaintext http:// upstreams on non-loopback hosts
+                             (default: rejected; loopback and https:// are always allowed)
                              (--upstreams/--poll-interval require --aggregate)
 
   # In --aggregate mode, these normal-mode flags are ignored (a warning is logged
@@ -161,9 +167,11 @@ For geographically distributed deployments, run one collector per region (each w
 
 # Aggregator (polls both, serves merged view + UI)
 ./collector serve --aggregate \
-  --upstreams us-east=http://10.0.1.10:8081 \
-  --upstreams eu-west=http://10.0.2.10:8081 \
+  --upstreams us-east=https://10.0.1.10:8081 \
+  --upstreams eu-west=https://10.0.2.10:8081 \
   --http-addr :8080 --poll-interval 10s --http-auth disabled   # demo; production: set SENTINEL_API_TOKEN
+# Region collectors need --http-tls-cert/--http-tls-key for https:// upstreams. Plaintext http://
+# upstreams on non-loopback hosts are refused unless --aggregate-allow-insecure-http is passed.
 
 curl http://localhost:8080/api/regions
 # → [{"region":"eu-west","node_count":3,"active_count":3,"reachable":true},

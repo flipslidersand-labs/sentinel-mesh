@@ -48,8 +48,19 @@ const (
 // only after the server has fully stopped, including in-flight requests
 // (#316).
 func runHTTPServerUntilDone(ctx context.Context, srv *http.Server, name string, logger *zap.Logger) error {
+	return runHTTPServerTLSUntilDone(ctx, srv, name, "", "", logger)
+}
+
+// runHTTPServerTLSUntilDone is runHTTPServerUntilDone with optional TLS:
+// when both certFile and keyFile are non-empty the server listens with
+// ListenAndServeTLS, otherwise it serves plaintext HTTP (#359).
+func runHTTPServerTLSUntilDone(ctx context.Context, srv *http.Server, name, certFile, keyFile string, logger *zap.Logger) error {
 	errCh := make(chan error, 1)
 	go func() {
+		if certFile != "" && keyFile != "" {
+			errCh <- srv.ListenAndServeTLS(certFile, keyFile)
+			return
+		}
 		errCh <- srv.ListenAndServe()
 	}()
 
@@ -148,7 +159,13 @@ Two mutually exclusive modes:
     are ignored in this mode.
 
 TLS for the gRPC server is optional but, when enabled, both
---grpc-tls-cert and --grpc-tls-key must be supplied together.`,
+--grpc-tls-cert and --grpc-tls-key must be supplied together. The same holds
+for the REST API with --http-tls-cert and --http-tls-key (otherwise the REST
+API, including the bearer token, is served in plaintext).
+
+In aggregate mode, http:// upstreams are only accepted for loopback hosts
+(127.0.0.0/8, ::1, localhost) unless --aggregate-allow-insecure-http is set,
+because the bearer token would otherwise cross the network in plaintext.`,
 		Example: `  # Normal mode: gRPC + REST API on default addresses (REST auth is required
   # by default, so SENTINEL_API_TOKEN must be set, at least 32 bytes, e.g.
   # $(openssl rand -hex 32); gRPC needs per-agent tokens)
@@ -160,10 +177,17 @@ TLS for the gRPC server is optional but, when enabled, both
   # Normal mode with gRPC TLS enabled
   SENTINEL_API_TOKEN=<token> sentinel-collector serve --grpc-tls-cert=/etc/sentinel/tls.crt --grpc-tls-key=/etc/sentinel/tls.key
 
+  # Normal mode with REST API TLS enabled
+  SENTINEL_API_TOKEN=<token> sentinel-collector serve --http-tls-cert=/etc/sentinel/tls.crt --http-tls-key=/etc/sentinel/tls.key
+
   # Aggregate mode: merge two region collectors into one read-only view
   SENTINEL_API_TOKEN=<token> sentinel-collector serve --aggregate \
-    --upstreams=us-east=http://collector-us-east:8081 \
-    --upstreams=eu-west=http://collector-eu-west:8081`,
+    --upstreams=us-east=https://collector-us-east:8081 \
+    --upstreams=eu-west=https://collector-eu-west:8081
+
+  # Aggregate mode over plaintext http:// to a non-loopback upstream (trusted network only)
+  SENTINEL_API_TOKEN=<token> sentinel-collector serve --aggregate --aggregate-allow-insecure-http \
+    --upstreams=us-east=http://collector-us-east:8081`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Validate --grpc-auth first so a typo exits before the store lock or
 			// any listener is taken (#222).
@@ -285,6 +309,7 @@ TLS for the gRPC server is optional but, when enabled, both
 			// REST API in background, tied to ctx for graceful shutdown (#117).
 			router := exporter.Router(st, reg, detector, staticDir, corsOrigins, apiToken)
 			httpServer := newHTTPServer(httpAddr, router)
+			httpTLSCert, httpTLSKey := httpTLSFlags(cmd, logger, "REST API")
 
 			// gRPC server (blocking, but ctx-aware so SIGINT/SIGTERM gracefully
 			// stops it instead of hanging forever — #117).
@@ -305,7 +330,7 @@ TLS for the gRPC server is optional but, when enabled, both
 			// st.Close() runs (#316, #318).
 			return runRESTAndGRPC(ctx, cancel, func(ctx context.Context) error {
 				logger.Info("REST API listening", zap.String("addr", httpAddr))
-				return runHTTPServerUntilDone(ctx, httpServer, "REST API", logger)
+				return runHTTPServerTLSUntilDone(ctx, httpServer, "REST API", httpTLSCert, httpTLSKey, logger)
 			}, func(ctx context.Context) error {
 				return receiver.Serve(ctx, receiver.Config{
 					Addr: grpcAddr, TLSCertFile: grpcTLSCert, TLSKeyFile: grpcTLSKey,
@@ -323,6 +348,8 @@ TLS for the gRPC server is optional but, when enabled, both
 	cmd.Flags().String("grpc-auth", "required", "gRPC authentication: required (per-agent tokens; rejects all RPCs if none issued) or disabled (unauthenticated, dev only)")
 	cmd.Flags().String("http-auth", "required", "REST API authentication: required (needs SENTINEL_API_TOKEN, else startup fails) or disabled (unauthenticated, dev only)")
 	cmd.Flags().String("http-addr", ":8081", "REST API listen address")
+	cmd.Flags().String("http-tls-cert", "", "path to REST API TLS certificate (PEM); requires --http-tls-key")
+	cmd.Flags().String("http-tls-key", "", "path to REST API TLS private key (PEM); requires --http-tls-cert")
 	cmd.Flags().String("data-dir", "/tmp/sentinel-data", "BadgerDB data directory")
 	cmd.Flags().Duration("heartbeat-timeout", 60*time.Second, "inactivity duration before agent is marked inactive")
 	cmd.Flags().String("rules", "", "path to alerting rules YAML file")
@@ -333,7 +360,9 @@ TLS for the gRPC server is optional but, when enabled, both
 	cmd.Flags().Bool("aggregate", false, "run as a cross-region aggregator (polls --upstreams, no gRPC)")
 	cmd.Flags().StringSlice("upstreams", nil, "aggregate mode: region collectors as region=url (repeatable)")
 	cmd.Flags().Duration("poll-interval", 10*time.Second, "aggregate mode: how often to poll upstreams")
+	cmd.Flags().Bool("aggregate-allow-insecure-http", false, "aggregate mode: allow plaintext http:// upstreams on non-loopback hosts (bearer token is sent unencrypted)")
 	cmd.MarkFlagsRequiredTogether("grpc-tls-cert", "grpc-tls-key")
+	cmd.MarkFlagsRequiredTogether("http-tls-cert", "http-tls-key")
 	return cmd
 }
 
@@ -348,6 +377,18 @@ func parseGRPCAuthMode(v string) (bool, error) {
 		return false, nil
 	}
 	return false, fmt.Errorf("invalid --grpc-auth %q: must be \"required\" or \"disabled\"", v)
+}
+
+// httpTLSFlags returns the REST API TLS cert/key paths and logs a warning
+// when REST is served without TLS (#359). The flags are required together
+// (enforced by cobra), so both are empty or both are set.
+func httpTLSFlags(cmd *cobra.Command, logger *zap.Logger, name string) (string, string) {
+	cert, _ := cmd.Flags().GetString("http-tls-cert")
+	key, _ := cmd.Flags().GetString("http-tls-key")
+	if cert == "" || key == "" {
+		logger.Warn(name + " is running WITHOUT TLS — the bearer token is sent in plaintext; set --http-tls-cert/--http-tls-key to require it")
+	}
+	return cert, key
 }
 
 // warnIgnoredNormalModeFlags logs a warning for each normal-mode-only flag
@@ -376,7 +417,8 @@ func runAggregate(cmd *cobra.Command, logger *zap.Logger, apiToken string, restU
 		logger.Warn("aggregator REST API is UNAUTHENTICATED (--http-auth=disabled) — set " + httpauth.EnvAPIToken + " and use --http-auth=required")
 	}
 
-	upstreams, err := aggregator.ParseUpstreams(specs)
+	allowInsecure, _ := cmd.Flags().GetBool("aggregate-allow-insecure-http")
+	upstreams, err := aggregator.ParseUpstreams(specs, allowInsecure)
 	if err != nil {
 		return err
 	}
@@ -393,6 +435,7 @@ func runAggregate(cmd *cobra.Command, logger *zap.Logger, apiToken string, restU
 		zap.Int("upstreams", len(upstreams)), zap.Duration("poll_interval", interval))
 
 	httpServer := newHTTPServer(httpAddr, aggregator.Router(agg, staticDir, corsOrigins, apiToken))
+	httpTLSCert, httpTLSKey := httpTLSFlags(cmd, logger, "aggregator REST API")
 	logger.Info("aggregator REST API listening", zap.String("addr", httpAddr))
-	return runHTTPServerUntilDone(ctx, httpServer, "aggregator REST API", logger)
+	return runHTTPServerTLSUntilDone(ctx, httpServer, "aggregator REST API", httpTLSCert, httpTLSKey, logger)
 }

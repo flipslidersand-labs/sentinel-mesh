@@ -33,23 +33,23 @@ func fakeCollector(t *testing.T, nodes []registry.AgentNode, events []store.Even
 }
 
 func TestParseUpstreams(t *testing.T) {
-	ups, err := ParseUpstreams([]string{"us-east=http://a:8081/", "eu-west=http://b:8081"})
+	ups, err := ParseUpstreams([]string{"us-east=http://a:8081/", "eu-west=http://b:8081"}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(ups) != 2 || ups[0].Region != "us-east" || ups[0].URL != "http://a:8081" {
 		t.Fatalf("parsed = %+v", ups)
 	}
-	if _, err := ParseUpstreams([]string{"bad-spec"}); err == nil {
+	if _, err := ParseUpstreams([]string{"bad-spec"}, true); err == nil {
 		t.Error("expected error for spec without '='")
 	}
-	if _, err := ParseUpstreams([]string{"=http://x"}); err == nil {
+	if _, err := ParseUpstreams([]string{"=http://x"}, true); err == nil {
 		t.Error("expected error for empty region")
 	}
-	if _, err := ParseUpstreams([]string{"us-east=file:///etc/passwd"}); err == nil {
+	if _, err := ParseUpstreams([]string{"us-east=file:///etc/passwd"}, true); err == nil {
 		t.Error("expected error for non-http(s) scheme")
 	}
-	if _, err := ParseUpstreams([]string{"us-east=http://"}); err == nil {
+	if _, err := ParseUpstreams([]string{"us-east=http://"}, true); err == nil {
 		t.Error("expected error for missing host")
 	}
 }
@@ -386,7 +386,7 @@ func TestParseUpstreams_RejectsUserinfo(t *testing.T) {
 		"http://alice:s3cret-pw@example.com:81/?x=1",  // "=" in URL, no region prefix
 	}
 	for _, spec := range specs {
-		_, err := ParseUpstreams([]string{spec})
+		_, err := ParseUpstreams([]string{spec}, true)
 		if err == nil {
 			t.Errorf("expected error for %q", spec)
 			continue
@@ -397,8 +397,36 @@ func TestParseUpstreams_RejectsUserinfo(t *testing.T) {
 			}
 		}
 	}
-	if _, err := ParseUpstreams([]string{"us-east=http://alice:pw@example.com"}); err == nil ||
+	if _, err := ParseUpstreams([]string{"us-east=http://alice:pw@example.com"}, true); err == nil ||
 		!strings.Contains(err.Error(), "userinfo") {
 		t.Errorf("expected userinfo error, got %v", err)
+	}
+}
+
+// TestParseUpstreams_InsecureHTTP verifies plaintext http:// is only accepted
+// for loopback hosts unless explicitly allowed (#359).
+func TestParseUpstreams_InsecureHTTP(t *testing.T) {
+	allowed := []string{
+		"a=http://127.0.0.1:8081", "a=http://127.5.6.7:8081", "a=http://[::1]:8081",
+		"a=http://localhost:8081", "a=http://LOCALHOST.:8081",
+		"a=https://192.0.2.10:8081", "a=https://example.com",
+	}
+	for _, spec := range allowed {
+		if _, err := ParseUpstreams([]string{spec}, false); err != nil {
+			t.Errorf("%q: unexpected error %v", spec, err)
+		}
+	}
+	rejected := []string{
+		"a=http://192.0.2.10:8081", "a=http://example.com", "a=http://[2001:db8::1]:8081",
+		"a=http://localhost.example.com", "a=http://128.0.0.1", "a=http://0.0.0.0:8081",
+	}
+	for _, spec := range rejected {
+		_, err := ParseUpstreams([]string{spec}, false)
+		if err == nil || !strings.Contains(err.Error(), "--aggregate-allow-insecure-http") {
+			t.Errorf("%q: expected insecure-http error, got %v", spec, err)
+		}
+		if _, err := ParseUpstreams([]string{spec}, true); err != nil {
+			t.Errorf("%q with allow: unexpected error %v", spec, err)
+		}
 	}
 }
