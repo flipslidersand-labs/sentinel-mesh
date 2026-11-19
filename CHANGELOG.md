@@ -81,6 +81,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **go-collector:** with `--cors-origins` set, CORS preflight now allows the `Authorization` header, so browsers can call the bearer-authenticated API cross-origin (#350).
 - **go-collector:** `--otel-endpoint` for traces accepts a value with a scheme
   (e.g. `http://localhost:4318`) (#280).
 - **go-collector:** a corrupted token record no longer breaks `token list`; it is
