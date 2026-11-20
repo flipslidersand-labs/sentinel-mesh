@@ -53,7 +53,7 @@ func LoadRules(path string) (*RuleSet, error) {
 }
 
 // Validate checks that rules are well-formed: each rule has a non-empty,
-// unique ID, a known event type, at least one condition, and each
+// unique ID, a known event type, a known severity, at least one condition, and each
 // condition uses a known operator with a syntactically valid regex value
 // when the operator is "regex".
 func (rs *RuleSet) Validate() error {
@@ -70,6 +70,10 @@ func (rs *RuleSet) Validate() error {
 
 		if !validEventTypes[rule.EventType] {
 			return fmt.Errorf("rule[%d] (id=%q): unknown event_type %q", i, rule.ID, rule.EventType)
+		}
+
+		if _, ok := SeverityRank(rule.Severity); !ok {
+			return fmt.Errorf("rule[%d] (id=%q): unknown severity %q (want %s, %s or %s)", i, rule.ID, rule.Severity, SeverityInfo, SeverityWarning, SeverityCritical)
 		}
 
 		if len(rule.Conditions) == 0 {
