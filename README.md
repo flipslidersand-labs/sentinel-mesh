@@ -214,6 +214,13 @@ A region whose collector is unreachable is **isolated**: it is reported with `"r
   <token>` on every `/api/*` request; without this step the dashboard itself gets `401`s from
   every endpoint it calls.
 
+- **Failed-auth throttling behind a reverse proxy**: failed authentication attempts are limited
+  per source, keyed on the connection's remote IP (IPv4 /32, IPv6 /64); `X-Forwarded-For` is not
+  trusted. Behind a reverse proxy or load balancer, all clients therefore share the proxy's single
+  budget, so repeated failures from one client can make legitimate clients receive `429`. Valid
+  tokens are checked first and are not affected by the budget on the gRPC side; plan proxy
+  placement accordingly. (The gRPC receiver uses the same limiter.)
+
 - **CORS**: cross-origin access is **denied by default**. The bundled UI is served same-origin, so
   no CORS is needed in production. Pass `--cors-origins https://example.com` only when a separate
   front-end origin must call the API.
