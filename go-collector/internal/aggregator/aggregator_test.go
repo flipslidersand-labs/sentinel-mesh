@@ -431,3 +431,74 @@ func TestParseUpstreams_InsecureHTTP(t *testing.T) {
 		}
 	}
 }
+
+func TestAggregator_RouterEventsAlertsQuery(t *testing.T) {
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	east := fakeCollector(t, nil,
+		[]store.Event{
+			{EventID: "e1", NodeID: "a1", Timestamp: t0.Add(1 * time.Minute)},
+			{EventID: "e3", NodeID: "a2", Timestamp: t0.Add(3 * time.Minute)},
+			{EventID: "e5", NodeID: "a1", Timestamp: t0.Add(5 * time.Minute)},
+		},
+		[]store.Alert{
+			{AlertID: "x1", NodeID: "a1", Timestamp: t0.Add(1 * time.Minute)},
+			{AlertID: "x3", NodeID: "a2", Timestamp: t0.Add(3 * time.Minute)},
+		},
+	)
+	west := fakeCollector(t, nil,
+		[]store.Event{
+			{EventID: "e2", NodeID: "b1", Timestamp: t0.Add(2 * time.Minute)},
+			{EventID: "e4", NodeID: "b1", Timestamp: t0.Add(4 * time.Minute)},
+		},
+		[]store.Alert{{AlertID: "x2", NodeID: "b1", Timestamp: t0.Add(2 * time.Minute)}},
+	)
+	agg := New([]Upstream{{Region: "us-east", URL: east.URL}, {Region: "eu-west", URL: west.URL}}, 0, "", nil)
+	agg.PollOnce(context.Background())
+	r := Router(agg, t.TempDir(), nil, "")
+
+	get := func(path string) (int, []string) {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+		var ids []string
+		if w.Code == http.StatusOK {
+			var raw []map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+				t.Fatal(err)
+			}
+			for _, m := range raw {
+				if v, ok := m["alert_id"]; ok {
+					ids = append(ids, v.(string))
+				} else {
+					ids = append(ids, m["event_id"].(string))
+				}
+			}
+		}
+		return w.Code, ids
+	}
+	cases := []struct {
+		path string
+		code int
+		want string
+	}{
+		{"/api/events", 200, "e5,e4,e3,e2,e1"},
+		{"/api/events?limit=2", 200, "e5,e4"},
+		{"/api/events?node=a1", 200, "e5,e1"},
+		{"/api/events?region=eu-west", 200, "e4,e2"},
+		{"/api/events?region=us-east&node=a1&limit=1", 200, "e5"},
+		{"/api/events?limit=abc", 400, ""},
+		{"/api/events?limit=0", 400, ""},
+		{"/api/alerts", 200, "x3,x2,x1"},
+		{"/api/alerts?limit=1", 200, "x3"},
+		{"/api/alerts?node=b1", 200, "x2"},
+		{"/api/alerts?region=us-east", 200, "x3,x1"},
+		{"/api/alerts?limit=-1", 400, ""},
+	}
+	for _, tc := range cases {
+		for i := 0; i < 5; i++ { // order must be deterministic across calls
+			code, ids := get(tc.path)
+			if code != tc.code || strings.Join(ids, ",") != tc.want {
+				t.Fatalf("%s: code=%d ids=%v, want %d %q", tc.path, code, ids, tc.code, tc.want)
+			}
+		}
+	}
+}
