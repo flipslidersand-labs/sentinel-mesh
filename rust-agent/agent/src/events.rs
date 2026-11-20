@@ -282,7 +282,7 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
         }
     };
 
-    // Attach exec tracepoint (sys_enter_execve). This program is required —
+    // Attach exec tracepoint (sched_process_exec). This program is required —
     // without it there is nothing left to collect, so any failure here
     // (missing BPF object section, permission denial, unsupported kernel,
     // LSM rejection, ...) is fatal for this source and we return instead of
@@ -305,8 +305,8 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
         eprintln!("error: failed to load sentinel_exec tracepoint: {e}");
         return;
     }
-    if let Err(e) = exec_prog.attach("syscalls", "sys_enter_execve") {
-        eprintln!("error: failed to attach sentinel_exec to sys_enter_execve: {e}");
+    if let Err(e) = exec_prog.attach("sched", "sched_process_exec") {
+        eprintln!("error: failed to attach sentinel_exec to sched_process_exec: {e}");
         return;
     }
 

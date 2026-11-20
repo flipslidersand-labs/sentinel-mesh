@@ -199,3 +199,79 @@ func TestRankOf(t *testing.T) {
 		}
 	}
 }
+
+// A failed delivery on every notifier must not consume the cooldown (#319).
+func TestDispatch_AllNotifiersFailReleasesCooldown(t *testing.T) {
+	f1 := &fakeNotifier{fail: true}
+	f2 := &fakeNotifier{fail: true}
+	now := time.Unix(1000, 0)
+	d := NewDispatcher(Options{Notifiers: []Notifier{f1, f2}, Cooldown: time.Minute, MinSeverity: "info"})
+	d.now = func() time.Time { return now }
+
+	d.Dispatch(alert("r1", "n1", "warning"))
+	d.Dispatch(alert("r1", "n1", "warning")) // retried immediately
+	if f1.count() != 2 || f2.count() != 2 {
+		t.Fatalf("failed sends must be retried, got %d/%d", f1.count(), f2.count())
+	}
+}
+
+// One successful notifier is enough to keep the cooldown.
+func TestDispatch_PartialSuccessKeepsCooldown(t *testing.T) {
+	bad := &fakeNotifier{fail: true}
+	good := &fakeNotifier{}
+	now := time.Unix(1000, 0)
+	d := NewDispatcher(Options{Notifiers: []Notifier{bad, good}, Cooldown: time.Minute, MinSeverity: "info"})
+	d.now = func() time.Time { return now }
+
+	d.Dispatch(alert("r1", "n1", "warning"))
+	d.Dispatch(alert("r1", "n1", "warning"))
+	if good.count() != 1 {
+		t.Fatalf("cooldown must hold after a partial success, got %d", good.count())
+	}
+}
+
+// Expired cooldown keys are pruned so the map does not grow without bound.
+func TestShouldSend_PrunesExpiredKeys(t *testing.T) {
+	f := &fakeNotifier{}
+	now := time.Unix(1000, 0)
+	d := NewDispatcher(Options{Notifiers: []Notifier{f}, Cooldown: time.Minute, MinSeverity: "info"})
+	d.now = func() time.Time { return now }
+
+	for i := 0; i < 50; i++ {
+		d.Dispatch(alert("r1", "node-"+string(rune('a'+i%26))+string(rune('A'+i/26)), "warning"))
+	}
+	if len(d.lastSent) != 50 {
+		t.Fatalf("expected 50 keys, got %d", len(d.lastSent))
+	}
+
+	now = now.Add(2 * time.Minute)
+	d.Dispatch(alert("r2", "fresh", "warning"))
+	if len(d.lastSent) != 1 {
+		t.Fatalf("expired keys should be pruned, got %d", len(d.lastSent))
+	}
+}
+
+// A stale release (from an earlier, failed Dispatch) must not remove a newer
+// claim made after the cooldown elapsed.
+func TestShouldSend_StaleReleaseKeepsNewerClaim(t *testing.T) {
+	now := time.Unix(1000, 0)
+	d := NewDispatcher(Options{Notifiers: []Notifier{&fakeNotifier{}}, Cooldown: time.Minute, MinSeverity: "info"})
+	d.now = func() time.Time { return now }
+	a := alert("r1", "n1", "warning")
+
+	ok, staleRelease := d.shouldSend(a)
+	if !ok {
+		t.Fatal("first claim should be granted")
+	}
+
+	now = now.Add(2 * time.Minute) // cooldown elapsed while the first send was in flight
+	if ok, _ := d.shouldSend(a); !ok {
+		t.Fatal("claim after cooldown should be granted")
+	}
+
+	staleRelease() // the first Dispatch finally fails and releases
+
+	if ok, _ := d.shouldSend(a); ok {
+		t.Fatal("stale release must not remove the newer claim")
+	}
+}

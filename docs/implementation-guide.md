@@ -2,7 +2,7 @@
 
 ## Phase 1: Rust Agent MVP (2週)
 
-1. aya-ebpf で exec_tp (sys_enter_execve) をアタッチ
+1. aya-ebpf で exec_tp (sched_process_exec) をアタッチ
 2. ring_buf でユーザースペースへイベント転送
 3. TCP connect の kprobe 追加
 4. JSON 出力で動作確認
