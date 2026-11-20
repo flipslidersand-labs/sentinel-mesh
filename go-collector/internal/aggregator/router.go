@@ -7,7 +7,11 @@ import (
 
 	"github.com/flipslidersand/sentinel-mesh/internal/httpauth"
 	"github.com/flipslidersand/sentinel-mesh/internal/httpserver"
+	"github.com/flipslidersand/sentinel-mesh/internal/store"
 )
+
+// defaultLimit matches the collector API default for /api/events and /api/alerts.
+const defaultLimit = 100
 
 // Router builds the read-only HTTP router for aggregate mode. It serves the same
 // REST shape as a normal collector (nodes / events / alerts / regions) plus the
@@ -34,11 +38,41 @@ func Router(a *Aggregator, staticDir string, corsOrigins []string, apiToken stri
 		})
 
 		api.GET("/events", func(c *gin.Context) {
-			c.JSON(http.StatusOK, a.Events())
+			limit, ok := httpserver.ParseLimit(c, "limit", defaultLimit)
+			if !ok {
+				return
+			}
+			node := c.Query("node")
+			out := make([]store.Event, 0)
+			for _, e := range a.EventsIn(c.Query("region")) {
+				if node != "" && e.NodeID != node {
+					continue
+				}
+				if len(out) >= limit {
+					break
+				}
+				out = append(out, e)
+			}
+			c.JSON(http.StatusOK, out)
 		})
 
 		api.GET("/alerts", func(c *gin.Context) {
-			c.JSON(http.StatusOK, a.Alerts())
+			limit, ok := httpserver.ParseLimit(c, "limit", defaultLimit)
+			if !ok {
+				return
+			}
+			node := c.Query("node")
+			out := make([]store.Alert, 0)
+			for _, al := range a.AlertsIn(c.Query("region")) {
+				if node != "" && al.NodeID != node {
+					continue
+				}
+				if len(out) >= limit {
+					break
+				}
+				out = append(out, al)
+			}
+			c.JSON(http.StatusOK, out)
 		})
 
 		api.GET("/regions", func(c *gin.Context) {
