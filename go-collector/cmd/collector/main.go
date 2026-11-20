@@ -194,7 +194,7 @@ because the bearer token would otherwise cross the network in plaintext.`,
 			// Validate --grpc-auth first so a typo exits before the store lock or
 			// any listener is taken (#222).
 			grpcAuthMode, _ := cmd.Flags().GetString("grpc-auth")
-			grpcAuthEnabled, err := parseGRPCAuthMode(grpcAuthMode)
+			grpcAuthEnabled, err := httpauth.ParseMode("grpc-auth", grpcAuthMode)
 			if err != nil {
 				return err
 			}
@@ -371,19 +371,6 @@ because the bearer token would otherwise cross the network in plaintext.`,
 	cmd.MarkFlagsRequiredTogether("grpc-tls-cert", "grpc-tls-key")
 	cmd.MarkFlagsRequiredTogether("http-tls-cert", "http-tls-key")
 	return cmd
-}
-
-// parseGRPCAuthMode maps the --grpc-auth value to whether gRPC auth is
-// enforced. Only the exact values "required" and "disabled" are accepted so a
-// typo can never silently turn authentication off (#222).
-func parseGRPCAuthMode(v string) (bool, error) {
-	switch v {
-	case "required":
-		return true, nil
-	case "disabled":
-		return false, nil
-	}
-	return false, fmt.Errorf("invalid --grpc-auth %q: must be \"required\" or \"disabled\"", v)
 }
 
 // httpTLSFlags returns the REST API TLS cert/key paths and logs a warning

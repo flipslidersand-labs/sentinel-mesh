@@ -21,7 +21,7 @@ func TestParseMode(t *testing.T) {
 		{"none", false, true},
 	}
 	for _, c := range cases {
-		got, err := ParseMode(c.in)
+		got, err := ParseMode("http-auth", c.in)
 		if (err != nil) != c.wantErr {
 			t.Errorf("ParseMode(%q) err = %v, wantErr %v", c.in, err, c.wantErr)
 			continue
