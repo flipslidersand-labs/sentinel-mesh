@@ -65,7 +65,7 @@ func DispatcherFromEnv(logger *zap.Logger) (*Dispatcher, error) {
 		}
 	}
 
-	minSeverity := strings.TrimSpace(os.Getenv(envMinSeverity))
+	minSeverity := strings.ToLower(strings.TrimSpace(os.Getenv(envMinSeverity)))
 	if minSeverity != "" && !knownSeverity(minSeverity) {
 		return nil, fmt.Errorf("unknown %s %q", envMinSeverity, minSeverity)
 	}
