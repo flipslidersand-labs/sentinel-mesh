@@ -33,7 +33,9 @@ func TestRecord_AlertAtThresholdBreach(t *testing.T) {
 
 	var lastAlerts []store.Alert
 	for i := 0; i < 5; i++ {
-		lastAlerts = d.Record(ev)
+		if a := d.Record(ev); len(a) > 0 {
+			lastAlerts = a // alert fires once on the crossing (cooldown after)
+		}
 	}
 	if len(lastAlerts) == 0 {
 		t.Fatal("expected anomaly alert after threshold breach")
@@ -82,10 +84,10 @@ func TestRecord_ShortestWindowTriggers(t *testing.T) {
 		{Duration: 5 * time.Minute, Threshold: 20},
 	})
 	ev := makeEvent("node1", "file")
-	for i := 0; i < 4; i++ {
+	for i := 0; i < 3; i++ {
 		d.Record(ev)
 	}
-	alerts := d.Record(ev)
+	alerts := d.Record(ev) // 4th event crosses the 1m threshold
 	if len(alerts) == 0 {
 		t.Fatal("expected alert from 1m window")
 	}
