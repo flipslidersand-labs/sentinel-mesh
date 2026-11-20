@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CI:** `go mod tidy` consistency check for `go-collector` (fails if `go.mod`/`go.sum` would change) (#330).
 - **go-collector:** `--http-tls-cert`/`--http-tls-key` serve the REST API (normal and
   `--aggregate` mode) over TLS; they must be given together. Without them the REST API stays
   plaintext and a warning is logged, as with gRPC (#359).

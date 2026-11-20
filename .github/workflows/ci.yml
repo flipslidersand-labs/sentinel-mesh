@@ -25,6 +25,23 @@ jobs:
       # 公開リポのため runner はリポ変数 GATE_RUNNER で指定する（ADR-010。既定値なし）。
       runner: ${{ vars.GATE_RUNNER }}
 
+  go-mod-tidy:
+    name: Go mod tidy check
+    # go-collector は再利用 workflow 呼び出しのため step を足せず、別ジョブで整合を検査する (#330)。
+    # 公開リポのため runner はリポ変数 GATE_RUNNER で指定する（ADR-010。既定値なし）。
+    runs-on: ${{ vars.GATE_RUNNER }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: go-collector
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+      - name: go mod tidy が go.mod/go.sum に差分を出さないこと
+        run: go mod tidy && git diff --exit-code go.mod go.sum
+
   rust-agent:
     name: Rust Agent (check + test + coverage)
     # 公開リポのため runner はリポ変数 GATE_RUNNER で指定する（ADR-010。既定値なし）。
