@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the collector refuses to start with a shorter value (e.g. use `openssl rand -hex 32`).
   Rotate any shorter token before upgrading. This also applies with `--http-auth disabled`: a
   `SENTINEL_API_TOKEN` that is set but shorter than 32 bytes is a startup error.
+- **BREAKING (go-collector, #327):** rule `severity` must now be exactly `info`, `warning` or
+  `critical`. A rule with any other severity (empty, the former aliases
+  `low`/`warn`/`medium`/`high`/`error`, or mixed case) is a load-time error and the collector
+  does not start. `SENTINEL_NOTIFY_MIN_SEVERITY` likewise accepts only `info`/`warning`/`critical`
+  (case and surrounding whitespace are still tolerated).
 - **BREAKING (go-collector, #359):** `--aggregate` now rejects `http://` upstreams on
   non-loopback hosts (anything other than 127.0.0.0/8, `::1`, `localhost`), because the
   bearer token would be sent in plaintext. Migration: serve the region collectors over TLS
