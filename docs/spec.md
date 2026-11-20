@@ -50,12 +50,13 @@ Linux Node C ─ Rust eBPF Agent ┘
 
 eBPF プログラムは `sys_enter_execve` / `sys_enter_openat` / `sys_exit_openat` tracepoint の対(ret は sys_exit_openat から取得)と `tcp_connect` kprobe の 3 種のみ
 （`rust-agent/agent-ebpf/src/main.rs`）。proto の EventType も EXEC / TCP / FILE のみ。
+TCP connect は IPv4 ソケットのみ記録する。既知の制限として、dual-stack の AF_INET6 ソケットによる v4-mapped アドレスへの接続も記録されない（#429 で対応）。
 
 | カテゴリ       | イベント種別          | 状況     |
 | -------------- | --------------------- | -------- |
 | プロセス       | execve                | 実装済み |
 | プロセス       | exit                  | 未実装   |
-| ネットワーク   | TCP connect           | 実装済み |
+| ネットワーク   | TCP connect           | 実装済み（IPv4 のみ） |
 | ネットワーク   | TCP accept, DNS query | 未実装   |
 | ファイル       | open (openat)         | 実装済み |
 | ファイル       | unlink, rename        | 未実装   |

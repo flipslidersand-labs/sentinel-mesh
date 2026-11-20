@@ -180,10 +180,24 @@ fn try_tcp_connect(ctx: ProbeContext) -> Result<(), i64> {
     //   skc_rcv_saddr  @4  __be32 — local (src) IP, network byte order
     //   skc_dport      @12 __be16 — remote (dst) port, network byte order
     //   skc_num        @14 __u16  — local (src) port, ALREADY host byte order
+    //   skc_family     @16 __u16  — address family (AF_INET = 2, AF_INET6 = 10);
+    //                   follows skc_portpair (@12..16) in struct sock_common
     // Raw offsets are BTF-fragile across kernel versions — CO-RE (with
     // vmlinux.h field offsets resolved by the loader) would be more robust;
     // tracked as a follow-up, out of scope for this fix (#72).
     let sk: *const u8 = ctx.arg(0).ok_or(1i64)?;
+    // tcp_v6_connect() also reaches tcp_connect(); for AF_INET6 sockets offsets
+    // 0/4 are not IPv4 addresses. Only IPv4 is supported — drop everything else
+    // instead of recording bogus addresses (#369).
+    // Known limitation: a dual-stack AF_INET6 socket connecting to a v4-mapped
+    // address (tcp_v6_connect -> tcp_v4_connect) keeps sk_family = AF_INET6 and is
+    // dropped here too, although offsets 0/4 hold a valid IPv4 pair; see #429.
+    const AF_INET: u16 = 2;
+    let family: u16 =
+        unsafe { bpf_probe_read_kernel(sk.add(16) as *const u16) }.map_err(|_| 1i64)?;
+    if family != AF_INET {
+        return Ok(());
+    }
     let src_ip: u32 =
         unsafe { bpf_probe_read_kernel(sk.add(4) as *const u32) }.map_err(|_| 1i64)?;
     let dst_ip: u32 = unsafe { bpf_probe_read_kernel(sk as *const u32) }.map_err(|_| 1i64)?;
