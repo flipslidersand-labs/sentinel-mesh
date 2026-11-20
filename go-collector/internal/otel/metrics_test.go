@@ -119,17 +119,27 @@ func TestMetrics_AuthFailureReasons(t *testing.T) {
 	}
 }
 
-// Pins current behaviour: a second NewMetricsProvider in the same process
-// does not return an error (the exporter's collector registers without a
-// duplicate-descriptor failure) and yields a usable provider.
+// Pins current behaviour of calling NewMetricsProvider twice: neither call
+// returns an error. NewMetricsProvider cannot take a registerer, but the
+// exporter reads prometheus.DefaultRegisterer at call time, so the test swaps
+// it for a private registry (restored on cleanup) to keep the real default
+// registry, which the other tests gather from, clean. Note: gathering from a
+// registry holding two such providers fails with duplicate metrics, so a
+// second call in production would break /metrics; that is deliberately not
+// asserted here.
 func TestNewMetricsProvider_SecondCall(t *testing.T) {
-	sharedProvider(t)
-	mp2, err := NewMetricsProvider(context.Background())
-	if err != nil {
-		t.Fatalf("second NewMetricsProvider returned error: %v", err)
+	orig := prometheus.DefaultRegisterer
+	prometheus.DefaultRegisterer = prometheus.NewRegistry()
+	t.Cleanup(func() { prometheus.DefaultRegisterer = orig })
+
+	for i := 0; i < 2; i++ {
+		mp, err := NewMetricsProvider(context.Background())
+		if err != nil {
+			t.Fatalf("NewMetricsProvider call %d returned error: %v", i+1, err)
+		}
+		if mp == nil {
+			t.Fatalf("provider %d is nil", i+1)
+		}
+		mp.RecordEvent("t-second", "n-second") // must not panic
 	}
-	if mp2 == nil {
-		t.Fatal("second provider is nil")
-	}
-	mp2.RecordEvent("t-second", "n-second") // must not panic
 }
