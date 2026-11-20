@@ -13,6 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the collector refuses to start with a shorter value (e.g. use `openssl rand -hex 32`).
   Rotate any shorter token before upgrading. This also applies with `--http-auth disabled`: a
   `SENTINEL_API_TOKEN` that is set but shorter than 32 bytes is a startup error.
+- **BREAKING (go-collector, #359):** `--aggregate` now rejects `http://` upstreams on
+  non-loopback hosts (anything other than 127.0.0.0/8, `::1`, `localhost`), because the
+  bearer token would be sent in plaintext. Migration: serve the region collectors over TLS
+  (new `--http-tls-cert`/`--http-tls-key`) and use `https://` upstreams, or pass the new
+  `--aggregate-allow-insecure-http` to keep plaintext on a trusted network.
+- **scripts (#358):** `install-collector.sh` and `deploy-agent.sh` now stage uploads in a per-run
+  remote `mktemp -d` directory (removed on exit) instead of fixed `/tmp` paths, and install binaries
+  with `install -o root -g root -m 755` and static files with `rsync --no-links` as root:root.
 
 ### Security
 
@@ -22,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **CI:** `go mod tidy` consistency check for `go-collector` (fails if `go.mod`/`go.sum` would change) (#330).
+- **go-collector:** `--http-tls-cert`/`--http-tls-key` serve the REST API (normal and
+  `--aggregate` mode) over TLS; they must be given together. Without them the REST API stays
+  plaintext and a warning is logged, as with gRPC (#359).
 - **go-collector:** a node evicted from the registry while its stream stays
   connected is re-created on its next event (default region, empty hostname)
   instead of vanishing from `/api/nodes` until reconnect (#371).
@@ -82,6 +93,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **agent:** `ok=false` acks from the collector are counted and logged as one
+  summary line per 10 s instead of one line per event, so exceeding the per-node
+  rate limit no longer floods the journal (#378).
 - **go-collector:** with `--cors-origins` set, CORS preflight now allows the `Authorization` header, so browsers can call the bearer-authenticated API cross-origin (#350).
 - **go-collector:** `--otel-endpoint` for traces accepts a value with a scheme
   (e.g. `http://localhost:4318`) (#280).
