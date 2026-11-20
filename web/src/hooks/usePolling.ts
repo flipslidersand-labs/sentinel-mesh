@@ -3,6 +3,9 @@ import { useEffect, useRef, useState } from "react";
 export function usePolling<T>(
   fetcher: () => Promise<T>,
   intervalMs = 5000,
+  // Values the fetcher depends on (e.g. filters). When any changes, the
+  // in-flight request is discarded and a fresh fetch starts immediately.
+  deps: readonly unknown[] = [],
 ): { data: T | null; error: string | null; loading: boolean } {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -44,7 +47,8 @@ export function usePolling<T>(
       cancelled = true;
       clearInterval(id);
     };
-  }, [intervalMs]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [intervalMs, ...deps]);
 
   return { data, error, loading };
 }

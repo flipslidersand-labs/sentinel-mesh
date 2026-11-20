@@ -156,6 +156,48 @@ describe("usePolling", () => {
     expect(fetcher).toHaveBeenCalledTimes(3);
   });
 
+  it("refetches immediately when deps change and discards a late stale response (#320)", async () => {
+    const resolvers: Record<string, (v: string) => void> = {};
+    const fetcher = vi.fn().mockImplementation(
+      (filter: string) =>
+        new Promise<string>((resolve) => {
+          resolvers[filter] = resolve;
+        }),
+    );
+    const { result, rerender } = renderHook(
+      ({ filter }: { filter: string }) =>
+        usePolling(() => fetcher(filter), 1000, [filter]),
+      { initialProps: { filter: "a" } },
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    // Filter changes while the "a" request is still in flight: a new request
+    // must start immediately, not wait for the next tick or the old request.
+    rerender({ filter: "b" });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher).toHaveBeenLastCalledWith("b");
+
+    await act(async () => {
+      resolvers.b("data-b");
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.data).toBe("data-b");
+
+    // The stale "a" response arrives last and must be ignored.
+    await act(async () => {
+      resolvers.a("data-a");
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.data).toBe("data-b");
+  });
+
   it("always uses the latest fetcher without re-subscribing the interval", async () => {
     const first = vi.fn().mockResolvedValue("v1");
     const second = vi.fn().mockResolvedValue("v2");
