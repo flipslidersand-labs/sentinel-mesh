@@ -45,6 +45,19 @@ type Detector struct {
 	// timestamps stores the recorded event times for each (node, type) key.
 	// Old entries are pruned on each Record call.
 	timestamps map[windowKey][]time.Time
+	// lastAlert records when each (node, type, window) last fired, so the same
+	// window does not re-alert until its Duration has elapsed (cooldown).
+	// Entries whose cooldown has expired are removed by gc.
+	lastAlert map[alertKey]time.Time
+	// now returns the current time; replaced in tests.
+	now func() time.Time
+}
+
+// alertKey identifies the cooldown state of one window (by index in windows)
+// for one (node, type) key.
+type alertKey struct {
+	windowKey
+	window int
 }
 
 // New returns a Detector with the given window configurations.
@@ -56,6 +69,8 @@ func New(windows []WindowConfig) *Detector {
 	return &Detector{
 		windows:    windows,
 		timestamps: make(map[windowKey][]time.Time),
+		lastAlert:  make(map[alertKey]time.Time),
+		now:        time.Now,
 	}
 }
 
@@ -66,15 +81,20 @@ func (d *Detector) Record(event store.Event) []store.Alert {
 	defer d.mu.Unlock()
 
 	key := windowKey{NodeID: event.NodeID, EventType: event.Type}
-	now := time.Now()
+	now := d.now()
 
 	d.timestamps[key] = append(d.timestamps[key], now)
 	d.prune(key, now)
 
 	var alerts []store.Alert
-	for _, w := range d.windows {
+	for i, w := range d.windows {
 		count := d.countWithin(key, now, w.Duration)
 		if count > w.Threshold {
+			ak := alertKey{windowKey: key, window: i}
+			if last, ok := d.lastAlert[ak]; ok && now.Sub(last) < w.Duration {
+				continue // cooldown: already alerted for this window recently
+			}
+			d.lastAlert[ak] = now
 			alerts = append(alerts, store.Alert{
 				AlertID:   uuid.New().String(),
 				RuleID:    fmt.Sprintf("anomaly_%s", event.Type),
@@ -100,7 +120,7 @@ func (d *Detector) WindowStats() map[string]map[string]int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	now := time.Now()
+	now := d.now()
 	result := make(map[string]map[string]int)
 
 	for key, ts := range d.timestamps {
@@ -170,10 +190,17 @@ func (d *Detector) gc() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	cutoff := time.Now().Add(-d.maxDuration())
+	now := d.now()
+	cutoff := now.Add(-d.maxDuration())
 	for key, ts := range d.timestamps {
 		if len(ts) == 0 || ts[len(ts)-1].Before(cutoff) {
 			delete(d.timestamps, key)
+		}
+	}
+	// Drop cooldown entries that have expired (or whose window no longer exists).
+	for ak, last := range d.lastAlert {
+		if ak.window >= len(d.windows) || now.Sub(last) >= d.windows[ak.window].Duration {
+			delete(d.lastAlert, ak)
 		}
 	}
 }
