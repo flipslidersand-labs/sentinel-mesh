@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/flipslidersand/sentinel-mesh/internal/authlimit"
 	"github.com/gin-gonic/gin"
 )
 
@@ -53,7 +54,7 @@ func TestBearerAuth_RejectsMissingAndWrong(t *testing.T) {
 
 func TestBearerAuth_RateLimitsRepeatedFailures(t *testing.T) {
 	r := newRouter("s3cret")
-	for i := 0; i < int(failBurst); i++ {
+	for i := 0; i < int(authlimit.Burst); i++ {
 		if got := do(r, "Bearer wrong").Code; got != http.StatusUnauthorized {
 			t.Fatalf("attempt %d: got %d, want 401", i, got)
 		}
@@ -73,7 +74,7 @@ func TestBearerAuth_RateLimitsRepeatedFailures(t *testing.T) {
 func TestBearerAuth_ForwardedForDoesNotEvadeLimit(t *testing.T) {
 	r := newRouter("s3cret")
 	var last int
-	for i := 0; i < int(failBurst)+1; i++ {
+	for i := 0; i < int(authlimit.Burst)+1; i++ {
 		req := httptest.NewRequest(http.MethodGet, "/api/x", nil)
 		req.Header.Set("Authorization", "Bearer wrong")
 		req.Header.Set("X-Forwarded-For", "203.0.113."+string(rune('1'+i)))
@@ -87,20 +88,20 @@ func TestBearerAuth_ForwardedForDoesNotEvadeLimit(t *testing.T) {
 }
 
 func TestFailLimiter_RecoversAndKeysIPv6(t *testing.T) {
-	l := newFailLimiter()
+	l := authlimit.New()
 	now := time.Unix(1000, 0)
-	l.now = func() time.Time { return now }
-	for i := 0; i < int(failBurst); i++ {
-		l.reserve("2001:db8:1:2::1")
+	l.Now = func() time.Time { return now }
+	for i := 0; i < int(authlimit.Burst); i++ {
+		l.Reserve("2001:db8:1:2::1")
 	}
-	if l.reserve("2001:db8:1:2:ffff::9") {
+	if l.Reserve("2001:db8:1:2:ffff::9") {
 		t.Fatal("same /64 should share budget")
 	}
-	if !l.reserve("2001:db8:1:3::1") {
+	if !l.Reserve("2001:db8:1:3::1") {
 		t.Fatal("other /64 should be independent")
 	}
 	now = now.Add(13 * time.Second)
-	if !l.reserve("2001:db8:1:2::1") {
+	if !l.Reserve("2001:db8:1:2::1") {
 		t.Fatal("budget should recover over time")
 	}
 }

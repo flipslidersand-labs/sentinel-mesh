@@ -36,7 +36,7 @@ func (c *fakeClock) add(d time.Duration) {
 func newTestLimiter() (*authFailLimiter, *fakeClock) {
 	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
 	l := newAuthFailLimiter()
-	l.now = clk.now
+	l.Now = clk.now
 	return l, clk
 }
 
@@ -63,7 +63,7 @@ func TestAuthFailLimiter_ConcurrentReserveIsAtomic(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if lim.reserve("198.51.100.7") {
+			if lim.Reserve("198.51.100.7") {
 				passed.Add(1)
 			}
 		}()
@@ -77,16 +77,16 @@ func TestAuthFailLimiter_ConcurrentReserveIsAtomic(t *testing.T) {
 func TestAuthFailLimiter_RecoversOverTime(t *testing.T) {
 	lim, clk := newTestLimiter()
 	for i := 0; i < int(authFailBurst); i++ {
-		lim.reserve("198.51.100.7")
+		lim.Reserve("198.51.100.7")
 	}
-	if lim.reserve("198.51.100.7") {
+	if lim.Reserve("198.51.100.7") {
 		t.Fatal("expected blocked")
 	}
 	clk.add(time.Minute / 5) // 5/min => 1 token per 12s
-	if !lim.reserve("198.51.100.7") {
+	if !lim.Reserve("198.51.100.7") {
 		t.Fatal("expected one attempt after refill")
 	}
-	if lim.reserve("198.51.100.7") {
+	if lim.Reserve("198.51.100.7") {
 		t.Fatal("expected blocked again")
 	}
 }
@@ -103,45 +103,45 @@ func TestCheckAuth_SuccessLeavesNoLimiterEntry(t *testing.T) {
 			t.Fatalf("valid attempt %d rejected: %v", i, err)
 		}
 	}
-	if lim.order.Len() != 0 {
-		t.Fatalf("expected table empty after successes, got %d", lim.order.Len())
+	if lim.Len() != 0 {
+		t.Fatalf("expected table empty after successes, got %d", lim.Len())
 	}
 }
 
 func TestAuthFailLimiter_IPv6SharesSlash64(t *testing.T) {
 	lim, _ := newTestLimiter()
 	for i := 0; i < int(authFailBurst); i++ {
-		lim.reserve("2001:db8:1:2::1")
+		lim.Reserve("2001:db8:1:2::1")
 	}
-	if lim.reserve("2001:db8:1:2:ffff::9") {
+	if lim.Reserve("2001:db8:1:2:ffff::9") {
 		t.Fatal("same /64 should share the budget")
 	}
-	if !lim.reserve("2001:db8:1:3::1") {
+	if !lim.Reserve("2001:db8:1:3::1") {
 		t.Fatal("different /64 must be independent")
 	}
 }
 
 func TestAuthFailLimiter_CapEvictsOldestAndKeepsTracking(t *testing.T) {
 	lim, clk := newTestLimiter()
-	lim.maxKeys = 3
+	lim.MaxKeys = 3
 	for _, ip := range []string{"192.0.2.1", "192.0.2.2", "192.0.2.3"} {
 		for i := 0; i < int(authFailBurst); i++ {
-			lim.reserve(ip)
+			lim.Reserve(ip)
 		}
 		clk.add(time.Second)
 	}
-	lim.reserve("192.0.2.4") // evicts 192.0.2.1 (least recently used)
-	if lim.order.Len() != 3 {
-		t.Fatalf("table size %d, want 3", lim.order.Len())
+	lim.Reserve("192.0.2.4") // evicts 192.0.2.1 (least recently used)
+	if lim.Len() != 3 {
+		t.Fatalf("table size %d, want 3", lim.Len())
 	}
-	if _, ok := lim.entries["192.0.2.1"]; ok {
+	if lim.Tracked("192.0.2.1") {
 		t.Fatal("oldest entry should be evicted")
 	}
 	// New IP is tracked (not fail-open): it gets throttled after its burst.
 	for i := 0; i < int(authFailBurst)-1; i++ {
-		lim.reserve("192.0.2.4")
+		lim.Reserve("192.0.2.4")
 	}
-	if lim.reserve("192.0.2.4") {
+	if lim.Reserve("192.0.2.4") {
 		t.Fatal("new IP must be throttled even when the table is full")
 	}
 }

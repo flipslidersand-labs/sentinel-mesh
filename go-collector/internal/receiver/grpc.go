@@ -680,7 +680,7 @@ func Serve(ctx context.Context, cfg Config, deps Deps) error {
 
 	authLim := newAuthFailLimiter()
 	if metrics != nil {
-		authLim.onFail = metrics.RecordAuthFailure
+		authLim.OnFail = metrics.RecordAuthFailure
 	}
 	var opts []grpc.ServerOption
 	if tlsCertFile != "" && tlsKeyFile != "" {
@@ -764,17 +764,17 @@ func checkAuthLimited(ctx context.Context, st *store.Store, authEnabled bool, li
 	}
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
-		lim.recordFail(otel.AuthFailMissingCredentials)
+		lim.RecordFail(otel.AuthFailMissingCredentials)
 		return "", status.Error(codes.Unauthenticated, "missing metadata")
 	}
 	values := md.Get("authorization")
 	if len(values) == 0 {
-		lim.recordFail(otel.AuthFailMissingCredentials)
+		lim.RecordFail(otel.AuthFailMissingCredentials)
 		return "", status.Error(codes.Unauthenticated, "missing authorization metadata")
 	}
 	got, ok := strings.CutPrefix(values[0], "Bearer ")
 	if !ok {
-		lim.recordFail(otel.AuthFailInvalidToken)
+		lim.RecordFail(otel.AuthFailInvalidToken)
 		return "", status.Error(codes.Unauthenticated, "invalid token")
 	}
 	// A value that can't be a token is a failure, counted before any
@@ -800,11 +800,11 @@ func checkAuthLimited(ctx context.Context, st *store.Store, authEnabled bool, li
 // returns the matching status: ResourceExhausted once its budget is spent,
 // Unauthenticated otherwise.
 func authFailure(ctx context.Context, lim *authFailLimiter) error {
-	if ip := peerIP(ctx); ip != "" && !lim.reserve(ip) {
-		lim.recordFail(otel.AuthFailRateLimited)
+	if ip := peerIP(ctx); ip != "" && !lim.Reserve(ip) {
+		lim.RecordFail(otel.AuthFailRateLimited)
 		return status.Error(codes.ResourceExhausted, "too many authentication failures")
 	}
-	lim.recordFail(otel.AuthFailInvalidToken)
+	lim.RecordFail(otel.AuthFailInvalidToken)
 	return status.Error(codes.Unauthenticated, "invalid token")
 }
 

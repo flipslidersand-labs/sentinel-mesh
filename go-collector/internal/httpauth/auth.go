@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/flipslidersand/sentinel-mesh/internal/authlimit"
 	"github.com/gin-gonic/gin"
 )
 
@@ -70,10 +71,10 @@ func BearerAuth(token string) gin.HandlerFunc {
 	if token == "" {
 		return func(c *gin.Context) { c.Next() }
 	}
-	return bearerAuth(token, newFailLimiter())
+	return bearerAuth(token, authlimit.New())
 }
 
-func bearerAuth(token string, lim *failLimiter) gin.HandlerFunc {
+func bearerAuth(token string, lim *authlimit.Limiter) gin.HandlerFunc {
 	want := []byte(token)
 	return func(c *gin.Context) {
 		got, ok := strings.CutPrefix(c.GetHeader("Authorization"), "Bearer ")
@@ -84,7 +85,7 @@ func bearerAuth(token string, lim *failLimiter) gin.HandlerFunc {
 		}
 		// RemoteIP (not ClientIP): X-Forwarded-For is client-controlled and
 		// would let an attacker dodge the limit.
-		if !lim.reserve(c.RemoteIP()) {
+		if !lim.Reserve(c.RemoteIP()) {
 			c.Header("Retry-After", "60")
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "too many failed attempts"})
 			return

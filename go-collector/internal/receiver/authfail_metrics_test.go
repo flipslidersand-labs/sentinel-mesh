@@ -18,7 +18,7 @@ import (
 func TestCheckAuth_RecordsFailureReasons(t *testing.T) {
 	lim, _ := newTestLimiter()
 	got := map[string]int{}
-	lim.onFail = func(reason string) { got[reason]++ }
+	lim.OnFail = func(reason string) { got[reason]++ }
 	st := newAuthTestStore(t)
 
 	// missing metadata / missing header
@@ -80,7 +80,7 @@ func assertCounts(t *testing.T, got, want map[string]int) {
 func TestCheckAuth_BadSchemeRecordsInvalidToken(t *testing.T) {
 	lim, _ := newTestLimiter()
 	got := map[string]int{}
-	lim.onFail = func(reason string) { got[reason]++ }
+	lim.OnFail = func(reason string) { got[reason]++ }
 	st := newAuthTestStore(t)
 
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Basic abc"))
@@ -93,7 +93,7 @@ func TestCheckAuth_BadSchemeRecordsInvalidToken(t *testing.T) {
 func TestCheckAuth_UnknownTokenRecordsInvalidToken(t *testing.T) {
 	lim, _ := newTestLimiter()
 	got := map[string]int{}
-	lim.onFail = func(reason string) { got[reason]++ }
+	lim.OnFail = func(reason string) { got[reason]++ }
 	st := newAuthTestStore(t)
 
 	unknown := strings.Repeat("a", store.TokenLength)
@@ -106,7 +106,7 @@ func TestCheckAuth_UnknownTokenRecordsInvalidToken(t *testing.T) {
 func TestCheckAuth_StoreErrorRecordsNothing(t *testing.T) {
 	lim, _ := newTestLimiter()
 	got := map[string]int{}
-	lim.onFail = func(reason string) { got[reason]++ }
+	lim.OnFail = func(reason string) { got[reason]++ }
 	st := newAuthTestStore(t)
 
 	// LookupNodeID returns ctx.Err() for a cancelled context, which
