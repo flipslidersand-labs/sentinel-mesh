@@ -272,6 +272,54 @@ func TestStreamEvents_RejectsInvalidEventWithoutPersisting(t *testing.T) {
 	}
 }
 
+// TestStreamEvents_RejectsUnknownEventTypeWithoutPersisting covers #315: an
+// out-of-range EventType (the enum has no UNSPECIFIED; 0 is EXEC) must be acked Ok=false and must not
+// reach the registry, the store, or the per-type counters.
+func TestStreamEvents_RejectsUnknownEventTypeWithoutPersisting(t *testing.T) {
+	for _, typ := range []pb.EventType{3, 9999, -1} {
+		st, err := store.New(filepath.Join(t.TempDir(), "badger"))
+		if err != nil {
+			t.Fatalf("store.New: %v", err)
+		}
+		t.Cleanup(func() { _ = st.Close() })
+
+		reg := registry.New()
+		s := &server{st: st, reg: reg, log: zap.NewNop()}
+		stream := &fakeStream{events: []*pb.KernelEvent{
+			{NodeId: "node-1", EventId: "evt-1", Type: typ, Timestamp: time.Now().UnixNano()},
+		}}
+		if err := s.StreamEvents(stream); err != nil {
+			t.Fatalf("type %d: StreamEvents: %v", typ, err)
+		}
+		if len(stream.acks) != 1 || stream.acks[0].Ok {
+			t.Fatalf("type %d: expected a single Ack.Ok=false, got %+v", typ, stream.acks)
+		}
+		if len(reg.List()) != 0 {
+			t.Fatalf("type %d: must not reach the registry", typ)
+		}
+		events, err := st.ListEvents(context.Background(), "node-1", 10)
+		if err != nil {
+			t.Fatalf("ListEvents: %v", err)
+		}
+		if len(events) != 0 {
+			t.Fatalf("type %d: must not be persisted", typ)
+		}
+		stats, err := st.Stats()
+		if err != nil {
+			t.Fatalf("Stats: %v", err)
+		}
+		// Known types are pre-seeded at zero; no new key or non-zero count may appear.
+		if len(stats) != 3 {
+			t.Fatalf("type %d: counters gained a key, got %v", typ, stats)
+		}
+		for k, n := range stats {
+			if n != 0 {
+				t.Fatalf("type %d: counter %q = %d, want 0", typ, k, n)
+			}
+		}
+	}
+}
+
 // TestStreamEvents_RejectsNodeIDNotMatchingAuthenticatedIdentity covers
 // #183/#190 (per ADR-005): once a stream has authenticated as one node_id
 // (via the interceptor setting authedNodeIDKey), an event claiming a
@@ -754,7 +802,7 @@ func TestCheckAuth_Required_NoTokensIssued_RejectsAll(t *testing.T) {
 // proto3 enums accept out-of-range values; an unknown Type would otherwise
 // become a new "unknown(N)" counter key / metric label per value (#260).
 func TestValidateKernelEvent_RejectsUnknownType(t *testing.T) {
-	for _, typ := range []pb.EventType{3, 99, -1} {
+	for _, typ := range []pb.EventType{3, 99, 9999, -1} {
 		e := &pb.KernelEvent{NodeId: "node-1", EventId: "evt-1", Type: typ}
 		if err := validateKernelEvent(e); err == nil {
 			t.Fatalf("expected unknown type %d to be rejected", typ)
