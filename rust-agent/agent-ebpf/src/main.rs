@@ -4,7 +4,7 @@
 use aya_ebpf::{
     helpers::{bpf_get_current_comm, bpf_get_current_pid_tgid, bpf_get_current_uid_gid},
     macros::{kprobe, map, tracepoint},
-    maps::RingBuf,
+    maps::{LruHashMap, RingBuf},
     programs::{ProbeContext, TracePointContext},
 };
 
@@ -46,6 +46,12 @@ pub struct TcpEvent {
 #[map]
 static EVENTS: RingBuf = RingBuf::with_byte_size(512 * 1024, 0);
 
+/// pid_tgid -> userspace filename pointer, stored at sys_enter_openat and
+/// consumed at sys_exit_openat (#373). LRU so entries orphaned by a thread
+/// that dies between enter and exit are evicted instead of filling the map.
+#[map]
+static OPEN_ARGS: LruHashMap<u64, u64> = LruHashMap::with_max_entries(10240, 0);
+
 // ─── Exec: sys_enter_execve ───────────────────────────────────────────────
 
 #[tracepoint(name = "sentinel_exec", category = "syscalls")]
@@ -80,46 +86,70 @@ fn try_exec(_ctx: TracePointContext) -> Result<(), i64> {
     Ok(())
 }
 
-// ─── File open: sys_enter_openat ──────────────────────────────────────────
+// ─── File open: sys_enter_openat (stash) + sys_exit_openat (emit) ────────
 
 #[tracepoint(name = "sentinel_openat", category = "syscalls")]
 pub fn sentinel_openat(ctx: TracePointContext) -> u32 {
-    match try_openat(ctx) {
+    match try_openat_enter(ctx) {
         Ok(_) => 0,
         Err(_) => 1,
     }
 }
 
 #[inline(always)]
-fn try_openat(ctx: TracePointContext) -> Result<(), i64> {
+fn try_openat_enter(ctx: TracePointContext) -> Result<(), i64> {
+    // sys_enter_openat tracepoint args: dfd@16, filename ptr@24, flags@32, mode@40
+    // (common fields occupy 0-7, __syscall_nr is padded to 8 bytes at 8-15).
+    // Offset 16 is dfd, not the filename pointer (#169).
+    let filename_ptr: u64 = unsafe { ctx.read_at(24) }.map_err(|_| 1i64)?;
+    let pid_tgid = bpf_get_current_pid_tgid();
+    OPEN_ARGS.insert(&pid_tgid, &filename_ptr, 0)?;
+    Ok(())
+}
+
+#[tracepoint(name = "sentinel_openat_exit", category = "syscalls")]
+pub fn sentinel_openat_exit(ctx: TracePointContext) -> u32 {
+    match try_openat_exit(ctx) {
+        Ok(_) => 0,
+        Err(_) => 1,
+    }
+}
+
+#[inline(always)]
+fn try_openat_exit(ctx: TracePointContext) -> Result<(), i64> {
     use aya_ebpf::helpers::bpf_probe_read_user_str_bytes;
 
     let pid_tgid = bpf_get_current_pid_tgid();
+    let filename_ptr: u64 = match unsafe { OPEN_ARGS.get(&pid_tgid) } {
+        Some(p) => *p,
+        None => return Ok(()),
+    };
+    let _ = OPEN_ARGS.remove(&pid_tgid);
+
+    // sys_exit_openat tracepoint args: __syscall_nr@8 (int), ret@16 (long).
+    // Layout per the standard syscalls exit format (common fields 0-7,
+    // __syscall_nr 8-11 padded to 16, long ret at 16). Could not be confirmed
+    // against /sys/kernel/tracing/.../sys_exit_openat/format (not readable
+    // here); verify on a real host. ret is the fd (>= 0) or -errno.
+    let ret: i64 = unsafe { ctx.read_at(16) }.map_err(|_| 1i64)?;
+
     let pid = (pid_tgid >> 32) as u32;
     let uid = (bpf_get_current_uid_gid() & 0xffff_ffff) as u32;
     let raw_comm = bpf_get_current_comm()?;
 
-    // sys_enter_openat tracepoint args: dfd@16, filename ptr@24, flags@32, mode@40
-    // (common fields occupy 0-7, __syscall_nr is padded to 8 bytes at 8-15).
-    // Offset 16 is dfd, not the filename pointer (#169) — reading it here
-    // fed dfd's bit pattern to bpf_probe_read_user_str_bytes as a bogus
-    // userspace address, so `path` was silently always empty.
-    let filename_ptr: u64 = unsafe { ctx.read_at(24) }.map_err(|_| 1i64)?;
-
     let mut entry = unsafe { EVENTS.reserve::<FileEvent>(0) }.ok_or(1i64)?;
     let ev = entry.as_mut_ptr();
     unsafe {
-        // reserve() returns uninitialized memory (incl. struct padding and
-        // any bytes of `path` the probe read below doesn't fill); zero it
-        // before writing fields so we never submit stale kernel bytes (#71).
+        // reserve() returns uninitialized memory; zero it first (#71).
         core::ptr::write_bytes(ev, 0, 1);
         (*ev).event_type = ET_FILE;
         (*ev).pid = pid;
         (*ev).uid = uid;
-        (*ev).ret = 0;
+        (*ev).ret = if ret < 0 { ret as i32 } else { 0 };
         for i in 0..16 {
             (*ev).comm[i] = raw_comm[i] as u8;
         }
+        // The user pointer is still valid at exit time (same syscall).
         let path_slice = &mut (*ev).path;
         let _ = bpf_probe_read_user_str_bytes(filename_ptr as *const u8, path_slice);
     }
