@@ -76,7 +76,9 @@ check "user-group"        "$TMP/remote-scripts" "--user-group"
 
 if command -v systemd-analyze >/dev/null 2>&1 && [[ -s "$TMP/unit" ]]; then
   # ExecStart binary is absent locally; only flag syntax/directive errors.
-  va="$(systemd-analyze verify "$TMP/unit" 2>&1 | grep -iE 'unknown (key|section)|Unknown lvalue|Invalid|Failed to parse' || true)"
+  # systemd-analyze needs a unit-type suffix (.service) to accept the file.
+  cp "$TMP/unit" "$TMP/sentinel-collector.service"
+  va="$(LC_ALL=C systemd-analyze verify "$TMP/sentinel-collector.service" 2>&1 | grep -iE 'unknown (key|section)|Unknown lvalue|Invalid|Failed to parse' || true)"
   if [[ -n "$va" ]]; then echo "FAIL systemd-analyze: $va"; fail=1; else echo "ok   systemd-analyze verify"; fi
 fi
 

@@ -58,7 +58,9 @@ type Dispatcher struct {
 
 	mu       sync.Mutex
 	lastSent map[string]time.Time
-	dropped  uint64
+	// lastSweep is when expired lastSent keys were last pruned (#319).
+	lastSweep time.Time
+	dropped   uint64
 	// now is overridable in tests; defaults to time.Now.
 	now func() time.Time
 
@@ -105,24 +107,46 @@ func (d *Dispatcher) Enabled() bool {
 }
 
 // shouldSend applies the severity floor and cooldown. When it returns true it
-// records the send time so subsequent calls within the cooldown are suppressed.
-func (d *Dispatcher) shouldSend(a store.Alert) bool {
+// claims the key (records the send time) so subsequent calls within the
+// cooldown are suppressed, including concurrent in-flight Dispatch calls. The
+// returned release func (never nil) un-claims the key; Dispatch calls it when
+// every notifier failed so the alert can be retried right away (#319).
+// Keys older than the cooldown are pruned at most once per cooldown interval,
+// bounding the map for throwaway node IDs / anomaly_<type> rule IDs.
+func (d *Dispatcher) shouldSend(a store.Alert) (bool, func()) {
+	noop := func() {}
 	if rankOf(a.Severity) < d.minRank {
-		return false
+		return false, noop
 	}
 	if d.cooldown <= 0 {
-		return true
+		return true, noop
 	}
 	key := a.RuleID + "\x00" + a.NodeID
 	now := d.now()
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if now.Sub(d.lastSweep) >= d.cooldown {
+		for k, t := range d.lastSent {
+			if now.Sub(t) >= d.cooldown {
+				delete(d.lastSent, k)
+			}
+		}
+		d.lastSweep = now
+	}
 	if last, ok := d.lastSent[key]; ok && now.Sub(last) < d.cooldown {
-		return false
+		return false, noop
 	}
 	d.lastSent[key] = now
-	return true
+	release := func() {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		// Only roll back our own claim; a newer claim for the key stays.
+		if t, ok := d.lastSent[key]; ok && t.Equal(now) {
+			delete(d.lastSent, key)
+		}
+	}
+	return true, release
 }
 
 // DispatchAsync delivers the alert asynchronously, bounded by
@@ -162,7 +186,8 @@ func (d *Dispatcher) Dispatch(a store.Alert) {
 	if !d.Enabled() {
 		return
 	}
-	if !d.shouldSend(a) {
+	ok, release := d.shouldSend(a)
+	if !ok {
 		d.log.Debug("alert notification suppressed",
 			zap.String("rule_id", a.RuleID),
 			zap.String("node_id", a.NodeID),
@@ -174,6 +199,15 @@ func (d *Dispatcher) Dispatch(a store.Alert) {
 	ctx, cancel := context.WithTimeout(context.Background(), d.timeout)
 	defer cancel()
 
+	// The claim stays recorded during Send (d.mu is not held) so concurrent
+	// Dispatch calls for the same key stay suppressed and no extra duplicate
+	// window opens; it is released only after every notifier has failed.
+	delivered := false
+	defer func() {
+		if !delivered {
+			release()
+		}
+	}()
 	for _, n := range d.notifiers {
 		if err := n.Send(ctx, a); err != nil {
 			d.log.Error("alert notification failed",
@@ -183,6 +217,7 @@ func (d *Dispatcher) Dispatch(a store.Alert) {
 			)
 			continue
 		}
+		delivered = true
 		d.log.Info("alert notification sent",
 			zap.String("channel", n.Name()),
 			zap.String("rule_id", a.RuleID),
