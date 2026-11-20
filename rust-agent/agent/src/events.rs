@@ -310,19 +310,38 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
         return;
     }
 
-    // Attach openat tracepoint (sys_enter_openat) — best-effort: this program
-    // is optional and a failure here should not prevent exec/tcp collection.
-    if let Some(prog) = bpf.program_mut("sentinel_openat") {
+    // Attach openat tracepoints — best-effort: optional, a failure here should
+    // not prevent exec/tcp collection. The exit program emits the event (with
+    // ret), so the enter program (which stashes the filename pointer) is only
+    // attached once the exit program is attached (#373).
+    let mut openat_exit_ok = false;
+    if let Some(prog) = bpf.program_mut("sentinel_openat_exit") {
         match TryInto::<&mut TracePoint>::try_into(prog) {
-            Ok(tp) => {
-                if let Err(e) = tp
-                    .load()
-                    .and_then(|_| tp.attach("syscalls", "sys_enter_openat"))
-                {
-                    eprintln!("warn: openat tracepoint: {e}");
+            Ok(tp) => match tp
+                .load()
+                .and_then(|_| tp.attach("syscalls", "sys_exit_openat"))
+            {
+                Ok(_) => openat_exit_ok = true,
+                Err(e) => eprintln!("warn: openat exit tracepoint: {e}"),
+            },
+            Err(e) => eprintln!("warn: \"sentinel_openat_exit\" is not a tracepoint program: {e}"),
+        }
+    }
+    if openat_exit_ok {
+        if let Some(prog) = bpf.program_mut("sentinel_openat") {
+            match TryInto::<&mut TracePoint>::try_into(prog) {
+                Ok(tp) => {
+                    if let Err(e) = tp
+                        .load()
+                        .and_then(|_| tp.attach("syscalls", "sys_enter_openat"))
+                    {
+                        eprintln!(
+                            "warn: openat enter tracepoint failed, FILE events are disabled: {e}"
+                        );
+                    }
                 }
+                Err(e) => eprintln!("warn: \"sentinel_openat\" is not a tracepoint program: {e}"),
             }
-            Err(e) => eprintln!("warn: \"sentinel_openat\" is not a tracepoint program: {e}"),
         }
     }
 
