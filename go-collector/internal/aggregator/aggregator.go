@@ -281,29 +281,47 @@ func (a *Aggregator) Nodes() []registry.AgentNode {
 	return out
 }
 
-// Events returns merged events across all reachable regions.
-func (a *Aggregator) Events() []store.Event {
+// Events returns merged events across all reachable regions, newest first.
+func (a *Aggregator) Events() []store.Event { return a.EventsIn("") }
+
+// EventsIn is Events restricted to one region (empty = all regions).
+func (a *Aggregator) EventsIn(region string) []store.Event {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	out := make([]store.Event, 0)
-	for _, s := range a.state {
-		if s.reachable {
+	for r, s := range a.state {
+		if s.reachable && (region == "" || r == region) {
 			out = append(out, s.events...)
 		}
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if !out[i].Timestamp.Equal(out[j].Timestamp) {
+			return out[i].Timestamp.After(out[j].Timestamp)
+		}
+		return out[i].EventID < out[j].EventID
+	})
 	return out
 }
 
-// Alerts returns merged alerts across all reachable regions.
-func (a *Aggregator) Alerts() []store.Alert {
+// Alerts returns merged alerts across all reachable regions, newest first.
+func (a *Aggregator) Alerts() []store.Alert { return a.AlertsIn("") }
+
+// AlertsIn is Alerts restricted to one region (empty = all regions).
+func (a *Aggregator) AlertsIn(region string) []store.Alert {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	out := make([]store.Alert, 0)
-	for _, s := range a.state {
-		if s.reachable {
+	for r, s := range a.state {
+		if s.reachable && (region == "" || r == region) {
 			out = append(out, s.alerts...)
 		}
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if !out[i].Timestamp.Equal(out[j].Timestamp) {
+			return out[i].Timestamp.After(out[j].Timestamp)
+		}
+		return out[i].AlertID < out[j].AlertID
+	})
 	return out
 }
 

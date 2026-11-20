@@ -12,6 +12,25 @@ use crate::pb::{sentinel_collector_client::SentinelCollectorClient, KernelEvent,
 const INITIAL_BACKOFF: Duration = Duration::from_millis(100);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
+/// A connection counts as healthy (and resets the reconnect backoff) only once
+/// register succeeded AND the event stream has been up this long. Register
+/// success alone is not enough: a collector that accepts Register then drops
+/// the stream immediately would otherwise make us reconnect at
+/// INITIAL_BACKOFF in a tight loop (#313).
+const STABLE_CONNECTION: Duration = Duration::from_secs(10);
+
+/// Returns `(wait, next)`: the base delay to sleep before reconnecting and the
+/// backoff to carry into the following failure. `connected_for` is how long
+/// the event stream had been established when the attempt ended (`None` if it
+/// never got that far). A stable connection resets `wait` to INITIAL_BACKOFF.
+fn next_backoff(current: Duration, connected_for: Option<Duration>) -> (Duration, Duration) {
+    let wait = match connected_for {
+        Some(d) if d >= STABLE_CONNECTION => INITIAL_BACKOFF,
+        _ => current,
+    };
+    (wait, (wait * 2).min(MAX_BACKOFF))
+}
+
 /// Cap on how long a single `connect()` attempt may block. Without this, a
 /// firewall that silently drops packets leaves `.connect().await` hanging
 /// until the OS/TCP stack's own timeout (which can be minutes), during which
@@ -126,7 +145,8 @@ async fn stream_to_collector_with(
     let mut backoff = INITIAL_BACKOFF;
 
     loop {
-        match run_once(
+        let mut stats = DeliveryStats::default();
+        match run_once_tracked(
             &endpoint,
             &node_id,
             &region,
@@ -135,6 +155,7 @@ async fn stream_to_collector_with(
             &ca_cert_path,
             tuning,
             &mut rx,
+            &mut stats,
         )
         .await
         {
@@ -147,10 +168,12 @@ async fn stream_to_collector_with(
                 return Err(e);
             }
             Err(e) => {
-                let wait = jittered(backoff);
+                let connected_for = stats.established_at.map(|t| t.elapsed());
+                let (base, next) = next_backoff(backoff, connected_for);
+                backoff = next;
+                let wait = jittered(base);
                 eprintln!("collector connection lost/failed: {e} — reconnecting in {wait:.1?}");
                 tokio::time::sleep(wait).await;
-                backoff = (backoff * 2).min(MAX_BACKOFF);
             }
         }
     }
@@ -204,6 +227,7 @@ fn jittered(base: Duration) -> Duration {
 /// `taken - acked`, i.e. the events with no delivery confirmation. It is an
 /// upper bound on true loss (an event may have arrived with its ack lost),
 /// and it includes events still buffered in the bridge / HTTP/2 window.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 async fn run_once(
     endpoint: &str,
@@ -216,7 +240,7 @@ async fn run_once(
     rx: &mut Receiver<KernelEvent>,
 ) -> Result<()> {
     let mut stats = DeliveryStats::default();
-    let res = run_session(
+    run_once_tracked(
         endpoint,
         node_id,
         region,
@@ -226,6 +250,34 @@ async fn run_once(
         tuning,
         rx,
         &mut stats,
+    )
+    .await
+}
+
+/// `run_once` that leaves its `DeliveryStats` (incl. when the stream was
+/// established) with the caller, so the reconnect loop can decide on backoff.
+#[allow(clippy::too_many_arguments)]
+async fn run_once_tracked(
+    endpoint: &str,
+    node_id: &str,
+    region: &str,
+    hostname: &str,
+    auth_token: Option<MetadataValue<tonic::metadata::Ascii>>,
+    ca_cert_path: &Option<String>,
+    tuning: ConnTuning,
+    rx: &mut Receiver<KernelEvent>,
+    stats: &mut DeliveryStats,
+) -> Result<()> {
+    let res = run_session(
+        endpoint,
+        node_id,
+        region,
+        hostname,
+        auth_token,
+        ca_cert_path,
+        tuning,
+        rx,
+        stats,
     )
     .await;
     res.map_err(|e| {
@@ -246,6 +298,8 @@ async fn run_once(
 struct DeliveryStats {
     taken: u64,
     acked: u64,
+    /// Set once Register succeeded and the event stream is open.
+    established_at: Option<Instant>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -329,6 +383,7 @@ async fn run_session(
     };
 
     let mut response = client.stream_events(outbound).await?.into_inner();
+    stats.established_at = Some(Instant::now());
 
     let mut rejects = RejectTracker::new(REJECT_REPORT_INTERVAL);
 
@@ -516,6 +571,34 @@ mod tests {
             b = (b * 2).min(MAX_BACKOFF);
         }
         assert_eq!(b, MAX_BACKOFF);
+    }
+
+    #[test]
+    fn backoff_resets_after_stable_connection() {
+        // Escalated to the cap, then a connection that lived long enough:
+        // the next wait restarts from INITIAL_BACKOFF (#313).
+        let (wait, next) = next_backoff(MAX_BACKOFF, Some(STABLE_CONNECTION));
+        assert_eq!(wait, INITIAL_BACKOFF);
+        assert_eq!(next, INITIAL_BACKOFF * 2);
+        let (wait, _) = next_backoff(MAX_BACKOFF, Some(STABLE_CONNECTION * 10));
+        assert_eq!(wait, INITIAL_BACKOFF);
+    }
+
+    #[test]
+    fn backoff_not_reset_by_short_lived_or_unestablished_connection() {
+        // register ok but stream dropped right away: must keep escalating,
+        // otherwise a flapping collector gets a fast reconnect loop.
+        let just_under = STABLE_CONNECTION - Duration::from_millis(1);
+        let (wait, next) = next_backoff(Duration::from_secs(4), Some(just_under));
+        assert_eq!(wait, Duration::from_secs(4));
+        assert_eq!(next, Duration::from_secs(8));
+        // never got as far as register/stream
+        let (wait, next) = next_backoff(Duration::from_secs(4), None);
+        assert_eq!(wait, Duration::from_secs(4));
+        assert_eq!(next, Duration::from_secs(8));
+        // still capped
+        let (_, next) = next_backoff(MAX_BACKOFF, None);
+        assert_eq!(next, MAX_BACKOFF);
     }
 
     #[test]
