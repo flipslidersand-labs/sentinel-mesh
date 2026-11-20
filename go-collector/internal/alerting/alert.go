@@ -1,5 +1,29 @@
 package alerting
 
+// Canonical severity vocabulary. This is the single definition: rules.yaml
+// is validated against it (RuleSet.Validate) and the notify package orders
+// alerts by it (SeverityRank). The web UI renders the same three values.
+const (
+	SeverityInfo     = "info"
+	SeverityWarning  = "warning"
+	SeverityCritical = "critical"
+)
+
+// SeverityRank returns the ordering of a canonical severity (info < warning <
+// critical). ok is false for anything else; matching is exact (no aliases, no
+// case folding).
+func SeverityRank(s string) (rank int, ok bool) {
+	switch s {
+	case SeverityInfo:
+		return 0, true
+	case SeverityWarning:
+		return 1, true
+	case SeverityCritical:
+		return 2, true
+	}
+	return 0, false
+}
+
 // Rule represents an alerting rule.
 type Rule struct {
 	ID          string      `yaml:"id"`

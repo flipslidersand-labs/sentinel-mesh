@@ -326,7 +326,7 @@ export SENTINEL_NOTIFY_COOLDOWN=2m
 ./collector serve --rules ../rules.yaml --grpc-auth disabled --http-auth disabled   # demo; use per-agent tokens in production
 ```
 
-Severity ordering: `info`/`low` < `warning`/`warn`/`medium` < `high`/`critical`/`error`. The per-(rule, node) cooldown suppresses duplicate alert storms; a distinct node or rule notifies independently. Delivery is best-effort and runs off the event hot path — a failing channel is logged and never blocks event ingestion.
+Severity ordering: `info` < `warning` < `critical` (rules with any other severity fail to load). The per-(rule, node) cooldown suppresses duplicate alert storms; a distinct node or rule notifies independently. Delivery is best-effort and runs off the event hot path — a failing channel is logged and never blocks event ingestion.
 
 ## Directory Structure
 
