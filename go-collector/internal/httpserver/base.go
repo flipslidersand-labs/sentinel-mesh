@@ -4,6 +4,7 @@ package httpserver
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-contrib/cors"
@@ -60,4 +61,29 @@ func NewBaseRouter(staticDir string, corsOrigins []string, healthz gin.H) *gin.E
 		c.JSON(http.StatusOK, healthz)
 	})
 	return r
+}
+
+// MaxLimit caps the "limit" query parameter accepted by list endpoints,
+// preventing a client-supplied value from forcing an unbounded scan or an
+// oversized JSON response.
+const MaxLimit = 1000
+
+// ParseLimit parses the "limit" query parameter for key. When absent, def is
+// returned. When present but not a positive integer, it writes a 400
+// response and returns ok=false so the caller can abort the request. Values
+// above MaxLimit are silently clamped rather than rejected.
+func ParseLimit(c *gin.Context, key string, def int) (limit int, ok bool) {
+	v := c.Query(key)
+	if v == "" {
+		return def, true
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid " + key + ": must be a positive integer"})
+		return 0, false
+	}
+	if n > MaxLimit {
+		n = MaxLimit
+	}
+	return n, true
 }

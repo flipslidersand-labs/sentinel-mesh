@@ -3,7 +3,6 @@ package exporter
 import (
 	"log/slog"
 	"net/http"
-	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -22,29 +21,10 @@ func internalError(c *gin.Context, err error) {
 	c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 }
 
-// maxLimit caps the "limit" query parameter accepted by list endpoints,
-// preventing a client-supplied value from forcing an unbounded store scan
-// or an oversized JSON response.
-const maxLimit = 1000
-
-// parseLimit parses the "limit" query parameter for key. When absent, def is
-// returned. When present but not a positive integer, it writes a 400
-// response and returns ok=false so the caller can abort the request. Values
-// above maxLimit are silently clamped rather than rejected.
+// parseLimit delegates to the shared httpserver.ParseLimit so the collector
+// and aggregator APIs treat the "limit" query identically.
 func parseLimit(c *gin.Context, key string, def int) (limit int, ok bool) {
-	v := c.Query(key)
-	if v == "" {
-		return def, true
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil || n <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid " + key + ": must be a positive integer"})
-		return 0, false
-	}
-	if n > maxLimit {
-		n = maxLimit
-	}
-	return n, true
+	return httpserver.ParseLimit(c, key, def)
 }
 
 // regionNodeSet returns the set of node IDs registered in the given region.
