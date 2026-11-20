@@ -15,9 +15,8 @@ import (
 )
 
 // ErrTokenExists is returned by IssueToken when node_id already has a
-// non-revoked token — callers must RevokeToken first to reissue, so a
-// stale token can never be silently replaced without an explicit revoke
-// step in the audit trail.
+// non-revoked token — callers must RevokeToken first to reissue, so an
+// active token is never silently replaced.
 var ErrTokenExists = errors.New("store: node_id already has an active token")
 
 // AgentToken is the persisted record for a per-agent credential (#183/#189,
@@ -57,9 +56,11 @@ func generateToken() (string, error) {
 
 // IssueToken generates and persists a new token for nodeID, returning the
 // plaintext token. It fails with ErrTokenExists if nodeID already has a
-// non-revoked token — RevokeToken it first to reissue, so replacing a
-// credential always leaves an explicit revoke in the record rather than
-// silently overwriting it.
+// non-revoked token — RevokeToken it first to reissue. Reissuing after a
+// revoke overwrites the revoked record (same key per node_id), so the revoke
+// history is not retained; a generation-scoped key would be needed for that.
+// Concurrent calls for one node_id are serialized by tokensMu, so exactly one
+// succeeds and the others get ErrTokenExists (#323).
 func (s *Store) IssueToken(ctx context.Context, nodeID string) (string, error) {
 	// Held across read-check-write so concurrent issue/revoke for the same
 	// node can't leave the index disagreeing with what's on disk.

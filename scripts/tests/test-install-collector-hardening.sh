@@ -17,8 +17,9 @@ cat > "$TMP/stubs/ssh" <<STUB
 echo "ssh \$*" >> "$TMP/ssh-calls"
 case "\$*" in
   *hostname*) echo "192.0.2.1"; exit 0 ;;
+  *mktemp*) echo "/tmp/tmp.RANDOM1234"; exit 0 ;;
   *tee*) cat > "$TMP/unit" ;;
-  *) cat >> "$TMP/remote-scripts" ;;
+  *"bash -s"*) cat >> "$TMP/remote-scripts" ;;
 esac
 exit 0
 STUB
