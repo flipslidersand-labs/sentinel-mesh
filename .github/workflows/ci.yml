@@ -127,6 +127,33 @@ jobs:
     # 注: agent-ebpf(--features ebpf) は nightly + bpf-linker + bpfel target が必要なため
     #     ここでは対象外。mock モード (--mock) での REST API/gRPC 結合検証のみ行う。
 
+  shell-tests:
+    name: Shell script tests
+    # scripts/tests/*.sh を順に実行する (#389)。ssh/scp/sudo はテスト内でスタブ化され、
+    # 一時ディレクトリのみ使用する。いずれか1本でも失敗したらジョブを失敗させる。
+    # 公開リポのため runner はリポ変数 GATE_RUNNER で指定する（ADR-010。既定値なし）。
+    runs-on: ${{ vars.GATE_RUNNER }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: scripts/tests/*.sh を実行
+        run: |
+          set -u
+          shopt -s nullglob
+          tests=(scripts/tests/*.sh)
+          if [ "${#tests[@]}" -eq 0 ]; then
+            echo "no shell tests found" >&2
+            exit 1
+          fi
+          failed=0
+          for t in "${tests[@]}"; do
+            echo "=== $t"
+            bash "$t" || { echo "FAILED: $t" >&2; failed=1; }
+          done
+          exit "$failed"
+
   web:
     # main 直参照だと qa-workflows 側の変更が無警告で波及するため commit SHA に固定
     # (2026-09-13 時点の master HEAD, Dependabot で更新PRを追跡: flipslidersand-labs/sentinel-mesh#148)
