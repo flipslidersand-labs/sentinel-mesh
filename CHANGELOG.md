@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **rust-agent (eBPF, #347):** EXEC events are now emitted from `sched/sched_process_exec` (successful execs only), so `comm` is the executed binary's name instead of the caller's (e.g. `curl`, not `bash`). Rules matching on `comm` (e.g. `bash_execution`) now fire when bash itself is executed, not for every child it spawns.
 - **rust-agent (eBPF, #373):** FILE events are now emitted from `sys_exit_openat`, so `ret` carries the real result (negative errno for failed opens) instead of always 0.
 
 ### Changed

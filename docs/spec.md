@@ -48,7 +48,7 @@ Linux Node C ─ Rust eBPF Agent ┘
 
 ## 検出対象イベント
 
-eBPF プログラムは `sys_enter_execve` / `sys_enter_openat` / `sys_exit_openat` tracepoint の対(ret は sys_exit_openat から取得)と `tcp_connect` kprobe の 3 種のみ
+eBPF プログラムは `sched_process_exec` / `sys_enter_openat` / `sys_exit_openat` tracepoint の対(ret は sys_exit_openat から取得)と `tcp_connect` kprobe の 3 種のみ
 （`rust-agent/agent-ebpf/src/main.rs`）。proto の EventType も EXEC / TCP / FILE のみ。
 
 | カテゴリ       | イベント種別          | 状況     |

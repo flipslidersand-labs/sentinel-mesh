@@ -52,9 +52,13 @@ static EVENTS: RingBuf = RingBuf::with_byte_size(512 * 1024, 0);
 #[map]
 static OPEN_ARGS: LruHashMap<u64, u64> = LruHashMap::with_max_entries(10240, 0);
 
-// ─── Exec: sys_enter_execve ───────────────────────────────────────────────
+// ─── Exec: sched_process_exec ─────────────────────────────────────────────
+// Attached to sched/sched_process_exec, which fires only after a successful
+// exec, once the task's comm has been updated to the new binary name. (At
+// syscalls/sys_enter_execve comm was still the caller's, e.g. "bash", #347.)
+// No tracepoint args are read, so no field offsets are assumed.
 
-#[tracepoint(name = "sentinel_exec", category = "syscalls")]
+#[tracepoint(name = "sentinel_exec", category = "sched")]
 pub fn sentinel_exec(ctx: TracePointContext) -> u32 {
     match try_exec(ctx) {
         Ok(_) => 0,
