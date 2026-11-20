@@ -55,7 +55,7 @@ eBPF プログラムは `sys_enter_execve` / `sys_enter_openat` / `sys_exit_open
 | -------------- | --------------------- | -------- |
 | プロセス       | execve                | 実装済み |
 | プロセス       | exit                  | 未実装   |
-| ネットワーク   | TCP connect           | 実装済み |
+| ネットワーク   | TCP connect           | 実装済み（IPv4 のみ） |
 | ネットワーク   | TCP accept, DNS query | 未実装   |
 | ファイル       | open (openat)         | 実装済み |
 | ファイル       | unlink, rename        | 未実装   |
