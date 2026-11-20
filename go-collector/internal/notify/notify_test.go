@@ -190,7 +190,7 @@ func TestDispatchAsync_BoundedConcurrency(t *testing.T) {
 
 func TestRankOf(t *testing.T) {
 	cases := map[string]int{
-		"info": 0, "INFO": 0, " warning ": 1, "critical": 2,
+		"info": 0, "warning": 1, "critical": 2, "INFO": 0, " warning ": 0,
 		"unknown": 0, "": 0,
 	}
 	for in, want := range cases {

@@ -10,9 +10,28 @@ func validRule() Rule {
 	return Rule{
 		ID:        "r1",
 		EventType: "exec",
+		Severity:  "warning",
 		Conditions: []Condition{
 			{Field: "comm", Operator: "eq", Value: "bash"},
 		},
+	}
+}
+
+func TestValidateUnknownSeverity(t *testing.T) {
+	for _, sev := range []string{"", "high", "error", "Warning", " info", "warn"} {
+		rule := validRule()
+		rule.Severity = sev
+		rs := &RuleSet{Rules: []Rule{rule}}
+		if err := rs.Validate(); err == nil {
+			t.Errorf("severity %q must be rejected", sev)
+		}
+	}
+	for _, sev := range []string{"info", "warning", "critical"} {
+		rule := validRule()
+		rule.Severity = sev
+		if err := (&RuleSet{Rules: []Rule{rule}}).Validate(); err != nil {
+			t.Errorf("severity %q must be accepted: %v", sev, err)
+		}
 	}
 }
 
@@ -115,6 +134,7 @@ func TestLoadRulesValidFile(t *testing.T) {
 	content := `rules:
   - id: r1
     event_type: exec
+    severity: warning
     conditions:
       - field: comm
         operator: eq
@@ -138,10 +158,10 @@ func TestLoadRulesValidFile(t *testing.T) {
 
 func TestUnknownFieldWarnings(t *testing.T) {
 	rs := &RuleSet{Rules: []Rule{
-		{ID: "ok", EventType: "tcp", Conditions: []Condition{{Field: "dst_port", Operator: "gt", Value: "1"}}},
-		{ID: "bad", EventType: "tcp", Conditions: []Condition{{Field: "dport", Operator: "gt", Value: "1"}}},
-		{ID: "wrongtype", EventType: "exec", Conditions: []Condition{{Field: "dst_port", Operator: "gt", Value: "1"}}},
-		{ID: "any", EventType: "*", Conditions: []Condition{{Field: "dst_port", Operator: "gt", Value: "1"}}},
+		{ID: "ok", Severity: "info", EventType: "tcp", Conditions: []Condition{{Field: "dst_port", Operator: "gt", Value: "1"}}},
+		{ID: "bad", Severity: "info", EventType: "tcp", Conditions: []Condition{{Field: "dport", Operator: "gt", Value: "1"}}},
+		{ID: "wrongtype", Severity: "info", EventType: "exec", Conditions: []Condition{{Field: "dst_port", Operator: "gt", Value: "1"}}},
+		{ID: "any", Severity: "info", EventType: "*", Conditions: []Condition{{Field: "dst_port", Operator: "gt", Value: "1"}}},
 	}}
 	if err := rs.Validate(); err != nil {
 		t.Fatalf("unknown field must not make Validate fail (would block startup): %v", err)

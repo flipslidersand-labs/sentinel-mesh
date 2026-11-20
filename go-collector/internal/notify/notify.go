@@ -8,12 +8,12 @@ package notify
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"time"
 
 	"go.uber.org/zap"
 
+	"github.com/flipslidersand/sentinel-mesh/internal/alerting"
 	"github.com/flipslidersand/sentinel-mesh/internal/store"
 )
 
@@ -26,29 +26,19 @@ type Notifier interface {
 	Send(ctx context.Context, a store.Alert) error
 }
 
-// severityRank orders severities so a minimum-severity filter can be applied.
-// An unknown alert severity ranks as 0 (lowest) so it is only sent when the
-// threshold is also at its lowest. An unknown minimum severity is rejected at
-// startup by DispatcherFromEnv (see knownSeverity).
-var severityRank = map[string]int{
-	"info":     0,
-	"low":      0,
-	"warning":  1,
-	"warn":     1,
-	"medium":   1,
-	"high":     2,
-	"critical": 2,
-	"error":    2,
-}
-
-// knownSeverity reports whether s is a recognized severity name.
+// knownSeverity reports whether s is a canonical severity (alerting.Severity*).
 func knownSeverity(s string) bool {
-	_, ok := severityRank[strings.ToLower(strings.TrimSpace(s))]
+	_, ok := alerting.SeverityRank(s)
 	return ok
 }
 
+// rankOf orders severities via the alerting vocabulary. An unknown alert
+// severity ranks as 0 (lowest) so it is only sent when the threshold is also
+// at its lowest; unknown minimum severities are rejected at startup by
+// DispatcherFromEnv.
 func rankOf(severity string) int {
-	return severityRank[strings.ToLower(strings.TrimSpace(severity))]
+	r, _ := alerting.SeverityRank(severity)
+	return r
 }
 
 // maxConcurrentDispatch bounds how many Dispatch goroutines DispatchAsync
@@ -95,7 +85,7 @@ func NewDispatcher(opts Options) *Dispatcher {
 	}
 	minSev := opts.MinSeverity
 	if minSev == "" {
-		minSev = "warning"
+		minSev = alerting.SeverityWarning
 	}
 	return &Dispatcher{
 		notifiers: opts.Notifiers,
