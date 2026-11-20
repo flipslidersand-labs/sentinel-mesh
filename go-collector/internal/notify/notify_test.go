@@ -250,3 +250,28 @@ func TestShouldSend_PrunesExpiredKeys(t *testing.T) {
 		t.Fatalf("expired keys should be pruned, got %d", len(d.lastSent))
 	}
 }
+
+// A stale release (from an earlier, failed Dispatch) must not remove a newer
+// claim made after the cooldown elapsed.
+func TestShouldSend_StaleReleaseKeepsNewerClaim(t *testing.T) {
+	now := time.Unix(1000, 0)
+	d := NewDispatcher(Options{Notifiers: []Notifier{&fakeNotifier{}}, Cooldown: time.Minute, MinSeverity: "info"})
+	d.now = func() time.Time { return now }
+	a := alert("r1", "n1", "warning")
+
+	ok, staleRelease := d.shouldSend(a)
+	if !ok {
+		t.Fatal("first claim should be granted")
+	}
+
+	now = now.Add(2 * time.Minute) // cooldown elapsed while the first send was in flight
+	if ok, _ := d.shouldSend(a); !ok {
+		t.Fatal("claim after cooldown should be granted")
+	}
+
+	staleRelease() // the first Dispatch finally fails and releases
+
+	if ok, _ := d.shouldSend(a); ok {
+		t.Fatal("stale release must not remove the newer claim")
+	}
+}
