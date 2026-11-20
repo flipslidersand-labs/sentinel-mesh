@@ -189,6 +189,9 @@ fn try_tcp_connect(ctx: ProbeContext) -> Result<(), i64> {
     // tcp_v6_connect() also reaches tcp_connect(); for AF_INET6 sockets offsets
     // 0/4 are not IPv4 addresses. Only IPv4 is supported — drop everything else
     // instead of recording bogus addresses (#369).
+    // Known limitation: a dual-stack AF_INET6 socket connecting to a v4-mapped
+    // address (tcp_v6_connect -> tcp_v4_connect) keeps sk_family = AF_INET6 and is
+    // dropped here too, although offsets 0/4 hold a valid IPv4 pair; see #429.
     const AF_INET: u16 = 2;
     let family: u16 =
         unsafe { bpf_probe_read_kernel(sk.add(16) as *const u16) }.map_err(|_| 1i64)?;
