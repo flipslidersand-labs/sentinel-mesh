@@ -27,17 +27,18 @@ func TokenFromEnv() string {
 	return strings.TrimSpace(os.Getenv(EnvAPIToken))
 }
 
-// ParseMode maps the --http-auth value to whether a bearer token is required.
+// ParseMode maps an auth-mode flag value (flag is the flag name without the
+// leading dashes, used in the error) to whether authentication is required.
 // Only the exact values "required" and "disabled" are accepted so a typo can
 // never silently turn authentication off.
-func ParseMode(v string) (bool, error) {
+func ParseMode(flag, v string) (bool, error) {
 	switch v {
 	case "required":
 		return true, nil
 	case "disabled":
 		return false, nil
 	}
-	return false, fmt.Errorf("invalid --http-auth %q: must be \"required\" or \"disabled\"", v)
+	return false, fmt.Errorf("invalid --%s %q: must be \"required\" or \"disabled\"", flag, v)
 }
 
 // ResolveToken applies the --http-auth policy shared by the normal and
@@ -46,7 +47,7 @@ func ParseMode(v string) (bool, error) {
 // --http-auth=disabled and no token set). With "required" and no token it
 // fails, so the REST API is never exposed unauthenticated by omission.
 func ResolveToken(mode string) (token string, unauthenticated bool, err error) {
-	required, err := ParseMode(mode)
+	required, err := ParseMode("http-auth", mode)
 	if err != nil {
 		return "", false, err
 	}

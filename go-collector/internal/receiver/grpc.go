@@ -746,18 +746,15 @@ func authedNodeIDFromContext(ctx context.Context) string {
 	return nodeID
 }
 
-// checkAuth validates the `authorization: Bearer <token>` metadata entry in
+// checkAuthLimited validates the `authorization: Bearer <token>` metadata entry in
 // ctx against st's per-agent token store (#189) and returns the resolved
 // node_id. A no-op (nodeID="", err=nil) if authEnabled is false — this is
 // the same "unauthenticated dev mode" escape hatch the old single shared
 // token had, just gated by a separate flag now that there's no longer one
 // token whose emptiness could signal it.
-func checkAuth(ctx context.Context, st *store.Store, authEnabled bool) (nodeID string, err error) {
-	return checkAuthLimited(ctx, st, authEnabled, nil)
-}
-
-// checkAuthLimited is checkAuth plus per-source-IP throttling via lim (nil
-// disables throttling of failed attempts; valid tokens are never throttled).
+//
+// Per-source-IP throttling of failed attempts goes via lim (nil disables it;
+// valid tokens are never throttled).
 func checkAuthLimited(ctx context.Context, st *store.Store, authEnabled bool, lim *authFailLimiter) (nodeID string, err error) {
 	if !authEnabled {
 		return "", nil
