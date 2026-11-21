@@ -322,10 +322,11 @@ func (a *Aggregator) EventsIn(region string) []model.Event {
 // regions, never to reorder events within one region. Re-sorting the union by
 // Timestamp would let a node with a fast clock pin itself to the top (#78).
 //
-// Known limitation: the cross-region head comparison still uses the
-// agent-reported Timestamp, so a region containing a fast-clock node can still
-// rank above others. Carried over to #473 (upstream returns the
-// collector receive time); model.Event has no such field yet.
+// The cross-region head comparison uses the collector's ReceivedAt (#473), so
+// a fast-clock node cannot lift its region above others. Events from upstreams
+// or stored records that predate received_at have a zero ReceivedAt and fall
+// back to the agent Timestamp, so in a mixed-version deployment those regions
+// can still be ranked by a skewed clock.
 func mergeEvents(lists [][]model.Event) []model.Event {
 	total := 0
 	for _, l := range lists {
@@ -344,7 +345,8 @@ func mergeEvents(lists [][]model.Event) []model.Event {
 				continue
 			}
 			h, b := l[pos[i]], lists[best][pos[best]]
-			if h.Timestamp.After(b.Timestamp) || (h.Timestamp.Equal(b.Timestamp) && h.EventID < b.EventID) {
+			ht, bt := mergeTime(h), mergeTime(b)
+			if ht.After(bt) || (ht.Equal(bt) && h.EventID < b.EventID) {
 				best = i
 			}
 		}
@@ -352,6 +354,15 @@ func mergeEvents(lists [][]model.Event) []model.Event {
 		pos[best]++
 	}
 	return out
+}
+
+// mergeTime is the time used to compare events across regions: the collector
+// receive time when present, else the agent Timestamp.
+func mergeTime(e model.Event) time.Time {
+	if !e.ReceivedAt.IsZero() {
+		return e.ReceivedAt
+	}
+	return e.Timestamp
 }
 
 // FetchEvents queries the upstream collectors directly (bypassing the capped

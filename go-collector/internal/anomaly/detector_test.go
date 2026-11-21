@@ -122,45 +122,46 @@ func TestWindowStats_EmptyReturnsNoError(t *testing.T) {
 }
 
 func TestGC_RemovesIdleKeys(t *testing.T) {
-	d := New([]WindowConfig{{Duration: time.Minute, Threshold: 100}})
+	d, c := newClocked([]WindowConfig{{Duration: time.Minute, Threshold: 100}})
+	k1 := windowKey{NodeID: "node1", EventType: "exec"}
+	k2 := windowKey{NodeID: "node2", EventType: "exec"}
 
-	// node1 is idle: its only timestamp is well before the window.
-	d.timestamps[windowKey{NodeID: "node1", EventType: "exec"}] = []time.Time{
-		time.Now().Add(-time.Hour),
-	}
-	// node2 is active: recorded just now.
+	// node1 goes idle for longer than the ring; node2 is active.
+	d.Record(makeEvent("node1", "exec"))
+	c.advance(time.Hour)
 	d.Record(makeEvent("node2", "exec"))
 
 	d.gc()
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if _, ok := d.timestamps[windowKey{NodeID: "node1", EventType: "exec"}]; ok {
+	if _, ok := d.rings[k1]; ok {
 		t.Error("expected idle key for node1 to be removed by gc")
 	}
-	if _, ok := d.timestamps[windowKey{NodeID: "node2", EventType: "exec"}]; !ok {
+	if _, ok := d.rings[k2]; !ok {
 		t.Error("expected active key for node2 to be retained by gc")
 	}
 }
 
-func TestGC_RemovesEmptySliceKeys(t *testing.T) {
-	d := New(nil)
-	d.timestamps[windowKey{NodeID: "node1", EventType: "exec"}] = []time.Time{}
-
+func TestGC_KeepsKeyWithinRing(t *testing.T) {
+	d, c := newClocked([]WindowConfig{{Duration: time.Minute, Threshold: 100}})
+	d.Record(makeEvent("node1", "exec"))
+	c.advance(59 * time.Second) // still inside the 60-bucket ring
 	d.gc()
-
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if _, ok := d.timestamps[windowKey{NodeID: "node1", EventType: "exec"}]; ok {
-		t.Error("expected empty-slice key to be removed by gc")
+	if len(d.rings) != 1 {
+		t.Fatalf("rings = %d, want 1 (event still within window)", len(d.rings))
+	}
+	c.advance(time.Second) // now 60s old: out of the ring
+	d.gc()
+	if len(d.rings) != 0 {
+		t.Fatalf("rings = %d, want 0 after ring length elapsed", len(d.rings))
 	}
 }
 
 func TestStartGC_StopsOnContextCancel(t *testing.T) {
-	d := New([]WindowConfig{{Duration: 10 * time.Millisecond, Threshold: 100}})
-	d.timestamps[windowKey{NodeID: "node1", EventType: "exec"}] = []time.Time{
-		time.Now().Add(-time.Hour),
-	}
+	d, c := newClocked([]WindowConfig{{Duration: time.Second, Threshold: 100}})
+	d.Record(makeEvent("node1", "exec"))
+	c.advance(time.Hour)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	d.StartGC(ctx, 10*time.Millisecond)
@@ -169,7 +170,7 @@ func TestStartGC_StopsOnContextCancel(t *testing.T) {
 	deadline := time.Now().Add(time.Second)
 	for {
 		d.mu.Lock()
-		_, ok := d.timestamps[windowKey{NodeID: "node1", EventType: "exec"}]
+		_, ok := d.rings[windowKey{NodeID: "node1", EventType: "exec"}]
 		d.mu.Unlock()
 		if !ok {
 			break
