@@ -7,54 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- **refactor (#421):** removed the unreachable heartbeat-timeout fallback in `registry.StartHeartbeatChecker` (caller validates), and bundled the per-connection parameters of the rust-agent gRPC session functions into one struct (no behavior change).
-
-### Fixed
-
-- **rust-agent (#241):** events taken from the queue but not yet acked are now kept (up to 2048 events or 2 MiB) and re-sent first after a reconnect (at-least-once), instead of being discarded. Re-sent events can reach the collector twice; it dedups by `event_id` within its retention window. The queue does not survive process exit.
-- **rust-agent (#432):** EXEC events now carry `ppid` and `cmdline` (argv joined by spaces, ASCII-sanitized (bytes outside 0x20-0x7E become `?`) and capped at 256 bytes to match the collector limit), read in userspace from `/proc/<pid>/status` and `/proc/<pid>/cmdline`. Very short-lived processes that exit before the read still report `ppid` 0 / empty `cmdline`. Not verified on a real eBPF run.
-- **rust-agent (eBPF, #419):** FILE events now carry the `openat` flags, and `op` is derived from them: `create` (O_CREAT), `write` (O_WRONLY/O_RDWR/O_TRUNC/O_APPEND) or `open` (read-only). Previously `op` was always `open`; `open` now means read-only opens only. Not yet verified on a real host (CAP_BPF, no `--mock`).
-- **store (#452):** `SaveEvent` is now idempotent per `(node_id, event_id)` within the retention window, so resending an event after a timed-out Ack no longer stores it twice (events with an empty `event_id` are not deduplicated). Store operations are capped at 256 in flight, including writes still finishing after their caller timed out; beyond that they fail fast with `store.ErrBusy` (Ack `ok=false`) instead of piling up goroutines.
-- **store (#466):** Reads (`ListEvents`/`ListAlerts`/token reads) now have their own in-flight cap (64), separate from writes (256), so reads stuck on a slow disk can no longer make `SaveEvent` fail with `ErrBusy` and stop ingestion. A conflicting `SaveEvent` no longer retries after its caller's context is done.
-- **rust-agent (eBPF, #347):** EXEC events are now emitted from `sched/sched_process_exec` (successful execs only), so `comm` is the executed binary's name instead of the caller's (e.g. `curl`, not `bash`). Rules matching on `comm` (e.g. `bash_execution`) now fire when bash itself is executed, not for every child it spawns.
-- **notify (#319):** the per-(rule, node) cooldown map now prunes expired keys, and the cooldown is released when every notifier fails so alerts are retried instead of being silenced for a full cooldown.
-- **rust-agent (eBPF, #373):** FILE events are now emitted from `sys_exit_openat`, so `ret` carries the real result (negative errno for failed opens) instead of always 0.
-- **rust-agent (eBPF, #369):** `tcp_connect` now checks `skc_family` and skips non-IPv4 sockets, so IPv6 connections are no longer recorded with bogus IPv4 addresses (IPv6 is not yet supported). Known limitation: dual-stack IPv6 sockets connecting to v4-mapped addresses are also skipped (tracked in #429).
-
-### Changed
-- **rust-agent (#477):** eBPF loader (`--features ebpf`) no longer uses deprecated APIs: `aya::Bpf` -> `aya::Ebpf`, `AsyncFd::new` -> `unsafe AsyncFd::register` (workspace tokio minimum raised to 1.54). Ring buffer ownership is unchanged. Not verified on a real eBPF run; compile/clippy/test only.
-- **go-collector (#469):** anomaly detector keeps a fixed ring of 1-second counters per key (about 1.2KB for the default 5m window) instead of one timestamp per event; window counts now have 1-second precision, and maxDuration is computed once in New.
-
-- **api/aggregator/exporter (#357):** route paths (`/api/nodes` etc.) and the region roll-up type now live in the new `internal/api` package, with `registry.StatusActive` / `registry.CountActive`, shared by the exporter and the aggregator; a contract test polls the real exporter router. No change to the REST responses.
-- **BREAKING (rust-agent, #420):** the agent now refuses to start when `--grpc-token`/`$SENTINEL_API_TOKEN` is set but the collector is plaintext (`http://`) and not loopback (127.0.0.0/8, `::1`, `localhost`); it was a warning before. Use an `https://` collector, or pass the new `--allow-insecure-token` to keep the old behavior.
-- **license:** declare `license = "MIT"` in the Rust agent manifests and `web/package.json` to match `LICENSE` (#328).
-- **BREAKING (go-collector, #360):** `SENTINEL_API_TOKEN` must now be at least 32 bytes;
-  the collector refuses to start with a shorter value (e.g. use `openssl rand -hex 32`).
-  Rotate any shorter token before upgrading. This also applies with `--http-auth disabled`: a
-  `SENTINEL_API_TOKEN` that is set but shorter than 32 bytes is a startup error.
-- **BREAKING (go-collector, #327):** rule `severity` must now be exactly `info`, `warning` or
-  `critical`. A rule with any other severity (empty, the former aliases
-  `low`/`warn`/`medium`/`high`/`error`, or mixed case) is a load-time error and the collector
-  does not start. `SENTINEL_NOTIFY_MIN_SEVERITY` likewise accepts only `info`/`warning`/`critical`
-  (case and surrounding whitespace are still tolerated).
-- **BREAKING (go-collector, #359):** `--aggregate` now rejects `http://` upstreams on
-  non-loopback hosts (anything other than 127.0.0.0/8, `::1`, `localhost`), because the
-  bearer token would be sent in plaintext. Migration: serve the region collectors over TLS
-  (new `--http-tls-cert`/`--http-tls-key`) and use `https://` upstreams, or pass the new
-  `--aggregate-allow-insecure-http` to keep plaintext on a trusted network.
-- **scripts (#358):** `install-collector.sh` and `deploy-agent.sh` now stage uploads in a per-run
-  remote `mktemp -d` directory (removed on exit) instead of fixed `/tmp` paths, and install binaries
-  with `install -o root -g root -m 755` and static files with `rsync --no-links` as root:root.
-
-### Security
-
-- **rust-agent (#470):** the plaintext-token loopback check now also ends the collector authority at `#`, so `http://<remote>#@127.0.0.1:50051` is rejected instead of sending the token in plaintext to the remote host.
-- **ci/rust-agent (#420):** pin all GitHub Actions in `ci.yml` to commit SHAs, set top-level `permissions: contents: read`, and hide `SENTINEL_API_TOKEN` from the agent's `--help` output (`hide_env_values`).
-- **go-collector:** REST API now throttles repeated failed bearer-auth attempts per source
-  address (5 failures, refilling 5/min) and answers 429 with `Retry-After` (#360).
-
 ### Added
 
 - **CI:** `go mod tidy` consistency check for `go-collector` (fails if `go.mod`/`go.sum` would change) (#330).
@@ -78,9 +30,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **go-collector:** `sentinel-collector --help` has long descriptions, usage examples and a
   flag-consistency check (#113).
 - **CI:** gitleaks secret scan (#14).
+- **CI (#312):** non-blocking weekly vulnerability scan workflow `vuln-scan.yml` (`govulncheck`, `cargo deny check advisories`, `npm audit`); findings are reported as warnings and in the job summary and the checks stay green. Do not add it to required checks. Not yet run on GitHub Actions at the time of the change.
 
 ### Changed
 
+- **refactor (#421):** removed the unreachable heartbeat-timeout fallback in `registry.StartHeartbeatChecker` (caller validates), and bundled the per-connection parameters of the rust-agent gRPC session functions into one struct (no behavior change).
+- **rust-agent (#477):** eBPF loader (`--features ebpf`) no longer uses deprecated APIs: `aya::Bpf` -> `aya::Ebpf`, `AsyncFd::new` -> `unsafe AsyncFd::register` (workspace tokio minimum raised to 1.54). Ring buffer ownership is unchanged. Not verified on a real eBPF run; compile/clippy/test only.
+- **go-collector (#469):** anomaly detector keeps a fixed ring of 1-second counters per key (about 1.2KB for the default 5m window) instead of one timestamp per event; window counts now have 1-second precision, and maxDuration is computed once in New.
+- **api/aggregator/exporter (#357):** route paths (`/api/nodes` etc.) and the region roll-up type now live in the new `internal/api` package, with `registry.StatusActive` / `registry.CountActive`, shared by the exporter and the aggregator; a contract test polls the real exporter router. No change to the REST responses.
+- **BREAKING (rust-agent, #420):** the agent now refuses to start when `--grpc-token`/`$SENTINEL_API_TOKEN` is set but the collector is plaintext (`http://`) and not loopback (127.0.0.0/8, `::1`, `localhost`); it was a warning before. Use an `https://` collector, or pass the new `--allow-insecure-token` to keep the old behavior.
+- **license:** declare `license = "MIT"` in the Rust agent manifests and `web/package.json` to match `LICENSE` (#328).
+- **BREAKING (go-collector, #360):** `SENTINEL_API_TOKEN` must now be at least 32 bytes;
+  the collector refuses to start with a shorter value (e.g. use `openssl rand -hex 32`).
+  Rotate any shorter token before upgrading. This also applies with `--http-auth disabled`: a
+  `SENTINEL_API_TOKEN` that is set but shorter than 32 bytes is a startup error.
+- **BREAKING (go-collector, #327):** rule `severity` must now be exactly `info`, `warning` or
+  `critical`. A rule with any other severity (empty, the former aliases
+  `low`/`warn`/`medium`/`high`/`error`, or mixed case) is a load-time error and the collector
+  does not start. `SENTINEL_NOTIFY_MIN_SEVERITY` likewise accepts only `info`/`warning`/`critical`
+  (case and surrounding whitespace are still tolerated).
+- **BREAKING (go-collector, #359):** `--aggregate` now rejects `http://` upstreams on
+  non-loopback hosts (anything other than 127.0.0.0/8, `::1`, `localhost`), because the
+  bearer token would be sent in plaintext. Migration: serve the region collectors over TLS
+  (new `--http-tls-cert`/`--http-tls-key`) and use `https://` upstreams, or pass the new
+  `--aggregate-allow-insecure-http` to keep plaintext on a trusted network.
+- **scripts (#358):** `install-collector.sh` and `deploy-agent.sh` now stage uploads in a per-run
+  remote `mktemp -d` directory (removed on exit) instead of fixed `/tmp` paths, and install binaries
+  with `install -o root -g root -m 755` and static files with `rsync --no-links` as root:root.
 - **Agent:** a permanently rejected registration (`ok=false` or an
   InvalidArgument/Unauthenticated/PermissionDenied status) now logs the
   collector's reason and exits non-zero instead of retrying forever; transient
@@ -127,9 +103,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bridge (#333). Metric names, labels, HELP and TYPE are unchanged, but the
   `otel_scope_name`/`otel_scope_schema_url`/`otel_scope_version` labels and the `target_info`
   gauge are gone; dashboards or alerts selecting on them need updating.
+- **refactor (#255):** no behavior change: `store.Stats()` no longer returns an error; the `os.Stat` in `alerting/rules.go` is gone (an unreadable existing rules file now reports `rules file %q:`); the unused `case int` in alerting numeric conversion is removed (payload values are always float64); the aggregator `eventLimit` is a constant (still 100); the rust-agent send stream uses `ReceiverStream` (`async-stream` is now dev-only); the web UI builds queries through a shared `listPath`.
+- **aggregator (#473):** events carry a collector-assigned `received_at` (omitted when empty; the store overwrites any agent-reported value), and the aggregator uses it to order region heads across regions, falling back to `timestamp` when it is absent (mixed versions, existing records, which have none until their TTL expires).
+- **refactor (#353):** new `internal/eventtype` package is the single source for event kinds and payload schemas; the receiver and alerting use it, and the known alert fields now come from the payload structs' `json` tags instead of the pb descriptor. Payload JSON and error messages are unchanged; `validateKernelEvent` is not yet table-driven.
+- **rust-agent (#331):** `tonic`/`tonic-build`/`prost` updated to the 0.14 series (`tonic-prost-build`, native roots enabled explicitly to keep the OS root certificates); `cargo deny check advisories` is clean afterwards. `aya` is unchanged. Not verified against a real TLS connection (in-process fake collector tests only).
+- **refactor (#437):** removed the internal `store.Event`/`store.Alert` compatibility aliases; all code uses `model.Event`/`model.Alert` (no behavior or data-format change).
 
 ### Fixed
 
+- **rust-agent (#241):** events taken from the queue but not yet acked are now kept (up to 2048 events or 2 MiB) and re-sent first after a reconnect (at-least-once), instead of being discarded. Re-sent events can reach the collector twice; it dedups by `event_id` within its retention window. The queue does not survive process exit. Events acked `ok=false` (including collector save failures) are still not re-sent (#488).
+- **rust-agent (#432):** EXEC events now carry `ppid` and `cmdline` (argv joined by spaces, ASCII-sanitized (bytes outside 0x20-0x7E become `?`) and capped at 256 bytes to match the collector limit), read in userspace from `/proc/<pid>/status` and `/proc/<pid>/cmdline`. Very short-lived processes that exit before the read still report `ppid` 0 / empty `cmdline`. Not verified on a real eBPF run.
+- **rust-agent (eBPF, #419):** FILE events now carry the `openat` flags, and `op` is derived from them: `create` (O_CREAT), `write` (O_WRONLY/O_RDWR/O_TRUNC/O_APPEND) or `open` (read-only). Previously `op` was always `open`; `open` now means read-only opens only. Not yet verified on a real host (CAP_BPF, no `--mock`).
+- **store (#452):** `SaveEvent` is now idempotent per `(node_id, event_id)` within the retention window, so resending an event after a timed-out Ack no longer stores it twice (events with an empty `event_id` are not deduplicated). Store operations are capped at 256 in flight, including writes still finishing after their caller timed out; beyond that they fail fast with `store.ErrBusy` (Ack `ok=false`) instead of piling up goroutines.
+- **store (#466):** Reads (`ListEvents`/`ListAlerts`/token reads) now have their own in-flight cap (64), separate from writes (256), so reads stuck on a slow disk can no longer make `SaveEvent` fail with `ErrBusy` and stop ingestion. A conflicting `SaveEvent` no longer retries after its caller's context is done.
+- **rust-agent (eBPF, #347):** EXEC events are now emitted from `sched/sched_process_exec` (successful execs only), so `comm` is the executed binary's name instead of the caller's (e.g. `curl`, not `bash`). Rules matching on `comm` (e.g. `bash_execution`) now fire when bash itself is executed, not for every child it spawns.
+- **notify (#319):** the per-(rule, node) cooldown map now prunes expired keys, and the cooldown is released when every notifier fails so alerts are retried instead of being silenced for a full cooldown.
+- **rust-agent (eBPF, #373):** FILE events are now emitted from `sys_exit_openat`, so `ret` carries the real result (negative errno for failed opens) instead of always 0.
+- **rust-agent (eBPF, #369):** `tcp_connect` now checks `skc_family` and skips non-IPv4 sockets, so IPv6 connections are no longer recorded with bogus IPv4 addresses (IPv6 is not yet supported). Known limitation: dual-stack IPv6 sockets connecting to v4-mapped addresses are also skipped (tracked in #429).
 - **agent:** `ok=false` acks from the collector are counted and logged as one
   summary line per 10 s instead of one line per event, so exceeding the per-node
   rate limit no longer floods the journal (#378).
@@ -187,15 +177,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fetches time out and polls no longer overlap (#151); polling refetches on filter change and
   ignores stale responses (#320); the Alerts page no longer crashes on a null severity (#422).
 - **scripts:** `deploy-agent.sh` refuses a non-mock deploy of a binary built without eBPF (#349).
-
-### Fixed
-
 - **go-collector:** `ListTokens` and `getAgentToken` no longer return results the
   background goroutine may still be writing after the context ends; they return
   nil on error (#382).
+- **go-collector (#260):** a node whose `StreamEvents` stream is open but idle no longer goes `inactive`: while the stream is open the collector records a heartbeat every `heartbeat-timeout / 3` (only for already-registered nodes; with auth disabled it starts after the first valid event). After the stream closes the node goes `inactive` once `heartbeat-timeout` has passed.
+- **aggregator (#468, partial):** per-region events are merged with a k-way merge that keeps each upstream's order (collector receive order); the agent-reported `timestamp` is only used to compare region heads. Requests with `node` or a `limit` above the 100-entry cache are fetched directly from the region's upstream (`limit` capped at 1000), falling back to the node-filtered cache if the upstream fails. Other items of #468 remain open.
+- **go-collector (#457):** a re-sent duplicate event (same `node_id`/`event_id`) no longer re-runs alert evaluation, anomaly detection or event metrics; the Ack stays `ok=true`. Adds `store.SaveEventDedup`; `SaveEvent` keeps its signature.
+- **go-collector (#324):** the REST `region` filter is now applied inside the store scan, so `limit` counts matching records, and an unregistered region returns `[]` without scanning the store. If matches lie beyond the scan cap (`maxNodeFilterScan`), fewer than `limit` results are returned. The aggregator's upstream fetch is a separate path and is unchanged.
 
 ### Security
 
+- **rust-agent (#470):** the plaintext-token loopback check now also ends the collector authority at `#`, so `http://<remote>#@127.0.0.1:50051` is rejected instead of sending the token in plaintext to the remote host.
+- **ci/rust-agent (#420):** pin all GitHub Actions in `ci.yml` to commit SHAs, set top-level `permissions: contents: read`, and hide `SENTINEL_API_TOKEN` from the agent's `--help` output (`hide_env_values`).
+- **go-collector:** REST API now throttles repeated failed bearer-auth attempts per source
+  address (5 failures, refilling 5/min) and answers 429 with `Retry-After` (#360).
 - **go-collector:** the aggregator rejects upstream URLs that contain userinfo
   (`user:pass@`) at startup, and its errors no longer echo the configured URL, so
   credentials cannot reach the logs (#364).
@@ -244,6 +239,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `grpc` and `x/net` updated to versions without the known vulnerabilities, with the Go toolchain
   pinned (#252).
 - `deploy-agent.sh` no longer prints the gRPC token value when input validation fails (#363).
+- **go-collector (#482):** with gRPC auth enabled, an established `StreamEvents` stream whose bearer token has been revoked is now closed with `Unauthenticated` ("token revoked") at the next liveness tick (within `heartbeat-timeout / 3`); its node stops heartbeating and goes `inactive` after the heartbeat timeout. A transient token-lookup error (e.g. `ErrBusy`) does not close the stream; it is retried on the next tick (fail-open). With auth disabled there is no token to re-check, so a stream keeps its node alive until it disconnects.
 
 ## [0.1.0] - 2026-08-17
 
