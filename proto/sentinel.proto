@@ -68,8 +68,19 @@ message RegisterResponse {
 
 // ─── Event stream ─────────────────────────────────────────────
 
+// Why an Ack carries ok=false (#488). Always UNSPECIFIED when ok=true.
+// UNSPECIFIED with ok=false is what an older collector sends: agents treat it
+// as not retryable (the pre-#488 behaviour).
+enum AckReason {
+  ACK_REASON_UNSPECIFIED = 0;
+  ACK_REASON_INVALID = 1;      // validation / node_id mismatch: resending cannot succeed
+  ACK_REASON_RATE_LIMITED = 2; // dropped by the per-stream limiter: not resent
+  ACK_REASON_RETRYABLE = 3;    // transient store failure: the agent may resend
+}
+
 message EventAck {
   bool ok = 1;
+  AckReason reason = 2;
 }
 
 // ─── Service ──────────────────────────────────────────────────
