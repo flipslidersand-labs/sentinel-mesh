@@ -326,9 +326,31 @@ func (s *Store) SaveEvent(ctx context.Context, e model.Event) error {
 // the scan for matches stops after maxNodeFilterScan records even if fewer
 // than limit matches were found (#153).
 func (s *Store) ListEvents(ctx context.Context, node string, limit int) ([]model.Event, error) {
-	// Non-nil so callers that JSON-marshal the result (the /api/events
-	// handler) return "[]" rather than "null" when there are no matches.
-	events := make([]model.Event, 0)
+	return s.ListEventsWhere(ctx, nodeMatcher(node), limit)
+}
+
+// ListEventsWhere is ListEvents with an arbitrary node predicate (nil keeps
+// everything). The scan continues until limit matches are found, bounded by
+// maxNodeFilterScan records when keep is non-nil (#324).
+func (s *Store) ListEventsWhere(ctx context.Context, keep func(nodeID string) bool, limit int) ([]model.Event, error) {
+	return scanNewestFirst(ctx, s, "event:", "event", func(e model.Event) string { return e.NodeID }, keep, limit)
+}
+
+// nodeMatcher returns a predicate for a single node ID; nil when node is empty.
+func nodeMatcher(node string) func(string) bool {
+	if node == "" {
+		return nil
+	}
+	return func(id string) bool { return id == node }
+}
+
+// scanNewestFirst walks the keys under prefix newest first, decoding each as T
+// and collecting up to limit records whose node passes keep. With a non-nil
+// keep the scan reads at most maxNodeFilterScan records (#153), so a rarely
+// matching filter cannot force a full walk of the retention window.
+func scanNewestFirst[T any](ctx context.Context, s *Store, prefixStr, label string, nodeOf func(T) string, keep func(string) bool, limit int) ([]T, error) {
+	// Non-nil so callers that JSON-marshal the result return "[]" not "null".
+	out := make([]T, 0)
 	err := s.run(ctx, func() error {
 		return s.db.View(func(tx *badger.Txn) error {
 			opts := badger.DefaultIteratorOptions
@@ -336,25 +358,22 @@ func (s *Store) ListEvents(ctx context.Context, node string, limit int) ([]model
 			it := tx.NewIterator(opts)
 			defer it.Close()
 
-			prefix := []byte("event:")
+			prefix := []byte(prefixStr)
 			it.Seek(append(prefix, 0xFF))
 			scanned := 0
 			skipped := 0
-			for ; it.ValidForPrefix(prefix) && len(events) < limit; it.Next() {
-				// A node filter can match rarely (or never); without a scan cap
-				// this loop would otherwise keep reading until it exhausts the
-				// whole "event:" prefix (#153).
-				if node != "" && scanned >= maxNodeFilterScan {
+			for ; it.ValidForPrefix(prefix) && len(out) < limit; it.Next() {
+				if keep != nil && scanned >= maxNodeFilterScan {
 					break
 				}
 				if err := ctx.Err(); err != nil {
 					return err
 				}
 				scanned++
-				var e model.Event
+				var rec T
 				var decodeErr error
 				if err := it.Item().Value(func(v []byte) error {
-					decodeErr = json.Unmarshal(v, &e)
+					decodeErr = json.Unmarshal(v, &rec)
 					return nil
 				}); err != nil {
 					return err
@@ -363,25 +382,24 @@ func (s *Store) ListEvents(ctx context.Context, node string, limit int) ([]model
 					skipped++
 					continue
 				}
-				if node != "" && e.NodeID != node {
+				if keep != nil && !keep(nodeOf(rec)) {
 					continue
 				}
-				events = append(events, e)
+				out = append(out, rec)
 			}
 			// One warning per call, not per record (#372).
 			if skipped > 0 {
-				slog.Warn("event records could not be decoded and were skipped", "count", skipped)
+				slog.Warn(label+" records could not be decoded and were skipped", "count", skipped)
 			}
 			return nil
 		})
 	})
 	if err != nil {
-		// On ctx expiry the View goroutine may still be appending to events;
-		// do not read it (data race, #351). Only a normal completion
-		// (which happens-before the receive in runWithContext) is safe.
+		// On ctx expiry the View goroutine may still be appending to out;
+		// do not read it (data race, #351).
 		return nil, err
 	}
-	return events, nil
+	return out, nil
 }
 
 // Stats returns event counts per type, from the in-memory counters (#77) —
@@ -415,62 +433,13 @@ func (s *Store) SaveAlert(ctx context.Context, a model.Alert) error {
 // the scan for matches stops after maxNodeFilterScan records even if fewer
 // than limit matches were found (#153).
 func (s *Store) ListAlerts(ctx context.Context, node string, limit int) ([]model.Alert, error) {
-	// Non-nil so callers that JSON-marshal the result (the /api/alerts
-	// handler) return "[]" rather than "null" when there are no matches.
-	alerts := make([]model.Alert, 0)
-	err := s.run(ctx, func() error {
-		return s.db.View(func(tx *badger.Txn) error {
-			opts := badger.DefaultIteratorOptions
-			opts.Reverse = true
-			it := tx.NewIterator(opts)
-			defer it.Close()
+	return s.ListAlertsWhere(ctx, nodeMatcher(node), limit)
+}
 
-			prefix := []byte("alert:")
-			it.Seek(append(prefix, 0xFF))
-			scanned := 0
-			skipped := 0
-			for ; it.ValidForPrefix(prefix) && len(alerts) < limit; it.Next() {
-				// See the matching comment in ListEvents: cap the scan so a
-				// rarely (or never) matching node filter can't force a full
-				// walk of the "alert:" prefix (#153).
-				if node != "" && scanned >= maxNodeFilterScan {
-					break
-				}
-				if err := ctx.Err(); err != nil {
-					return err
-				}
-				scanned++
-				var a model.Alert
-				var decodeErr error
-				if err := it.Item().Value(func(v []byte) error {
-					decodeErr = json.Unmarshal(v, &a)
-					return nil
-				}); err != nil {
-					return err
-				}
-				if decodeErr != nil {
-					skipped++
-					continue
-				}
-				if node != "" && a.NodeID != node {
-					continue
-				}
-				alerts = append(alerts, a)
-			}
-			// One warning per call, not per record (#372).
-			if skipped > 0 {
-				slog.Warn("alert records could not be decoded and were skipped", "count", skipped)
-			}
-			return nil
-		})
-	})
-	if err != nil {
-		// On ctx expiry the View goroutine may still be appending to alerts;
-		// do not read it (data race, #351). Only a normal completion
-		// (which happens-before the receive in runWithContext) is safe.
-		return nil, err
-	}
-	return alerts, nil
+// ListAlertsWhere is ListAlerts with an arbitrary node predicate; see
+// ListEventsWhere (#324).
+func (s *Store) ListAlertsWhere(ctx context.Context, keep func(nodeID string) bool, limit int) ([]model.Alert, error) {
+	return scanNewestFirst(ctx, s, "alert:", "alert", func(a model.Alert) string { return a.NodeID }, keep, limit)
 }
 
 func (s *Store) Close() error {
