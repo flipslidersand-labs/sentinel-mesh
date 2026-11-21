@@ -488,7 +488,9 @@ func (s *server) persistEvent(ctx context.Context, ev model.Event) (ok bool) {
 	ok = true
 	saveCtx, saveCancel := context.WithTimeout(ctx, storeOpTimeout)
 	// Note: ok=false does not prove the event is unsaved. On a store timeout the
-	// background write may still complete, so a retry can store it twice (#325).
+	// background write may still complete (#325). A retry with the same
+	// event_id is then skipped by the store, not saved twice (#452), but it
+	// still re-runs alert evaluation and metrics here (#457).
 	storeErr := s.st.SaveEvent(saveCtx, ev)
 	saveCancel()
 	if storeErr != nil {

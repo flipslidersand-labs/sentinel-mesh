@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -48,6 +49,10 @@ type Store struct {
 	// can wait for them instead of closing the DB underneath a running View
 	// ("DB Closed" panic, #351).
 	inflight sync.WaitGroup
+	// sem bounds how many run goroutines may exist at once. runWithContext
+	// leaves fn running after ctx is done, so without a cap a stalled disk
+	// plus repeated timeouts piles up goroutines without limit (#452).
+	sem chan struct{}
 
 	// countersMu/counters back Stats(): an in-memory per-type count,
 	// incremented in SaveEvent (after a successful write) and seeded once at startup by loadCounters,
@@ -88,6 +93,7 @@ func New(dir string) (*Store, error) {
 		db:        db,
 		retention: DefaultRetention,
 		counters:  map[string]int{"exec": 0, "tcp": 0, "file": 0},
+		sem:       make(chan struct{}, maxInflight),
 		gcStop:    make(chan struct{}),
 		gcDone:    make(chan struct{}),
 	}
@@ -186,12 +192,29 @@ func runWithContext(ctx context.Context, fn func() error) error {
 	}
 }
 
+// maxInflight caps concurrent run goroutines, including ones still finishing
+// in the background after their caller's ctx expired (#452).
+const maxInflight = 256
+
+// ErrBusy is returned without touching the db when maxInflight operations
+// are already in flight (typically writes stuck behind a stalled disk).
+var ErrBusy = errors.New("store: too many operations in flight")
+
 // run is runWithContext, tracked so Close waits for the goroutine fn runs on.
-// fn must not start a db transaction once ctx is done.
+// fn must not start a db transaction once ctx is done. If the in-flight limit
+// is reached, run fails fast with ErrBusy instead of queueing.
 func (s *Store) run(ctx context.Context, fn func() error) error {
+	select {
+	case s.sem <- struct{}{}:
+	default:
+		return ErrBusy
+	}
 	s.inflight.Add(1)
 	return runWithContext(ctx, func() error {
-		defer s.inflight.Done()
+		defer func() {
+			<-s.sem
+			s.inflight.Done()
+		}()
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -215,12 +238,26 @@ func timeKey(t time.Time) string {
 	return t.UTC().Format(timeKeyLayout)
 }
 
+// eventIDKey is the dedup index entry for (node, event_id). The node length
+// prefix keeps ("a:b","c") and ("a","b:c") distinct, since both fields may
+// contain ':'. It sits under "eventid:", which "event:" prefix scans skip.
+func eventIDKey(nodeID, eventID string) []byte {
+	return []byte(fmt.Sprintf("eventid:%d:%s:%s", len(nodeID), nodeID, eventID))
+}
+
+// maxConflictRetries bounds retries when concurrent saves of the same
+// event_id collide in Badger's conflict detection.
+const maxConflictRetries = 3
+
 // SaveEvent persists e. A non-nil error does NOT guarantee the event was not
 // stored: if ctx is cancelled or times out while the write is in flight, the
 // error is ctx.Err() but the write may still complete in the background (see
 // runWithContext). Callers that report failure to a peer (e.g. an Ack with
-// ok=false) must treat it as "unknown, possibly saved"; a retry can store the
-// same event twice. Stats() counts the event once the write actually succeeds.
+// ok=false) must treat it as "unknown, possibly saved". Retrying is safe: an
+// event whose (node_id, event_id) was already saved within the retention
+// window is skipped and reported as success (#452). Events with an empty
+// event_id cannot be deduplicated. Stats() counts the event once the write
+// actually succeeds.
 func (s *Store) SaveEvent(ctx context.Context, e model.Event) error {
 	val, err := json.Marshal(e)
 	if err != nil {
@@ -241,10 +278,41 @@ func (s *Store) SaveEvent(ctx context.Context, e model.Event) error {
 		if s.beforeUpdateFn != nil {
 			s.beforeUpdateFn()
 		}
-		if err := s.db.Update(func(tx *badger.Txn) error {
+		var idKey []byte
+		if e.EventID != "" {
+			idKey = eventIDKey(e.NodeID, e.EventID)
+		}
+		var duplicate bool
+		update := func(tx *badger.Txn) error {
+			duplicate = false
+			if idKey != nil {
+				_, err := tx.Get(idKey)
+				if err == nil {
+					duplicate = true
+					return nil
+				}
+				if !errors.Is(err, badger.ErrKeyNotFound) {
+					return err
+				}
+				if err := tx.SetEntry(badger.NewEntry(idKey, key).WithTTL(s.retention)); err != nil {
+					return err
+				}
+			}
 			return tx.SetEntry(badger.NewEntry(key, val).WithTTL(s.retention))
-		}); err != nil {
+		}
+		var err error
+		for i := 0; i < maxConflictRetries; i++ {
+			// A concurrent save of the same event_id wins the index write;
+			// retrying then sees it and reports a duplicate.
+			if err = s.db.Update(update); !errors.Is(err, badger.ErrConflict) {
+				break
+			}
+		}
+		if err != nil {
 			return err
+		}
+		if duplicate {
+			return nil
 		}
 		s.countersMu.Lock()
 		s.counters[e.Type]++
