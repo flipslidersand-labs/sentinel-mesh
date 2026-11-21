@@ -122,7 +122,9 @@ func (b *tokenBucket) allow() bool {
 
 // EventSaver persists events and the alerts they trigger.
 type EventSaver interface {
-	SaveEvent(ctx context.Context, e model.Event) error
+	// SaveEventDedup reports duplicate=true when e was skipped because its
+	// (node_id, event_id) was already stored (#457).
+	SaveEventDedup(ctx context.Context, e model.Event) (duplicate bool, err error)
 	SaveAlert(ctx context.Context, a model.Alert) error
 }
 
@@ -462,9 +464,13 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 			Payload:   s.eventPayload(event),
 		}
 
-		saveOk := s.persistEvent(stream.Context(), storedEvent)
-		if _, alertsOk := s.evaluateAndNotify(stream.Context(), storedEvent); !alertsOk {
-			saveOk = false
+		saveOk, duplicate := s.persistEvent(stream.Context(), storedEvent)
+		// A resent event already had its alerts/metrics handled on the first
+		// delivery; only ack it (#457).
+		if !duplicate {
+			if _, alertsOk := s.evaluateAndNotify(stream.Context(), storedEvent); !alertsOk {
+				saveOk = false
+			}
 		}
 
 		if err := stream.Send(&pb.EventAck{Ok: saveOk}); err != nil {
@@ -484,13 +490,16 @@ func rejectEvent(stream pb.SentinelCollector_StreamEventsServer, logFn func()) e
 }
 
 // persistEvent saves the event (bounded by storeOpTimeout) and records the
-// store-failure and event metrics. It reports whether the save succeeded.
-func (s *server) persistEvent(ctx context.Context, ev model.Event) (ok bool) {
+// store-failure and event metrics. It reports whether the save succeeded and
+// whether the store skipped ev as a duplicate (no event metric is recorded
+// then).
+func (s *server) persistEvent(ctx context.Context, ev model.Event) (ok, duplicate bool) {
 	ok = true
 	saveCtx, saveCancel := context.WithTimeout(ctx, storeOpTimeout)
 	// Note: ok=false does not prove the event is unsaved. On a store timeout the
-	// background write may still complete, so a retry can store it twice (#325).
-	storeErr := s.st.SaveEvent(saveCtx, ev)
+	// background write may still complete (#325). A retry with the same
+	// event_id is then reported as a duplicate by the store (#452, #457).
+	duplicate, storeErr := s.st.SaveEventDedup(saveCtx, ev)
 	saveCancel()
 	if storeErr != nil {
 		s.log.Error("save event", zap.Error(storeErr))
@@ -500,11 +509,15 @@ func (s *server) persistEvent(ctx context.Context, ev model.Event) (ok bool) {
 		}
 	}
 
+	if duplicate {
+		return ok, true
+	}
+
 	// Phase 6: record event metric
 	if s.metrics != nil {
 		s.metrics.RecordEvent(ev.Type, ev.NodeID)
 	}
-	return ok
+	return ok, false
 }
 
 // evaluateAndNotify runs the alert engine and anomaly detector on ev, saves,
