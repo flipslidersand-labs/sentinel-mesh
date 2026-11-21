@@ -487,6 +487,8 @@ func rejectEvent(stream pb.SentinelCollector_StreamEventsServer, logFn func()) e
 func (s *server) persistEvent(ctx context.Context, ev model.Event) (ok bool) {
 	ok = true
 	saveCtx, saveCancel := context.WithTimeout(ctx, storeOpTimeout)
+	// Note: ok=false does not prove the event is unsaved. On a store timeout the
+	// background write may still complete, so a retry can store it twice (#325).
 	storeErr := s.st.SaveEvent(saveCtx, ev)
 	saveCancel()
 	if storeErr != nil {

@@ -390,7 +390,10 @@ func runNormal(cfg *serveConfig, logger *zap.Logger) error {
 	}
 
 	// REST API in background, tied to ctx for graceful shutdown (#117).
-	router := exporter.Router(st, reg, detector, cfg.staticDir, cfg.corsOrigins, cfg.apiToken)
+	router := exporter.Router(exporter.RouterConfig{
+		Events: st, Alerts: st, Stats: st, Nodes: reg, Detector: detector,
+		StaticDir: cfg.staticDir, CORSOrigins: cfg.corsOrigins, APIToken: cfg.apiToken,
+	})
 	httpServer := newHTTPServer(cfg.httpAddr, router)
 
 	// gRPC server (blocking, but ctx-aware so SIGINT/SIGTERM gracefully
