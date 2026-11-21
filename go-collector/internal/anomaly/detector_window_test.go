@@ -295,3 +295,24 @@ func BenchmarkRecord_600k_NoAlert(b *testing.B) {
 func BenchmarkRecord_600k_Exceeding(b *testing.B) {
 	benchRecord(b, DefaultWindows)
 }
+
+// Clock jumps forward then back: events recorded after the step back must still
+// be visible to detection (Record alerts) and to WindowStats.
+func TestRecord_ClockStepBackStillDetects(t *testing.T) {
+	d, c := newClocked([]WindowConfig{{Duration: time.Minute, Threshold: 5}})
+	ev := makeEvent("n", "exec")
+	d.Record(ev)
+	c.advance(time.Hour)
+	d.Record(ev)
+	c.advance(-time.Hour) // wall clock steps back
+	alerts := 0
+	for i := 0; i < 20; i++ {
+		alerts += len(d.Record(ev))
+	}
+	if alerts == 0 {
+		t.Fatal("no alert after clock stepped back; events were recorded but not counted")
+	}
+	if got := d.WindowStats()["exec"]["1m"]; got < 20 {
+		t.Errorf("WindowStats 1m = %d, want >= 20 after clock step back", got)
+	}
+}

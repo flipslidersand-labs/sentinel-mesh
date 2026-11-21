@@ -57,8 +57,9 @@ func (r *ring) idx(sec int64) int {
 
 // add records one event at second sec. Stale buckets passed over while
 // advancing are reset, so a key idle for longer than the ring starts clean.
-// An older sec (clock stepped backwards) is counted in the current (head)
-// bucket rather than dropped: over-counting is the safer failure for detection.
+// An older sec (clock stepped backwards) is treated as the head second, so the
+// event is counted in the current bucket and stays visible to count (which
+// clamps its sec the same way) instead of being dropped or hidden.
 func (r *ring) add(sec int64) {
 	if sec > r.head {
 		gap := sec - r.head
@@ -75,7 +76,11 @@ func (r *ring) add(sec int64) {
 
 // count returns the events in the last windowSecs seconds ending at second sec
 // (inclusive), i.e. seconds sec-windowSecs+1 .. sec.
+// A sec before head (clock stepped backwards) is clamped to head, matching add.
 func (r *ring) count(sec, windowSecs int64) int {
+	if sec < r.head {
+		sec = r.head
+	}
 	lo := sec - windowSecs + 1
 	if min := r.head - int64(len(r.buckets)) + 1; lo < min {
 		lo = min
