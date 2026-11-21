@@ -12,6 +12,7 @@ export interface Event {
   event_id: string;
   node_id: string;
   timestamp: string;
+  received_at?: string; // collector receive time; absent on older records
   type: string; // "exec" | "tcp" | "file"
   payload: unknown; // raw event payload (JSON object)
 }

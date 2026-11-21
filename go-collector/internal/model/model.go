@@ -14,6 +14,11 @@ type Event struct {
 	Timestamp time.Time       `json:"timestamp"`
 	Type      string          `json:"type"` // "exec" | "tcp" | "file"
 	Payload   json.RawMessage `json:"payload"`
+	// ReceivedAt is the collector's own receive time, stamped on save and
+	// returned by /api/events so aggregators can order across regions without
+	// trusting the agent clock (#473). Zero (omitted) on events stored before
+	// this field existed; consumers then fall back to Timestamp.
+	ReceivedAt time.Time `json:"received_at,omitzero"`
 }
 
 // Alert represents a triggered alert.

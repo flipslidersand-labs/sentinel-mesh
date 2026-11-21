@@ -289,10 +289,6 @@ func (s *Store) SaveEvent(ctx context.Context, e model.Event) error {
 // duplicate of an already stored (node_id, event_id) (#457). duplicate is
 // meaningful only when err is nil.
 func (s *Store) SaveEventDedup(ctx context.Context, e model.Event) (duplicate bool, err error) {
-	val, err := json.Marshal(e)
-	if err != nil {
-		return false, err
-	}
 	// Key by the collector's own receive time, not e.Timestamp — that field
 	// is agent-supplied and untrusted. Keying by it let a malicious agent
 	// pin its events to the front of ListEvents forever with a far-future
@@ -300,6 +296,11 @@ func (s *Store) SaveEventDedup(ctx context.Context, e model.Event) (duplicate bo
 	// collision (#78). e.Timestamp is still stored in the record itself for
 	// display; it's just no longer trusted for ordering/storage identity.
 	received := time.Now().UTC()
+	e.ReceivedAt = received // collector-assigned; overrides any agent-supplied value (#473)
+	val, err := json.Marshal(e)
+	if err != nil {
+		return false, err
+	}
 	key := []byte(fmt.Sprintf("event:%s:%s", timeKey(received), e.EventID))
 	// The counter is bumped inside fn, right after db.Update succeeds: if ctx
 	// is cancelled while the write is in flight, run returns an error to the
