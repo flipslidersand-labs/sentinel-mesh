@@ -344,3 +344,46 @@ func TestClose_WaitsForAbandonedViewGoroutines(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 }
+
+// TestSaveEvent_CancelledMidWriteStillCountedInStats pins #325: when ctx is
+// cancelled while the write is in flight, the caller gets an error but the
+// write lands, and Stats() must match what was actually stored.
+func TestSaveEvent_CancelledMidWriteStillCountedInStats(t *testing.T) {
+	st, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { st.Close() }) //nolint:errcheck
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	st.beforeUpdateFn = func() {
+		close(started)
+		<-release
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	e := Event{EventID: "e1", NodeID: "n1", Timestamp: time.Now(), Type: "exec", Payload: json.RawMessage(`{}`)}
+	go func() { errCh <- st.SaveEvent(ctx, e) }()
+
+	<-started
+	cancel()
+	if err := <-errCh; err == nil {
+		t.Fatal("SaveEvent returned nil after ctx cancel mid-write; want ctx error")
+	}
+	close(release)
+	st.inflight.Wait() // background write finished
+
+	stored, err := st.ListEvents(context.Background(), "", 10)
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	stats, err := st.Stats()
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if len(stored) != 1 || stats["exec"] != len(stored) {
+		t.Fatalf("stored=%d stats[exec]=%d; want both 1", len(stored), stats["exec"])
+	}
+}

@@ -53,7 +53,7 @@ type Store struct {
 	inflight sync.WaitGroup
 
 	// countersMu/counters back Stats(): an in-memory per-type count,
-	// incremented in SaveEvent and seeded once at startup by loadCounters,
+	// incremented in SaveEvent (after a successful write) and seeded once at startup by loadCounters,
 	// so Stats() no longer has to scan every event on every call (#77).
 	// Counts may run slightly high relative to what's still on disk once
 	// TTL expires old events; loadCounters corrects this on next restart.
@@ -72,6 +72,10 @@ type Store struct {
 	tokenIndexErr error
 	// putTokenFn is a test seam for injecting token write failures; nil in production.
 	putTokenFn func(ctx context.Context, rec AgentToken) error
+
+	// beforeUpdateFn is a test seam run inside SaveEvent's background write
+	// just before db.Update; nil in production.
+	beforeUpdateFn func()
 
 	gcStop chan struct{}
 	gcDone chan struct{}
@@ -214,6 +218,12 @@ func timeKey(t time.Time) string {
 	return t.UTC().Format(timeKeyLayout)
 }
 
+// SaveEvent persists e. A non-nil error does NOT guarantee the event was not
+// stored: if ctx is cancelled or times out while the write is in flight, the
+// error is ctx.Err() but the write may still complete in the background (see
+// runWithContext). Callers that report failure to a peer (e.g. an Ack with
+// ok=false) must treat it as "unknown, possibly saved"; a retry can store the
+// same event twice. Stats() counts the event once the write actually succeeds.
 func (s *Store) SaveEvent(ctx context.Context, e Event) error {
 	val, err := json.Marshal(e)
 	if err != nil {
@@ -227,17 +237,23 @@ func (s *Store) SaveEvent(ctx context.Context, e Event) error {
 	// display; it's just no longer trusted for ordering/storage identity.
 	received := time.Now().UTC()
 	key := []byte(fmt.Sprintf("event:%s:%s", timeKey(received), e.EventID))
-	if err := s.run(ctx, func() error {
-		return s.db.Update(func(tx *badger.Txn) error {
+	// The counter is bumped inside fn, right after db.Update succeeds: if ctx
+	// is cancelled while the write is in flight, run returns an error to the
+	// caller but the write still lands, and Stats() must count it (#325).
+	return s.run(ctx, func() error {
+		if s.beforeUpdateFn != nil {
+			s.beforeUpdateFn()
+		}
+		if err := s.db.Update(func(tx *badger.Txn) error {
 			return tx.SetEntry(badger.NewEntry(key, val).WithTTL(s.retention))
-		})
-	}); err != nil {
-		return err
-	}
-	s.countersMu.Lock()
-	s.counters[e.Type]++
-	s.countersMu.Unlock()
-	return nil
+		}); err != nil {
+			return err
+		}
+		s.countersMu.Lock()
+		s.counters[e.Type]++
+		s.countersMu.Unlock()
+		return nil
+	})
 }
 
 // ListEvents returns up to limit events, newest first.
