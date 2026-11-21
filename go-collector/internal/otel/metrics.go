@@ -2,6 +2,7 @@ package otel
 
 import (
 	"context"
+	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -34,8 +35,45 @@ var (
 	}, []string{"reason"})
 )
 
+// MaxNodeLabels is the number of distinct node_id values kept as their own
+// "node" label value (#326). Without authentication node_id is client
+// controlled, so later unknown IDs are folded into OtherNodeLabel to keep the
+// series count bounded.
+const MaxNodeLabels = 256
+
+// OtherNodeLabel is the node label value used once MaxNodeLabels is reached.
+const OtherNodeLabel = "other"
+
+// nodeLabeler is a capped allowlist of node label values. The first max
+// distinct IDs map to themselves; later unseen IDs map to OtherNodeLabel.
+// A given ID always maps to the same label.
+type nodeLabeler struct {
+	mu   sync.Mutex
+	max  int
+	seen map[string]struct{}
+}
+
+func newNodeLabeler(max int) *nodeLabeler {
+	return &nodeLabeler{max: max, seen: make(map[string]struct{})}
+}
+
+func (l *nodeLabeler) label(nodeID string) string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if _, ok := l.seen[nodeID]; ok {
+		return nodeID
+	}
+	if len(l.seen) >= l.max {
+		return OtherNodeLabel
+	}
+	l.seen[nodeID] = struct{}{}
+	return nodeID
+}
+
 // MetricsProvider records collector metrics on the Prometheus default registry.
-type MetricsProvider struct{}
+type MetricsProvider struct {
+	nodes *nodeLabeler
+}
 
 // Fixed reason label values for RecordAuthFailure.
 const (
@@ -47,17 +85,17 @@ const (
 // NewMetricsProvider returns a provider backed by the package-level Prometheus
 // counters. The ctx parameter and error result are kept for API compatibility.
 func NewMetricsProvider(ctx context.Context) (*MetricsProvider, error) {
-	return &MetricsProvider{}, nil
+	return &MetricsProvider{nodes: newNodeLabeler(MaxNodeLabels)}, nil
 }
 
 // RecordEvent increments the event counter for a given event type and node.
 func (mp *MetricsProvider) RecordEvent(eventType, nodeID string) {
-	eventsTotal.WithLabelValues(eventType, nodeID).Inc()
+	eventsTotal.WithLabelValues(eventType, mp.nodes.label(nodeID)).Inc()
 }
 
 // RecordAlert increments the alert counter for a given rule and node.
 func (mp *MetricsProvider) RecordAlert(ruleID, severity, nodeID string) {
-	alertsTotal.WithLabelValues(ruleID, severity, nodeID).Inc()
+	alertsTotal.WithLabelValues(ruleID, severity, mp.nodes.label(nodeID)).Inc()
 }
 
 // RecordStoreWriteFailure increments the store write failure counter for a

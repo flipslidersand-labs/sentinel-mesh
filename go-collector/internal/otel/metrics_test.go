@@ -2,6 +2,7 @@ package otel
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -141,5 +142,93 @@ func TestNewMetricsProvider_SecondCall(t *testing.T) {
 			t.Fatalf("provider %d is nil", i+1)
 		}
 		mp.RecordEvent("t-second", "n-second") // must not panic
+	}
+}
+
+func TestNodeLabeler_CapAndConsistency(t *testing.T) {
+	l := newNodeLabeler(3)
+	for _, id := range []string{"a", "b", "c"} {
+		if got := l.label(id); got != id {
+			t.Fatalf("label(%q) = %q", id, got)
+		}
+	}
+	if got := l.label("d"); got != OtherNodeLabel {
+		t.Fatalf("label(d) = %q, want %q", got, OtherNodeLabel)
+	}
+	if got := l.label("a"); got != "a" {
+		t.Fatalf("known id must stay itself, got %q", got)
+	}
+	if got := l.label("d"); got != OtherNodeLabel {
+		t.Fatalf("d must stay folded, got %q", got)
+	}
+}
+
+func TestNodeLabeler_Concurrent(t *testing.T) {
+	l := newNodeLabeler(10)
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 200; i++ {
+				l.label(fmt.Sprintf("n-%d-%d", g, i))
+			}
+		}(g)
+	}
+	wg.Wait()
+	if len(l.seen) != 10 {
+		t.Fatalf("seen = %d, want 10", len(l.seen))
+	}
+}
+
+// distinctNodes returns the node label values of family `name` whose series
+// carry label key=val.
+func distinctNodes(t *testing.T, name, key, val string) map[string]bool {
+	t.Helper()
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	out := map[string]bool{}
+	for _, f := range families {
+		if f.GetName() != name {
+			continue
+		}
+		for _, m := range f.GetMetric() {
+			node, match := "", false
+			for _, lp := range m.GetLabel() {
+				if lp.GetName() == "node" {
+					node = lp.GetValue()
+				}
+				if lp.GetName() == key && lp.GetValue() == val {
+					match = true
+				}
+			}
+			if match {
+				out[node] = true
+			}
+		}
+	}
+	return out
+}
+
+// Uses a private provider with a small cap so the shared provider's node
+// allowlist is never saturated (tests share the default registry).
+func TestMetrics_NodeCardinalityBounded(t *testing.T) {
+	const limit = 8
+	mp := &MetricsProvider{nodes: newNodeLabeler(limit)}
+	for i := 0; i < limit+500; i++ {
+		id := fmt.Sprintf("throwaway-%d", i)
+		mp.RecordEvent("cardinality_test", id)
+		mp.RecordAlert("cardinality_rule", "low", id)
+	}
+	if n := len(distinctNodes(t, "sentinel_events_total", "type", "cardinality_test")); n > limit+1 {
+		t.Fatalf("events node series = %d, want <= %d", n, limit+1)
+	}
+	if n := len(distinctNodes(t, "sentinel_alerts_total", "rule", "cardinality_rule")); n > limit+1 {
+		t.Fatalf("alerts node series = %d, want <= %d", n, limit+1)
+	}
+	if v := counterValue(t, "sentinel_events_total", map[string]string{"type": "cardinality_test", "node": OtherNodeLabel}); v < 500 {
+		t.Fatalf("other bucket = %v, want >= 500", v)
 	}
 }
