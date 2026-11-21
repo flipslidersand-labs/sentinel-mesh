@@ -16,8 +16,28 @@ type contractData struct{}
 func (contractData) ListEvents(_ context.Context, _ string, _ int) ([]model.Event, error) {
 	return []model.Event{{EventID: "e1", NodeID: "n1"}}, nil
 }
+func (d contractData) ListEventsWhere(ctx context.Context, keep func(string) bool, limit int) ([]model.Event, error) {
+	all, _ := d.ListEvents(ctx, "", limit)
+	out := make([]model.Event, 0, len(all))
+	for _, e := range all {
+		if keep == nil || keep(e.NodeID) {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
 func (contractData) ListAlerts(_ context.Context, _ string, _ int) ([]model.Alert, error) {
 	return []model.Alert{{AlertID: "a1", NodeID: "n1"}}, nil
+}
+func (d contractData) ListAlertsWhere(ctx context.Context, keep func(string) bool, limit int) ([]model.Alert, error) {
+	all, _ := d.ListAlerts(ctx, "", limit)
+	out := make([]model.Alert, 0, len(all))
+	for _, a := range all {
+		if keep == nil || keep(a.NodeID) {
+			out = append(out, a)
+		}
+	}
+	return out, nil
 }
 func (contractData) Stats() (map[string]int, error) { return map[string]int{}, nil }
 
