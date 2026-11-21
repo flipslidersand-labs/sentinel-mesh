@@ -39,10 +39,28 @@ jobs:
         with:
           go-version: "1.26"
       - name: Install govulncheck (失敗 = ツール取得失敗)
-        run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0 || {
+            echo "## govulncheck: tool install failed (not a finding)" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::govulncheck の取得に失敗"; exit 1; }
       - name: Scan go-collector (失敗 = 脆弱性検出)
         run: |
-          "$(go env GOPATH)/bin/govulncheck" ./... || { echo "::error::govulncheck が脆弱性を検出"; exit 1; }
+          out="$(mktemp)"
+          "$(go env GOPATH)/bin/govulncheck" ./... >"$out" 2>&1
+          rc=$?
+          cat "$out"
+          if [ "$rc" -eq 0 ]; then
+            echo "## govulncheck: no findings" >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "## ⚠ findings detected (govulncheck, exit $rc)"
+              echo "Vulnerabilities: $(grep -c '^Vulnerability #' "$out")"
+              echo "IDs: $(grep -o 'GO-[0-9]*-[0-9]*' "$out" | sort -u | tr '\n' ' ')"
+              echo '```'; grep -E '^(Your code|This scan|Vulnerability #)' "$out" | head -20; echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::govulncheck が脆弱性を検出"
+          fi
+          exit "$rc"
 
   cargo-deny:
     name: Vuln scan (rust-agent, non-blocking)
@@ -58,10 +76,28 @@ jobs:
       - name: Install cargo-deny (失敗 = ツール取得失敗)
         run: |
           command -v cc >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y build-essential)
-          cargo install cargo-deny --locked --version 0.20.2
+          cargo install cargo-deny --locked --version 0.20.2 || {
+            echo "## cargo-deny: tool install failed (not a finding)" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::cargo-deny の取得に失敗"; exit 1; }
       - name: Scan rust-agent advisories (失敗 = 脆弱性検出)
         # licenses は deny.toml の許可リスト整備が前提のため本 PR では対象外。advisories のみ。
-        run: cargo deny check advisories || { echo "::error::cargo deny が advisory を検出"; exit 1; }
+        run: |
+          out="$(mktemp)"
+          cargo deny check advisories >"$out" 2>&1
+          rc=$?
+          cat "$out"
+          if [ "$rc" -eq 0 ]; then
+            echo "## cargo-deny advisories: no findings" >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "## ⚠ findings detected (cargo-deny advisories, exit $rc)"
+              echo "Errors: $(grep -c '^error\[' "$out")"
+              echo "IDs: $(grep -oE 'RUSTSEC-[0-9]+-[0-9]+' "$out" | sort -u | tr '\n' ' ')"
+              echo '```'; grep -E '^error\[' "$out" | sort | uniq -c | head -20; echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::cargo deny が advisory を検出"
+          fi
+          exit "$rc"
 
   npm-audit:
     name: Vuln scan (web, non-blocking)
@@ -78,4 +114,19 @@ jobs:
           node-version: "22"
       - name: Scan web (失敗 = 脆弱性検出 または registry 到達不可)
         # package-lock.json のみを対象にし、依存はインストールしない。
-        run: npm audit --package-lock-only --audit-level=high
+        run: |
+          out="$(mktemp)"
+          npm audit --package-lock-only --audit-level=high >"$out" 2>&1
+          rc=$?
+          cat "$out"
+          if [ "$rc" -eq 0 ]; then
+            echo "## npm audit: no findings (high+)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "## ⚠ findings detected (npm audit, exit $rc)"
+              echo "IDs: $(grep -oE 'GHSA(-[a-z0-9]{4}){3}' "$out" | sort -u | tr '\n' ' ')"
+              echo '```'; tail -8 "$out"; echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::npm audit が脆弱性を検出 (registry 到達不可の可能性もあり、ログ要確認)"
+          fi
+          exit "$rc"
