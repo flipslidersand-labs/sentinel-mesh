@@ -263,7 +263,7 @@ func (s *Store) loadTokenIndex() {
 
 func (s *Store) getAgentToken(ctx context.Context, nodeID string) (*AgentToken, error) {
 	// out is written by the goroutine only on success and read by the caller
-	// only after s.run returned nil (#382).
+	// only after s.runRead returned nil (#382).
 	var out *AgentToken
 	err := s.runRead(ctx, func() error {
 		var rec *AgentToken

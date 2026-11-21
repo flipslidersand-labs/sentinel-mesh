@@ -207,8 +207,9 @@ const (
 	maxReadInflight = 64
 )
 
-// ErrBusy is returned without touching the db when maxInflight operations
-// are already in flight (typically writes stuck behind a stalled disk).
+// ErrBusy is returned without touching the db when the write (maxInflight) or
+// read (maxReadInflight) slots are all in use, typically by operations stuck
+// behind a stalled disk.
 var ErrBusy = errors.New("store: too many operations in flight")
 
 // run is runWithContext for writes, tracked so Close waits for the goroutine
