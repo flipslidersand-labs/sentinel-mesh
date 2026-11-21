@@ -594,9 +594,11 @@ impl From<&KernelEvent> for MockEventLog {
     }
 }
 
-/// Max bytes of /proc/<pid>/cmdline kept in `ExecEvent.cmdline`.
+/// Max bytes of `ExecEvent.cmdline`. Must not exceed the collector's
+/// `maxRegisterFieldLength` (go-collector/internal/receiver/grpc.go), which
+/// rejects longer values (the whole event is lost).
 #[cfg_attr(not(feature = "ebpf"), allow(dead_code))]
-const CMDLINE_MAX_BYTES: usize = 4096;
+const CMDLINE_MAX_BYTES: usize = 256;
 
 /// Extract the parent pid from the contents of /proc/<pid>/status.
 #[cfg_attr(not(feature = "ebpf"), allow(dead_code))]
@@ -607,14 +609,22 @@ fn parse_ppid(status: &str) -> Option<u32> {
         .and_then(|v| v.trim().parse().ok())
 }
 
-/// Turn raw /proc/<pid>/cmdline (NUL-separated argv) into a space-joined,
-/// lossy-UTF-8 string, capped at `CMDLINE_MAX_BYTES` bytes.
+/// Turn raw /proc/<pid>/cmdline (NUL-separated argv) into a space-joined
+/// string that the collector always accepts: every byte outside printable
+/// ASCII 0x20-0x7E (tabs, newlines, non-ASCII, invalid UTF-8) becomes '?',
+/// then the result is capped at `CMDLINE_MAX_BYTES` (ASCII-only, so cutting
+/// at a byte boundary is safe).
 #[cfg_attr(not(feature = "ebpf"), allow(dead_code))]
 fn parse_cmdline(raw: &[u8]) -> String {
     let raw = raw.strip_suffix(&[0]).unwrap_or(raw);
-    let raw = &raw[..raw.len().min(CMDLINE_MAX_BYTES)];
-    let joined: Vec<u8> = raw.iter().map(|&b| if b == 0 { b' ' } else { b }).collect();
-    String::from_utf8_lossy(&joined).into_owned()
+    raw.iter()
+        .take(CMDLINE_MAX_BYTES)
+        .map(|&b| match b {
+            0 => ' ',
+            0x20..=0x7e => b as char,
+            _ => '?',
+        })
+        .collect()
 }
 
 /// Read (ppid, cmdline) for `pid` under `proc_root` (normally /proc).
@@ -1019,9 +1029,27 @@ mod tests {
         assert_eq!(parse_cmdline(b"/bin/ls\0-l\0/tmp\0"), "/bin/ls -l /tmp");
         assert_eq!(parse_cmdline(b"/bin/ls"), "/bin/ls");
         assert_eq!(parse_cmdline(b""), "");
-        assert_eq!(parse_cmdline(b"a\0\xff\0"), "a \u{fffd}");
-        let big = vec![b'x'; CMDLINE_MAX_BYTES + 100];
-        assert_eq!(parse_cmdline(&big).len(), CMDLINE_MAX_BYTES);
+        assert_eq!(parse_cmdline(b"a\0\xff\0"), "a ?");
+        assert_eq!(parse_cmdline(b"a\tb\nc"), "a?b?c");
+    }
+
+    #[test]
+    fn parse_cmdline_always_collector_safe() {
+        let long = vec![b'x'; 5000];
+        let inputs: Vec<Vec<u8>> = vec![
+            b"/bin/ls\0-l\0".to_vec(),
+            long,
+            "caf\u{e9}\0\u{65e5}\u{672c}".as_bytes().to_vec(),
+            b"a\tb\nc\r\x7f\x1b[0m".to_vec(),
+            vec![0xff, 0xfe, 0x80, 0, 0xc3],
+            b"\0\0\0".to_vec(),
+        ];
+        for raw in inputs {
+            let out = parse_cmdline(&raw);
+            assert!(out.len() <= 256, "too long: {}", out.len());
+            assert!(out.bytes().all(|b| (0x20..=0x7e).contains(&b)), "{out:?}");
+        }
+        assert_eq!(parse_cmdline(&vec![b'x'; 5000]).len(), 256);
     }
 
     #[test]
