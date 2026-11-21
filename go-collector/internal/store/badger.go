@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -48,6 +49,10 @@ type Store struct {
 	// can wait for them instead of closing the DB underneath a running View
 	// ("DB Closed" panic, #351).
 	inflight sync.WaitGroup
+	// sem bounds how many run goroutines may exist at once. runWithContext
+	// leaves fn running after ctx is done, so without a cap a stalled disk
+	// plus repeated timeouts piles up goroutines without limit (#452).
+	sem chan struct{}
 
 	// countersMu/counters back Stats(): an in-memory per-type count,
 	// incremented in SaveEvent (after a successful write) and seeded once at startup by loadCounters,
@@ -88,6 +93,7 @@ func New(dir string) (*Store, error) {
 		db:        db,
 		retention: DefaultRetention,
 		counters:  map[string]int{"exec": 0, "tcp": 0, "file": 0},
+		sem:       make(chan struct{}, maxInflight),
 		gcStop:    make(chan struct{}),
 		gcDone:    make(chan struct{}),
 	}
@@ -186,12 +192,29 @@ func runWithContext(ctx context.Context, fn func() error) error {
 	}
 }
 
+// maxInflight caps concurrent run goroutines, including ones still finishing
+// in the background after their caller's ctx expired (#452).
+const maxInflight = 256
+
+// ErrBusy is returned without touching the db when maxInflight operations
+// are already in flight (typically writes stuck behind a stalled disk).
+var ErrBusy = errors.New("store: too many operations in flight")
+
 // run is runWithContext, tracked so Close waits for the goroutine fn runs on.
-// fn must not start a db transaction once ctx is done.
+// fn must not start a db transaction once ctx is done. If the in-flight limit
+// is reached, run fails fast with ErrBusy instead of queueing.
 func (s *Store) run(ctx context.Context, fn func() error) error {
+	select {
+	case s.sem <- struct{}{}:
+	default:
+		return ErrBusy
+	}
 	s.inflight.Add(1)
 	return runWithContext(ctx, func() error {
-		defer s.inflight.Done()
+		defer func() {
+			<-s.sem
+			s.inflight.Done()
+		}()
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -215,16 +238,38 @@ func timeKey(t time.Time) string {
 	return t.UTC().Format(timeKeyLayout)
 }
 
+// eventIDKey is the dedup index entry for (node, event_id). The node length
+// prefix keeps ("a:b","c") and ("a","b:c") distinct, since both fields may
+// contain ':'. It sits under "eventid:", which "event:" prefix scans skip.
+func eventIDKey(nodeID, eventID string) []byte {
+	return []byte(fmt.Sprintf("eventid:%d:%s:%s", len(nodeID), nodeID, eventID))
+}
+
+// maxConflictRetries bounds retries when concurrent saves of the same
+// event_id collide in Badger's conflict detection.
+const maxConflictRetries = 3
+
 // SaveEvent persists e. A non-nil error does NOT guarantee the event was not
 // stored: if ctx is cancelled or times out while the write is in flight, the
 // error is ctx.Err() but the write may still complete in the background (see
 // runWithContext). Callers that report failure to a peer (e.g. an Ack with
-// ok=false) must treat it as "unknown, possibly saved"; a retry can store the
-// same event twice. Stats() counts the event once the write actually succeeds.
+// ok=false) must treat it as "unknown, possibly saved". Retrying is safe: an
+// event whose (node_id, event_id) was already saved within the retention
+// window is skipped and reported as success (#452). Events with an empty
+// event_id cannot be deduplicated. Stats() counts the event once the write
+// actually succeeds.
 func (s *Store) SaveEvent(ctx context.Context, e model.Event) error {
+	_, err := s.SaveEventDedup(ctx, e)
+	return err
+}
+
+// SaveEventDedup is SaveEvent that also reports whether e was skipped as a
+// duplicate of an already stored (node_id, event_id) (#457). duplicate is
+// meaningful only when err is nil.
+func (s *Store) SaveEventDedup(ctx context.Context, e model.Event) (duplicate bool, err error) {
 	val, err := json.Marshal(e)
 	if err != nil {
-		return err
+		return false, err
 	}
 	// Key by the collector's own receive time, not e.Timestamp — that field
 	// is agent-supplied and untrusted. Keying by it let a malicious agent
@@ -237,20 +282,57 @@ func (s *Store) SaveEvent(ctx context.Context, e model.Event) error {
 	// The counter is bumped inside fn, right after db.Update succeeds: if ctx
 	// is cancelled while the write is in flight, run returns an error to the
 	// caller but the write still lands, and Stats() must count it (#325).
-	return s.run(ctx, func() error {
+	var dup bool // written in the write goroutine; read only when run returns nil
+	err = s.run(ctx, func() error {
 		if s.beforeUpdateFn != nil {
 			s.beforeUpdateFn()
 		}
-		if err := s.db.Update(func(tx *badger.Txn) error {
+		var idKey []byte
+		if e.EventID != "" {
+			idKey = eventIDKey(e.NodeID, e.EventID)
+		}
+		var duplicate bool
+		update := func(tx *badger.Txn) error {
+			duplicate = false
+			if idKey != nil {
+				_, err := tx.Get(idKey)
+				if err == nil {
+					duplicate = true
+					return nil
+				}
+				if !errors.Is(err, badger.ErrKeyNotFound) {
+					return err
+				}
+				if err := tx.SetEntry(badger.NewEntry(idKey, key).WithTTL(s.retention)); err != nil {
+					return err
+				}
+			}
 			return tx.SetEntry(badger.NewEntry(key, val).WithTTL(s.retention))
-		}); err != nil {
+		}
+		var err error
+		for i := 0; i < maxConflictRetries; i++ {
+			// A concurrent save of the same event_id wins the index write;
+			// retrying then sees it and reports a duplicate.
+			if err = s.db.Update(update); !errors.Is(err, badger.ErrConflict) {
+				break
+			}
+		}
+		if err != nil {
 			return err
+		}
+		if duplicate {
+			dup = true
+			return nil
 		}
 		s.countersMu.Lock()
 		s.counters[e.Type]++
 		s.countersMu.Unlock()
 		return nil
 	})
+	if err != nil {
+		return false, err
+	}
+	return dup, nil
 }
 
 // ListEvents returns up to limit events, newest first.
@@ -258,9 +340,31 @@ func (s *Store) SaveEvent(ctx context.Context, e model.Event) error {
 // the scan for matches stops after maxNodeFilterScan records even if fewer
 // than limit matches were found (#153).
 func (s *Store) ListEvents(ctx context.Context, node string, limit int) ([]model.Event, error) {
-	// Non-nil so callers that JSON-marshal the result (the /api/events
-	// handler) return "[]" rather than "null" when there are no matches.
-	events := make([]model.Event, 0)
+	return s.ListEventsWhere(ctx, nodeMatcher(node), limit)
+}
+
+// ListEventsWhere is ListEvents with an arbitrary node predicate (nil keeps
+// everything). The scan continues until limit matches are found, bounded by
+// maxNodeFilterScan records when keep is non-nil (#324).
+func (s *Store) ListEventsWhere(ctx context.Context, keep func(nodeID string) bool, limit int) ([]model.Event, error) {
+	return scanNewestFirst(ctx, s, "event:", "event", func(e model.Event) string { return e.NodeID }, keep, limit)
+}
+
+// nodeMatcher returns a predicate for a single node ID; nil when node is empty.
+func nodeMatcher(node string) func(string) bool {
+	if node == "" {
+		return nil
+	}
+	return func(id string) bool { return id == node }
+}
+
+// scanNewestFirst walks the keys under prefix newest first, decoding each as T
+// and collecting up to limit records whose node passes keep. With a non-nil
+// keep the scan reads at most maxNodeFilterScan records (#153), so a rarely
+// matching filter cannot force a full walk of the retention window.
+func scanNewestFirst[T any](ctx context.Context, s *Store, prefixStr, label string, nodeOf func(T) string, keep func(string) bool, limit int) ([]T, error) {
+	// Non-nil so callers that JSON-marshal the result return "[]" not "null".
+	out := make([]T, 0)
 	err := s.run(ctx, func() error {
 		return s.db.View(func(tx *badger.Txn) error {
 			opts := badger.DefaultIteratorOptions
@@ -268,25 +372,22 @@ func (s *Store) ListEvents(ctx context.Context, node string, limit int) ([]model
 			it := tx.NewIterator(opts)
 			defer it.Close()
 
-			prefix := []byte("event:")
+			prefix := []byte(prefixStr)
 			it.Seek(append(prefix, 0xFF))
 			scanned := 0
 			skipped := 0
-			for ; it.ValidForPrefix(prefix) && len(events) < limit; it.Next() {
-				// A node filter can match rarely (or never); without a scan cap
-				// this loop would otherwise keep reading until it exhausts the
-				// whole "event:" prefix (#153).
-				if node != "" && scanned >= maxNodeFilterScan {
+			for ; it.ValidForPrefix(prefix) && len(out) < limit; it.Next() {
+				if keep != nil && scanned >= maxNodeFilterScan {
 					break
 				}
 				if err := ctx.Err(); err != nil {
 					return err
 				}
 				scanned++
-				var e model.Event
+				var rec T
 				var decodeErr error
 				if err := it.Item().Value(func(v []byte) error {
-					decodeErr = json.Unmarshal(v, &e)
+					decodeErr = json.Unmarshal(v, &rec)
 					return nil
 				}); err != nil {
 					return err
@@ -295,25 +396,24 @@ func (s *Store) ListEvents(ctx context.Context, node string, limit int) ([]model
 					skipped++
 					continue
 				}
-				if node != "" && e.NodeID != node {
+				if keep != nil && !keep(nodeOf(rec)) {
 					continue
 				}
-				events = append(events, e)
+				out = append(out, rec)
 			}
 			// One warning per call, not per record (#372).
 			if skipped > 0 {
-				slog.Warn("event records could not be decoded and were skipped", "count", skipped)
+				slog.Warn(label+" records could not be decoded and were skipped", "count", skipped)
 			}
 			return nil
 		})
 	})
 	if err != nil {
-		// On ctx expiry the View goroutine may still be appending to events;
-		// do not read it (data race, #351). Only a normal completion
-		// (which happens-before the receive in runWithContext) is safe.
+		// On ctx expiry the View goroutine may still be appending to out;
+		// do not read it (data race, #351).
 		return nil, err
 	}
-	return events, nil
+	return out, nil
 }
 
 // Stats returns event counts per type, from the in-memory counters (#77) —
@@ -347,62 +447,13 @@ func (s *Store) SaveAlert(ctx context.Context, a model.Alert) error {
 // the scan for matches stops after maxNodeFilterScan records even if fewer
 // than limit matches were found (#153).
 func (s *Store) ListAlerts(ctx context.Context, node string, limit int) ([]model.Alert, error) {
-	// Non-nil so callers that JSON-marshal the result (the /api/alerts
-	// handler) return "[]" rather than "null" when there are no matches.
-	alerts := make([]model.Alert, 0)
-	err := s.run(ctx, func() error {
-		return s.db.View(func(tx *badger.Txn) error {
-			opts := badger.DefaultIteratorOptions
-			opts.Reverse = true
-			it := tx.NewIterator(opts)
-			defer it.Close()
+	return s.ListAlertsWhere(ctx, nodeMatcher(node), limit)
+}
 
-			prefix := []byte("alert:")
-			it.Seek(append(prefix, 0xFF))
-			scanned := 0
-			skipped := 0
-			for ; it.ValidForPrefix(prefix) && len(alerts) < limit; it.Next() {
-				// See the matching comment in ListEvents: cap the scan so a
-				// rarely (or never) matching node filter can't force a full
-				// walk of the "alert:" prefix (#153).
-				if node != "" && scanned >= maxNodeFilterScan {
-					break
-				}
-				if err := ctx.Err(); err != nil {
-					return err
-				}
-				scanned++
-				var a model.Alert
-				var decodeErr error
-				if err := it.Item().Value(func(v []byte) error {
-					decodeErr = json.Unmarshal(v, &a)
-					return nil
-				}); err != nil {
-					return err
-				}
-				if decodeErr != nil {
-					skipped++
-					continue
-				}
-				if node != "" && a.NodeID != node {
-					continue
-				}
-				alerts = append(alerts, a)
-			}
-			// One warning per call, not per record (#372).
-			if skipped > 0 {
-				slog.Warn("alert records could not be decoded and were skipped", "count", skipped)
-			}
-			return nil
-		})
-	})
-	if err != nil {
-		// On ctx expiry the View goroutine may still be appending to alerts;
-		// do not read it (data race, #351). Only a normal completion
-		// (which happens-before the receive in runWithContext) is safe.
-		return nil, err
-	}
-	return alerts, nil
+// ListAlertsWhere is ListAlerts with an arbitrary node predicate; see
+// ListEventsWhere (#324).
+func (s *Store) ListAlertsWhere(ctx context.Context, keep func(nodeID string) bool, limit int) ([]model.Alert, error) {
+	return scanNewestFirst(ctx, s, "alert:", "alert", func(a model.Alert) string { return a.NodeID }, keep, limit)
 }
 
 func (s *Store) Close() error {
