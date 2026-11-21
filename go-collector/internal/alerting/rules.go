@@ -32,13 +32,9 @@ func LoadRules(path string) (*RuleSet, error) {
 		return &RuleSet{Rules: []Rule{}}, nil
 	}
 
-	if _, err := os.Stat(path); err != nil {
-		return nil, fmt.Errorf("rules file %q: %w", path, err)
-	}
-
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("rules file %q: %w", path, err)
 	}
 
 	var ruleset RuleSet

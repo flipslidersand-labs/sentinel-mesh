@@ -113,8 +113,7 @@ func TestToFloat64(t *testing.T) {
 		wantErr bool
 	}{
 		{"float64", float64(1.5), 1.5, false},
-		{"int", 7, 7, false},
-		{"negative int", -3, -3, false},
+		{"int is unsupported (JSON yields float64 only)", 7, 0, true},
 		{"numeric string", "3.25", 3.25, false},
 		{"integer string", "42", 42, false},
 		{"non-numeric string", "abc", 0, true},
