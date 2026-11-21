@@ -28,7 +28,7 @@ func testRouter(t *testing.T) (*store.Store, *registry.Registry) {
 
 func doGET(t *testing.T, st *store.Store, reg *registry.Registry, path string, out any) int {
 	t.Helper()
-	r := Router(st, reg, nil, t.TempDir(), nil, "")
+	r := Router(testCfg(st, reg, t.TempDir(), nil, ""))
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -46,7 +46,7 @@ func doGET(t *testing.T, st *store.Store, reg *registry.Registry, path string, o
 // the same category of data /api/stats protects.
 func TestMetrics_RequiresBearerTokenWhenConfigured(t *testing.T) {
 	st, reg := testRouter(t)
-	r := Router(st, reg, nil, t.TempDir(), nil, "s3cr3t")
+	r := Router(testCfg(st, reg, t.TempDir(), nil, "s3cr3t"))
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
@@ -68,7 +68,7 @@ func TestMetrics_RequiresBearerTokenWhenConfigured(t *testing.T) {
 // draw from one failed-auth budget per source (#360), not one each.
 func TestAuthFailBudget_SharedBetweenMetricsAndAPI(t *testing.T) {
 	st, reg := testRouter(t)
-	r := Router(st, reg, nil, t.TempDir(), nil, "s3cr3t")
+	r := Router(testCfg(st, reg, t.TempDir(), nil, "s3cr3t"))
 	get := func(path string) int {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.Header.Set("Authorization", "Bearer wrong")
@@ -100,7 +100,7 @@ func TestAuthFailBudget_SharedBetweenMetricsAndAPI(t *testing.T) {
 // only /api/* and /metrics are gated.
 func TestHealthz_StaysOpenWhenTokenConfigured(t *testing.T) {
 	st, reg := testRouter(t)
-	r := Router(st, reg, nil, t.TempDir(), nil, "s3cr3t")
+	r := Router(testCfg(st, reg, t.TempDir(), nil, "s3cr3t"))
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	w := httptest.NewRecorder()
@@ -249,7 +249,7 @@ func TestAlerts_InvalidLimit(t *testing.T) {
 // client that does events.map(...) on the parsed body would throw on null.
 func TestEvents_EmptyDataset_ReturnsEmptyArrayNotNull(t *testing.T) {
 	st, reg := testRouter(t)
-	r := Router(st, reg, nil, t.TempDir(), nil, "")
+	r := Router(testCfg(st, reg, t.TempDir(), nil, ""))
 	req := httptest.NewRequest(http.MethodGet, "/api/events", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -261,7 +261,7 @@ func TestEvents_EmptyDataset_ReturnsEmptyArrayNotNull(t *testing.T) {
 
 func TestAlerts_EmptyDataset_ReturnsEmptyArrayNotNull(t *testing.T) {
 	st, reg := testRouter(t)
-	r := Router(st, reg, nil, t.TempDir(), nil, "")
+	r := Router(testCfg(st, reg, t.TempDir(), nil, ""))
 	req := httptest.NewRequest(http.MethodGet, "/api/alerts", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -308,7 +308,7 @@ func TestAlerts_RegionFilter(t *testing.T) {
 // Access-Control-Allow-Origin response header.
 func TestRouter_CORS_AllowsConfiguredOrigin(t *testing.T) {
 	st, reg := testRouter(t)
-	r := Router(st, reg, nil, t.TempDir(), []string{"https://ui.example.com"}, "")
+	r := Router(testCfg(st, reg, t.TempDir(), []string{"https://ui.example.com"}, ""))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
 	req.Header.Set("Origin", "https://ui.example.com")
@@ -336,7 +336,7 @@ func TestInternalErrors_DoNotLeakDetails(t *testing.T) {
 			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 			t.Cleanup(func() { slog.SetDefault(prev) })
 
-			r := Router(st, registry.New(), nil, t.TempDir(), nil, "")
+			r := Router(testCfg(st, registry.New(), t.TempDir(), nil, ""))
 			w := httptest.NewRecorder()
 			r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path+"?node=secretq", nil))
 			if w.Code != http.StatusInternalServerError {
@@ -360,4 +360,9 @@ func TestInternalErrors_DoNotLeakDetails(t *testing.T) {
 			}
 		})
 	}
+}
+
+// testCfg builds a RouterConfig backed by a real store and registry.
+func testCfg(st *store.Store, reg *registry.Registry, dir string, cors []string, token string) RouterConfig {
+	return RouterConfig{Events: st, Alerts: st, Stats: st, Nodes: reg, StaticDir: dir, CORSOrigins: cors, APIToken: token}
 }

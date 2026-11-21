@@ -45,7 +45,7 @@ func serve(r *gin.Engine, method, path string, hdr map[string]string) *httptest.
 func TestRouterScaffold_Characterization(t *testing.T) {
 	st, reg := testRouter(t)
 	dir := writeStaticDir(t)
-	r := Router(st, reg, nil, dir, nil, "s3cr3t")
+	r := Router(testCfg(st, reg, dir, nil, "s3cr3t"))
 
 	cases := []struct {
 		name, path string
@@ -79,7 +79,7 @@ func TestRouterScaffold_Characterization(t *testing.T) {
 		t.Errorf("/metrics without token = %d, want 401", w.Code)
 	}
 	// No auth when token empty.
-	open := Router(st, reg, nil, dir, nil, "")
+	open := Router(testCfg(st, reg, dir, nil, ""))
 	if w := serve(open, http.MethodGet, "/api/nodes", nil); w.Code != http.StatusOK {
 		t.Errorf("/api/nodes with empty token = %d, want 200", w.Code)
 	}
@@ -90,7 +90,7 @@ func TestRouterScaffold_CORS_Characterization(t *testing.T) {
 	dir := writeStaticDir(t)
 	const origin = "https://ui.example.com"
 
-	r := Router(st, reg, nil, dir, []string{origin}, "")
+	r := Router(testCfg(st, reg, dir, []string{origin}, ""))
 	w := serve(r, http.MethodGet, "/healthz", map[string]string{"Origin": origin})
 	if got := w.Header().Get("Access-Control-Allow-Origin"); got != origin {
 		t.Errorf("allowed origin ACAO = %q, want %q", got, origin)
@@ -100,7 +100,7 @@ func TestRouterScaffold_CORS_Characterization(t *testing.T) {
 		t.Errorf("disallowed origin ACAO = %q, want empty", got)
 	}
 
-	deny := Router(st, reg, nil, dir, nil, "")
+	deny := Router(testCfg(st, reg, dir, nil, ""))
 	w = serve(deny, http.MethodGet, "/healthz", map[string]string{"Origin": origin})
 	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "" {
 		t.Errorf("no-config ACAO = %q, want empty", got)
