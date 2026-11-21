@@ -209,8 +209,14 @@ func TestServeCmd_HTTPTLSBadFilesFailFast(t *testing.T) {
 	}
 }
 
-// run must return nil promptly once ctx is cancelled, for both modes' normal
-// path (#265). Listeners use port 0 on loopback; the store lives in a tmp dir.
+// run must return nil promptly once ctx is cancelled in normal mode (#265;
+// aggregate mode is not covered here). Listeners use port 0 on loopback; the
+// store lives in a tmp dir.
+//
+// Startup is detected via the "REST API listening" log, which is emitted just
+// before the servers are launched; the ports are :0 so they cannot be dialed,
+// and gRPC logs nothing on listen. A short grace sleep follows, so this does
+// not strictly guarantee the servers were accepting before cancel.
 func TestRun_ReturnsOnContextCancel(t *testing.T) {
 	cmd := serveCmd()
 	if err := cmd.ParseFlags([]string{"--http-auth=disabled", "--grpc-auth=disabled",
@@ -223,8 +229,17 @@ func TestRun_ReturnsOnContextCancel(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- run(ctx, cfg, zap.NewNop()) }()
-	time.Sleep(300 * time.Millisecond)
+	core, logs := observer.New(zapcore.InfoLevel)
+	go func() { done <- run(ctx, cfg, zap.New(core)) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for logs.FilterMessage("REST API listening").Len() == 0 {
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatal("run did not reach REST API startup")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
 	cancel()
 	select {
 	case err := <-done:
