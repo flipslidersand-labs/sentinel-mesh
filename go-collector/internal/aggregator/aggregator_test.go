@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/flipslidersand/sentinel-mesh/internal/model"
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
-	"github.com/flipslidersand/sentinel-mesh/internal/store"
 )
 
 // fakeCollector serves a minimal /api/{nodes,events,alerts} for one region.
-func fakeCollector(t *testing.T, nodes []registry.AgentNode, events []store.Event, alerts []store.Alert) *httptest.Server {
+func fakeCollector(t *testing.T, nodes []registry.AgentNode, events []model.Event, alerts []model.Alert) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/nodes", func(w http.ResponseWriter, _ *http.Request) {
@@ -149,8 +149,8 @@ func TestAggregator_MergeAndReachability(t *testing.T) {
 			{NodeID: "a1", Region: "us-east", Status: "active"},
 			{NodeID: "a2", Region: "us-east", Status: "inactive"},
 		},
-		[]store.Event{{EventID: "e1", NodeID: "a1", Type: "exec"}},
-		[]store.Alert{{AlertID: "al1", NodeID: "a1", Severity: "warning"}},
+		[]model.Event{{EventID: "e1", NodeID: "a1", Type: "exec"}},
+		[]model.Alert{{AlertID: "al1", NodeID: "a1", Severity: "warning"}},
 	)
 
 	// Second upstream points at a closed server → unreachable.
@@ -198,7 +198,7 @@ func TestAggregator_MergeAndReachability(t *testing.T) {
 func TestAggregator_RouterServesMergedData(t *testing.T) {
 	east := fakeCollector(t,
 		[]registry.AgentNode{{NodeID: "a1", Region: "us-east", Status: "active"}},
-		[]store.Event{{EventID: "e1", NodeID: "a1", Type: "exec"}},
+		[]model.Event{{EventID: "e1", NodeID: "a1", Type: "exec"}},
 		nil,
 	)
 	agg := New([]Upstream{{Region: "us-east", URL: east.URL}}, 0, "", nil)
@@ -256,10 +256,10 @@ func TestAggregator_Start(t *testing.T) {
 		_ = json.NewEncoder(w).Encode([]registry.AgentNode{{NodeID: "a1", Region: "us-east", Status: "active"}})
 	})
 	mux.HandleFunc("/api/events", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode([]store.Event{{EventID: "e1", NodeID: "a1", Type: "exec"}})
+		_ = json.NewEncoder(w).Encode([]model.Event{{EventID: "e1", NodeID: "a1", Type: "exec"}})
 	})
 	mux.HandleFunc("/api/alerts", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode([]store.Alert{{AlertID: "al1", NodeID: "a1", Severity: "warning"}})
+		_ = json.NewEncoder(w).Encode([]model.Alert{{AlertID: "al1", NodeID: "a1", Severity: "warning"}})
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -435,22 +435,22 @@ func TestParseUpstreams_InsecureHTTP(t *testing.T) {
 func TestAggregator_RouterEventsAlertsQuery(t *testing.T) {
 	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	east := fakeCollector(t, nil,
-		[]store.Event{
+		[]model.Event{
 			{EventID: "e1", NodeID: "a1", Timestamp: t0.Add(1 * time.Minute)},
 			{EventID: "e3", NodeID: "a2", Timestamp: t0.Add(3 * time.Minute)},
 			{EventID: "e5", NodeID: "a1", Timestamp: t0.Add(5 * time.Minute)},
 		},
-		[]store.Alert{
+		[]model.Alert{
 			{AlertID: "x1", NodeID: "a1", Timestamp: t0.Add(1 * time.Minute)},
 			{AlertID: "x3", NodeID: "a2", Timestamp: t0.Add(3 * time.Minute)},
 		},
 	)
 	west := fakeCollector(t, nil,
-		[]store.Event{
+		[]model.Event{
 			{EventID: "e2", NodeID: "b1", Timestamp: t0.Add(2 * time.Minute)},
 			{EventID: "e4", NodeID: "b1", Timestamp: t0.Add(4 * time.Minute)},
 		},
-		[]store.Alert{{AlertID: "x2", NodeID: "b1", Timestamp: t0.Add(2 * time.Minute)}},
+		[]model.Alert{{AlertID: "x2", NodeID: "b1", Timestamp: t0.Add(2 * time.Minute)}},
 	)
 	agg := New([]Upstream{{Region: "us-east", URL: east.URL}, {Region: "eu-west", URL: west.URL}}, 0, "", nil)
 	agg.PollOnce(context.Background())

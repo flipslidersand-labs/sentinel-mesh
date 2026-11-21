@@ -1,0 +1,28 @@
+// Package model holds the Event/Alert domain types, independent of any
+// persistence implementation. internal/store keeps compatibility aliases.
+package model
+
+import (
+	"encoding/json"
+	"time"
+)
+
+// Event is the normalized event form.
+type Event struct {
+	EventID   string          `json:"event_id"`
+	NodeID    string          `json:"node_id"`
+	Timestamp time.Time       `json:"timestamp"`
+	Type      string          `json:"type"` // "exec" | "tcp" | "file"
+	Payload   json.RawMessage `json:"payload"`
+}
+
+// Alert represents a triggered alert.
+type Alert struct {
+	AlertID   string    `json:"alert_id"`
+	RuleID    string    `json:"rule_id"`
+	NodeID    string    `json:"node_id"`
+	EventID   string    `json:"event_id"`
+	Timestamp time.Time `json:"timestamp"`
+	Message   string    `json:"message"`
+	Severity  string    `json:"severity"`
+}

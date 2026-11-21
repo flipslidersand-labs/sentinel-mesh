@@ -11,11 +11,11 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
-	"github.com/flipslidersand/sentinel-mesh/internal/store"
+	"github.com/flipslidersand/sentinel-mesh/internal/model"
 )
 
-// Alert is an alias for store.Alert for convenience in this package.
-type Alert = store.Alert
+// Alert is an alias for model.Alert for convenience in this package.
+type Alert = model.Alert
 
 // Engine evaluates events against rules and generates alerts.
 type Engine struct {
@@ -67,7 +67,7 @@ func (e *Engine) precompileRegexes() {
 }
 
 // Evaluate checks an event against all rules and returns matching alerts.
-func (e *Engine) Evaluate(event store.Event) []Alert {
+func (e *Engine) Evaluate(event model.Event) []Alert {
 	var alerts []Alert
 
 	for _, rule := range e.rules.Rules {
@@ -99,7 +99,7 @@ func (e *Engine) Evaluate(event store.Event) []Alert {
 }
 
 // matchConditions checks if all conditions match the event payload.
-func (e *Engine) matchConditions(event store.Event, conditions []Condition) bool {
+func (e *Engine) matchConditions(event model.Event, conditions []Condition) bool {
 	if len(conditions) == 0 {
 		return false
 	}

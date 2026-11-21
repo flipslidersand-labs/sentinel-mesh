@@ -7,7 +7,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/flipslidersand/sentinel-mesh/internal/store"
+	"github.com/flipslidersand/sentinel-mesh/internal/model"
 )
 
 func TestEngineEvaluateExecRule(t *testing.T) {
@@ -40,7 +40,7 @@ func TestEngineEvaluateExecRule(t *testing.T) {
 	}
 	raw, _ := json.Marshal(payload)
 
-	event := store.Event{
+	event := model.Event{
 		EventID:   "test-1",
 		NodeID:    "node-1",
 		Timestamp: time.Now().UTC(),
@@ -92,7 +92,7 @@ func TestEngineEvaluateNoMatch(t *testing.T) {
 	}
 	raw, _ := json.Marshal(payload)
 
-	event := store.Event{
+	event := model.Event{
 		EventID:   "test-2",
 		NodeID:    "node-1",
 		Timestamp: time.Now().UTC(),
@@ -135,7 +135,7 @@ func TestEngineEvaluateWildcardEventType(t *testing.T) {
 	}
 	raw, _ := json.Marshal(payload)
 
-	event := store.Event{
+	event := model.Event{
 		EventID:   "test-3",
 		NodeID:    "node-1",
 		Timestamp: time.Now().UTC(),
@@ -178,7 +178,7 @@ func TestEngineNumericComparison(t *testing.T) {
 	}
 	raw, _ := json.Marshal(payload)
 
-	event := store.Event{
+	event := model.Event{
 		EventID:   "test-4",
 		NodeID:    "node-1",
 		Timestamp: time.Now().UTC(),

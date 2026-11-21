@@ -24,8 +24,8 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/flipslidersand/sentinel-mesh/internal/model"
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
-	"github.com/flipslidersand/sentinel-mesh/internal/store"
 )
 
 // maxResponseBytes caps how much of an upstream response fetchJSON will
@@ -98,8 +98,8 @@ type regionState struct {
 	reachable bool
 	lastErr   string
 	nodes     []registry.AgentNode
-	events    []store.Event
-	alerts    []store.Alert
+	events    []model.Event
+	alerts    []model.Alert
 }
 
 // Aggregator polls upstream collectors and caches a merged view.
@@ -282,13 +282,13 @@ func (a *Aggregator) Nodes() []registry.AgentNode {
 }
 
 // Events returns merged events across all reachable regions, newest first.
-func (a *Aggregator) Events() []store.Event { return a.EventsIn("") }
+func (a *Aggregator) Events() []model.Event { return a.EventsIn("") }
 
 // EventsIn is Events restricted to one region (empty = all regions).
-func (a *Aggregator) EventsIn(region string) []store.Event {
+func (a *Aggregator) EventsIn(region string) []model.Event {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	out := make([]store.Event, 0)
+	out := make([]model.Event, 0)
 	for r, s := range a.state {
 		if s.reachable && (region == "" || r == region) {
 			out = append(out, s.events...)
@@ -304,13 +304,13 @@ func (a *Aggregator) EventsIn(region string) []store.Event {
 }
 
 // Alerts returns merged alerts across all reachable regions, newest first.
-func (a *Aggregator) Alerts() []store.Alert { return a.AlertsIn("") }
+func (a *Aggregator) Alerts() []model.Alert { return a.AlertsIn("") }
 
 // AlertsIn is Alerts restricted to one region (empty = all regions).
-func (a *Aggregator) AlertsIn(region string) []store.Alert {
+func (a *Aggregator) AlertsIn(region string) []model.Alert {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	out := make([]store.Alert, 0)
+	out := make([]model.Alert, 0)
 	for r, s := range a.state {
 		if s.reachable && (region == "" || r == region) {
 			out = append(out, s.alerts...)
