@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -413,6 +414,8 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
                 0 if data.len() == core::mem::size_of::<EbpfExecEvent>() => {
                     let raw =
                         unsafe { core::ptr::read_unaligned(data.as_ptr() as *const EbpfExecEvent) };
+                    // Userspace enrichment (#432); falls back to 0 / empty.
+                    let (ppid, cmdline) = read_proc_exec_info(Path::new("/proc"), raw.pid);
                     KernelEvent {
                         event_id: Uuid::new_v4().to_string(),
                         node_id: String::new(),
@@ -420,9 +423,9 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
                         r#type: EventType::Exec as i32,
                         payload: Some(Payload::Exec(ExecEvent {
                             pid: raw.pid,
-                            ppid: 0,
+                            ppid,
                             comm: bytes_to_str(&raw.comm),
-                            cmdline: String::new(),
+                            cmdline,
                             cwd: String::new(),
                             uid: raw.uid,
                         })),
@@ -589,6 +592,49 @@ impl From<&KernelEvent> for MockEventLog {
             },
         }
     }
+}
+
+/// Max bytes of /proc/<pid>/cmdline kept in `ExecEvent.cmdline`.
+#[cfg_attr(not(feature = "ebpf"), allow(dead_code))]
+const CMDLINE_MAX_BYTES: usize = 4096;
+
+/// Extract the parent pid from the contents of /proc/<pid>/status.
+#[cfg_attr(not(feature = "ebpf"), allow(dead_code))]
+fn parse_ppid(status: &str) -> Option<u32> {
+    status
+        .lines()
+        .find_map(|l| l.strip_prefix("PPid:"))
+        .and_then(|v| v.trim().parse().ok())
+}
+
+/// Turn raw /proc/<pid>/cmdline (NUL-separated argv) into a space-joined,
+/// lossy-UTF-8 string, capped at `CMDLINE_MAX_BYTES` bytes.
+#[cfg_attr(not(feature = "ebpf"), allow(dead_code))]
+fn parse_cmdline(raw: &[u8]) -> String {
+    let raw = raw.strip_suffix(&[0]).unwrap_or(raw);
+    let raw = &raw[..raw.len().min(CMDLINE_MAX_BYTES)];
+    let joined: Vec<u8> = raw.iter().map(|&b| if b == 0 { b' ' } else { b }).collect();
+    String::from_utf8_lossy(&joined).into_owned()
+}
+
+/// Read (ppid, cmdline) for `pid` under `proc_root` (normally /proc).
+///
+/// Known limitation: this runs after the kernel event is queued, so a very
+/// short-lived process may already be gone (or unreadable); then ppid is 0
+/// and cmdline is empty. Capturing these in the kernel (CO-RE) would avoid
+/// the race but needs real-hardware verification. The two small std::fs
+/// reads of /proc are cheap and never fail the event.
+#[cfg_attr(not(feature = "ebpf"), allow(dead_code))]
+fn read_proc_exec_info(proc_root: &Path, pid: u32) -> (u32, String) {
+    let dir = proc_root.join(pid.to_string());
+    let ppid = std::fs::read_to_string(dir.join("status"))
+        .ok()
+        .and_then(|s| parse_ppid(&s))
+        .unwrap_or(0);
+    let cmdline = std::fs::read(dir.join("cmdline"))
+        .map(|b| parse_cmdline(&b))
+        .unwrap_or_default();
+    (ppid, cmdline)
 }
 
 #[cfg(test)]
@@ -958,5 +1004,39 @@ mod tests {
         for w in events.windows(2) {
             assert_eq!(pid_of(&w[1]), pid_of(&w[0]) + 1);
         }
+    }
+
+    #[test]
+    fn parse_ppid_cases() {
+        assert_eq!(parse_ppid("Name:\tbash\nPPid:\t41\nUid:\t0\n"), Some(41));
+        assert_eq!(parse_ppid(""), None);
+        assert_eq!(parse_ppid("Name:\tbash\n"), None);
+        assert_eq!(parse_ppid("PPid:\tabc\n"), None);
+    }
+
+    #[test]
+    fn parse_cmdline_cases() {
+        assert_eq!(parse_cmdline(b"/bin/ls\0-l\0/tmp\0"), "/bin/ls -l /tmp");
+        assert_eq!(parse_cmdline(b"/bin/ls"), "/bin/ls");
+        assert_eq!(parse_cmdline(b""), "");
+        assert_eq!(parse_cmdline(b"a\0\xff\0"), "a \u{fffd}");
+        let big = vec![b'x'; CMDLINE_MAX_BYTES + 100];
+        assert_eq!(parse_cmdline(&big).len(), CMDLINE_MAX_BYTES);
+    }
+
+    #[test]
+    fn read_proc_exec_info_fake_proc() {
+        let root = std::env::temp_dir().join(format!("sentinel-proc-test-{}", Uuid::new_v4()));
+        let dir = root.join("1234");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("status"), "Name:\tx\nPPid:\t77\n").unwrap();
+        std::fs::write(dir.join("cmdline"), b"/usr/bin/x\0--flag\0").unwrap();
+        assert_eq!(
+            read_proc_exec_info(&root, 1234),
+            (77, "/usr/bin/x --flag".to_string())
+        );
+        // missing pid falls back without error
+        assert_eq!(read_proc_exec_info(&root, 9999), (0, String::new()));
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }
