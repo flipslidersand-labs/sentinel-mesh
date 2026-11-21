@@ -41,7 +41,7 @@ func newAuthTestStore(t *testing.T) *store.Store {
 func TestCheckAuth_AuthDisabled(t *testing.T) {
 	// Auth disabled: any context (even with no metadata) passes, and no
 	// node_id is resolved.
-	nodeID, err := checkAuth(context.Background(), newAuthTestStore(t), false)
+	nodeID, err := checkAuthLimited(context.Background(), newAuthTestStore(t), false, nil)
 	if err != nil {
 		t.Fatalf("expected no-op pass, got %v", err)
 	}
@@ -51,20 +51,20 @@ func TestCheckAuth_AuthDisabled(t *testing.T) {
 }
 
 func TestCheckAuth_MissingMetadata(t *testing.T) {
-	_, err := checkAuth(context.Background(), newAuthTestStore(t), true)
+	_, err := checkAuthLimited(context.Background(), newAuthTestStore(t), true, nil)
 	assertUnauthenticated(t, err)
 }
 
 func TestCheckAuth_MissingAuthorizationHeader(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.MD{})
-	_, err := checkAuth(ctx, newAuthTestStore(t), true)
+	_, err := checkAuthLimited(ctx, newAuthTestStore(t), true, nil)
 	assertUnauthenticated(t, err)
 }
 
 func TestCheckAuth_WrongScheme(t *testing.T) {
 	md := metadata.Pairs("authorization", "Basic secret")
 	ctx := metadata.NewIncomingContext(context.Background(), md)
-	_, err := checkAuth(ctx, newAuthTestStore(t), true)
+	_, err := checkAuthLimited(ctx, newAuthTestStore(t), true, nil)
 	assertUnauthenticated(t, err)
 }
 
@@ -75,7 +75,7 @@ func TestCheckAuth_UnknownToken(t *testing.T) {
 	if _, err := st.IssueToken(context.Background(), "node-a"); err != nil {
 		t.Fatalf("IssueToken: %v", err)
 	}
-	_, err := checkAuth(ctx, st, true)
+	_, err := checkAuthLimited(ctx, st, true, nil)
 	assertUnauthenticated(t, err)
 }
 
@@ -91,7 +91,7 @@ func TestCheckAuth_RevokedToken(t *testing.T) {
 
 	md := metadata.Pairs("authorization", "Bearer "+token)
 	ctx := metadata.NewIncomingContext(context.Background(), md)
-	_, err = checkAuth(ctx, st, true)
+	_, err = checkAuthLimited(ctx, st, true, nil)
 	assertUnauthenticated(t, err)
 }
 
@@ -104,7 +104,7 @@ func TestCheckAuth_ValidToken_ResolvesNodeID(t *testing.T) {
 
 	md := metadata.Pairs("authorization", "Bearer "+token)
 	ctx := metadata.NewIncomingContext(context.Background(), md)
-	nodeID, err := checkAuth(ctx, st, true)
+	nodeID, err := checkAuthLimited(ctx, st, true, nil)
 	if err != nil {
 		t.Fatalf("expected valid token to pass, got %v", err)
 	}
@@ -794,7 +794,7 @@ func TestCheckAuth_Required_NoTokensIssued_RejectsAll(t *testing.T) {
 		if md != nil {
 			ctx = metadata.NewIncomingContext(ctx, md)
 		}
-		_, err := checkAuth(ctx, st, true)
+		_, err := checkAuthLimited(ctx, st, true, nil)
 		assertUnauthenticated(t, err)
 	}
 }

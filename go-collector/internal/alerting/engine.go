@@ -21,6 +21,9 @@ type Alert = store.Alert
 type Engine struct {
 	rules  *RuleSet
 	logger *zap.Logger
+	// regexes holds regex patterns compiled once in New, keyed by pattern.
+	// It is read-only after New, so concurrent Evaluate calls are safe.
+	regexes map[string]*regexp.Regexp
 }
 
 // New creates a new alerting engine.
@@ -28,9 +31,38 @@ func New(rules *RuleSet, logger *zap.Logger) *Engine {
 	if rules == nil {
 		rules = &RuleSet{Rules: []Rule{}}
 	}
-	return &Engine{
-		rules:  rules,
-		logger: logger,
+	e := &Engine{
+		rules:   rules,
+		logger:  logger,
+		regexes: make(map[string]*regexp.Regexp),
+	}
+	e.precompileRegexes()
+	return e
+}
+
+// precompileRegexes compiles every regex condition once so the Evaluate hot
+// path does not recompile per event. Invalid patterns (normally rejected by
+// RuleSet.Validate) are logged at warn level and never match.
+func (e *Engine) precompileRegexes() {
+	for _, rule := range e.rules.Rules {
+		for _, cond := range rule.Conditions {
+			if cond.Operator != "regex" {
+				continue
+			}
+			if _, done := e.regexes[cond.Value]; done {
+				continue
+			}
+			re, err := regexp.Compile(cond.Value)
+			if err != nil {
+				e.logger.Warn("invalid regex in rule condition; it will never match",
+					zap.String("rule_id", rule.ID),
+					zap.String("pattern", cond.Value),
+					zap.Error(err))
+				e.regexes[cond.Value] = nil
+				continue
+			}
+			e.regexes[cond.Value] = re
+		}
 	}
 }
 
@@ -102,9 +134,16 @@ func (e *Engine) matchCondition(payload map[string]interface{}, cond Condition) 
 		return strings.Contains(valueToString(value), cond.Value)
 
 	case "regex":
-		re, err := regexp.Compile(cond.Value)
-		if err != nil {
-			e.logger.Debug("invalid regex in condition", zap.Error(err))
+		re, ok := e.regexes[cond.Value]
+		if !ok {
+			// Condition not seen at New (e.g. built afterwards): compile on demand.
+			var err error
+			if re, err = regexp.Compile(cond.Value); err != nil {
+				e.logger.Debug("invalid regex in condition", zap.Error(err))
+				return false
+			}
+		}
+		if re == nil {
 			return false
 		}
 		return re.MatchString(valueToString(value))
