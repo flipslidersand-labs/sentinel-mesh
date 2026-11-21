@@ -418,7 +418,7 @@ func runNormal(cfg *serveConfig, logger *zap.Logger) error {
 	}, func(ctx context.Context) error {
 		return receiver.Serve(ctx, receiver.Config{
 			Addr: cfg.grpcAddr, TLSCertFile: grpcTLSCert, TLSKeyFile: grpcTLSKey,
-			AuthEnabled: cfg.grpcAuthEnabled, DefaultRegion: defaultRegion,
+			AuthEnabled: cfg.grpcAuthEnabled, DefaultRegion: defaultRegion, LivenessInterval: heartbeatTimeout / 3,
 		}, receiver.Deps{
 			Store: st, Registry: reg, Engine: engine, Detector: detector, Notifier: notifier,
 			Metrics: metricsProvider, Tracer: tracesProvider.Tracer(), Logger: logger,
