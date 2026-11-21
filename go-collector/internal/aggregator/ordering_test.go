@@ -140,3 +140,39 @@ func TestEvents_DirectFetchFailureFallsBackToCache(t *testing.T) {
 		t.Fatalf("node=n1 = %v, want [c-n1 g-n1]", got)
 	}
 }
+
+// Across regions the head comparison must use the collector receive time, so a
+// region holding fast-clock events does not fill the top of the result (#473).
+func TestEvents_CrossRegionUsesReceivedAt(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	fast := now.Add(time.Hour)
+	srvA := limitAwareCollector(t, []model.Event{
+		{EventID: "a1", NodeID: "fast", Timestamp: fast, ReceivedAt: now.Add(-3 * time.Second)},
+		{EventID: "a2", NodeID: "fast", Timestamp: fast, ReceivedAt: now.Add(-4 * time.Second)},
+		{EventID: "a3", NodeID: "fast", Timestamp: fast, ReceivedAt: now.Add(-5 * time.Second)},
+	})
+	srvB := limitAwareCollector(t, []model.Event{
+		{EventID: "b1", NodeID: "good", Timestamp: now, ReceivedAt: now.Add(-1 * time.Second)},
+		{EventID: "b2", NodeID: "good", Timestamp: now, ReceivedAt: now.Add(-2 * time.Second)},
+	})
+	a := New([]Upstream{{Region: "ra", URL: srvA.URL}, {Region: "rb", URL: srvB.URL}}, 0, "", nil)
+	a.PollOnce(context.Background())
+
+	want := []string{"b1", "b2", "a1"}
+	got := getEventIDs(t, a, "/api/events?limit=3")
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("limit=3 = %v, want %v", got, want)
+	}
+}
+
+// Upstreams that predate received_at omit it; those events fall back to Timestamp.
+func TestEvents_MissingReceivedAtFallsBackToTimestamp(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	srvA := limitAwareCollector(t, []model.Event{{EventID: "old", NodeID: "n", Timestamp: now.Add(-time.Minute)}})
+	srvB := limitAwareCollector(t, []model.Event{{EventID: "new", NodeID: "n", Timestamp: now}})
+	a := New([]Upstream{{Region: "ra", URL: srvA.URL}, {Region: "rb", URL: srvB.URL}}, 0, "", nil)
+	a.PollOnce(context.Background())
+	if got := getEventIDs(t, a, "/api/events?limit=2"); fmt.Sprint(got) != "[new old]" {
+		t.Fatalf("got %v, want [new old]", got)
+	}
+}
