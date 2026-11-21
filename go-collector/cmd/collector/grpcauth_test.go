@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/flipslidersand/sentinel-mesh/internal/httpauth"
+)
 
 func TestParseGRPCAuthMode(t *testing.T) {
 	cases := []struct {
@@ -16,7 +20,7 @@ func TestParseGRPCAuthMode(t *testing.T) {
 		{"none", false, true},
 	}
 	for _, c := range cases {
-		got, err := parseGRPCAuthMode(c.in)
+		got, err := httpauth.ParseMode("grpc-auth", c.in)
 		if (err != nil) != c.wantErr {
 			t.Errorf("parseGRPCAuthMode(%q) err = %v, wantErr %v", c.in, err, c.wantErr)
 			continue
