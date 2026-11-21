@@ -126,6 +126,15 @@ func Name(t pb.EventType) string {
 	return fmt.Sprintf("unknown(%d)", t)
 }
 
+// Names returns the stored names of every known event type (unordered).
+func Names() []string {
+	names := make([]string, 0, len(table))
+	for _, i := range table {
+		names = append(names, i.Name)
+	}
+	return names
+}
+
 // IsValid reports whether name is a known event type name (not "*").
 func IsValid(name string) bool {
 	for _, i := range table {
