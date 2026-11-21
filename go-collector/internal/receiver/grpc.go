@@ -24,6 +24,7 @@ import (
 
 	"github.com/flipslidersand/sentinel-mesh/internal/alerting"
 	"github.com/flipslidersand/sentinel-mesh/internal/anomaly"
+	"github.com/flipslidersand/sentinel-mesh/internal/model"
 	"github.com/flipslidersand/sentinel-mesh/internal/notify"
 	"github.com/flipslidersand/sentinel-mesh/internal/otel"
 	"github.com/flipslidersand/sentinel-mesh/internal/pb"
@@ -118,9 +119,29 @@ func (b *tokenBucket) allow() bool {
 	return true
 }
 
+// EventSaver persists events and the alerts they trigger.
+type EventSaver interface {
+	SaveEvent(ctx context.Context, e model.Event) error
+	SaveAlert(ctx context.Context, a model.Alert) error
+}
+
+// TokenResolver maps a bearer token to the node_id it was issued for.
+type TokenResolver interface {
+	LookupNodeID(ctx context.Context, token string) (nodeID string, ok bool, err error)
+}
+
+// Storage is everything the receiver needs from the store; *store.Store
+// satisfies it.
+type Storage interface {
+	EventSaver
+	TokenResolver
+}
+
+var _ Storage = (*store.Store)(nil)
+
 type server struct {
 	pb.UnimplementedSentinelCollectorServer
-	st            *store.Store
+	st            Storage
 	reg           *registry.Registry
 	engine        *alerting.Engine
 	detector      *anomaly.Detector
@@ -432,7 +453,7 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 
 		s.reg.HeartbeatOrRegister(event.NodeId, peerIP(stream.Context()), s.defaultRegion)
 
-		storedEvent := store.Event{
+		storedEvent := model.Event{
 			EventID:   event.EventId,
 			NodeID:    event.NodeId,
 			Timestamp: time.Unix(0, event.Timestamp).UTC(),
@@ -463,7 +484,7 @@ func rejectEvent(stream pb.SentinelCollector_StreamEventsServer, logFn func()) e
 
 // persistEvent saves the event (bounded by storeOpTimeout) and records the
 // store-failure and event metrics. It reports whether the save succeeded.
-func (s *server) persistEvent(ctx context.Context, ev store.Event) (ok bool) {
+func (s *server) persistEvent(ctx context.Context, ev model.Event) (ok bool) {
 	ok = true
 	saveCtx, saveCancel := context.WithTimeout(ctx, storeOpTimeout)
 	storeErr := s.st.SaveEvent(saveCtx, ev)
@@ -488,7 +509,7 @@ func (s *server) persistEvent(ctx context.Context, ev store.Event) (ok bool) {
 // saveOk is false if any alert failed to save. engine and detector run
 // independently so a nil engine never disables the detector or vice versa
 // (#150).
-func (s *server) evaluateAndNotify(ctx context.Context, ev store.Event) (alerts []alerting.Alert, saveOk bool) {
+func (s *server) evaluateAndNotify(ctx context.Context, ev model.Event) (alerts []alerting.Alert, saveOk bool) {
 	saveOk = true
 	if s.engine == nil && s.detector == nil {
 		return nil, saveOk
@@ -649,7 +670,7 @@ type Config struct {
 // nil handling the RPC handlers already had. Logger must be non-nil
 // (Serve logs unconditionally).
 type Deps struct {
-	Store    *store.Store
+	Store    Storage
 	Registry *registry.Registry
 	Engine   *alerting.Engine
 	Detector *anomaly.Detector
@@ -755,7 +776,7 @@ func authedNodeIDFromContext(ctx context.Context) string {
 //
 // Per-source-IP throttling of failed attempts goes via lim (nil disables it;
 // valid tokens are never throttled).
-func checkAuthLimited(ctx context.Context, st *store.Store, authEnabled bool, lim *authFailLimiter) (nodeID string, err error) {
+func checkAuthLimited(ctx context.Context, st TokenResolver, authEnabled bool, lim *authFailLimiter) (nodeID string, err error) {
 	if !authEnabled {
 		return "", nil
 	}
@@ -805,7 +826,7 @@ func authFailure(ctx context.Context, lim *authFailLimiter) error {
 	return status.Error(codes.Unauthenticated, "invalid token")
 }
 
-func unaryAuthInterceptor(st *store.Store, authEnabled bool, lim *authFailLimiter) grpc.UnaryServerInterceptor {
+func unaryAuthInterceptor(st TokenResolver, authEnabled bool, lim *authFailLimiter) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		nodeID, err := checkAuthLimited(ctx, st, authEnabled, lim)
 		if err != nil {
@@ -826,7 +847,7 @@ type authedServerStream struct {
 
 func (s *authedServerStream) Context() context.Context { return s.ctx }
 
-func streamAuthInterceptor(st *store.Store, authEnabled bool, lim *authFailLimiter) grpc.StreamServerInterceptor {
+func streamAuthInterceptor(st TokenResolver, authEnabled bool, lim *authFailLimiter) grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		nodeID, err := checkAuthLimited(ss.Context(), st, authEnabled, lim)
 		if err != nil {
