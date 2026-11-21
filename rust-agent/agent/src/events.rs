@@ -267,7 +267,7 @@ async fn mock_source_counted(tx: Sender<KernelEvent>, rate: u64, dropped: Arc<At
 
 #[cfg(feature = "ebpf")]
 pub async fn ebpf_source(tx: Sender<KernelEvent>) {
-    use aya::{maps::RingBuf, programs::TracePoint, Bpf};
+    use aya::{maps::RingBuf, programs::TracePoint, Ebpf};
     use std::net::Ipv4Addr;
 
     let bytes = include_bytes_aligned!(concat!(
@@ -275,7 +275,7 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
         "/../target/bpfel-unknown-none/debug/sentinel-agent-ebpf"
     ));
 
-    let mut bpf = match Bpf::load(bytes) {
+    let mut bpf = match Ebpf::load(bytes) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("failed to load eBPF: {e}");
@@ -373,7 +373,10 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
             return;
         }
     };
-    let mut async_fd = match tokio::io::unix::AsyncFd::new(ring_buf) {
+    // SAFETY: the map fd is owned by `bpf`; ring_buf (and so async_fd) borrows
+    // it, so `bpf` cannot drop before async_fd and the fd stays open and
+    // unchanged while the AsyncFd lives. Dropping AsyncFd only deregisters.
+    let mut async_fd = match unsafe { tokio::io::unix::AsyncFd::register(ring_buf) } {
         Ok(fd) => fd,
         Err(e) => {
             eprintln!("error: failed to register EVENTS ring buffer with the async runtime: {e}");
