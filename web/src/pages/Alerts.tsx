@@ -10,8 +10,13 @@ import {
 
 const SEVERITIES = ["info", "warning", "critical"] as const;
 
-function severityClass(severity: string): string {
-  const s = severity.toLowerCase();
+// severity comes from the wire and may be null/undefined/non-string.
+function sevText(severity: unknown): string {
+  return typeof severity === "string" ? severity : "";
+}
+
+function severityClass(severity: unknown): string {
+  const s = sevText(severity).toLowerCase();
   if (s === "critical" || s === "high" || s === "error") return "sev-critical";
   if (s === "warning" || s === "warn" || s === "medium") return "sev-warning";
   return "sev-info";
@@ -36,7 +41,7 @@ export function Alerts() {
     () =>
       asArray<Alert>(data).filter(
         (a) =>
-          (!severity || a.severity.toLowerCase() === severity) &&
+          (!severity || sevText(a.severity).toLowerCase() === severity) &&
           (!ruleQuery || a.rule_id.toLowerCase().includes(ruleQuery)) &&
           withinRange(a.timestamp, rangeMs),
       ),
@@ -101,7 +106,7 @@ export function Alerts() {
                 <td className="mono">{a.node_id}</td>
                 <td>
                   <span className={`badge ${severityClass(a.severity)}`}>
-                    {a.severity}
+                    {sevText(a.severity)}
                   </span>
                 </td>
                 <td>
