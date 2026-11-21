@@ -107,3 +107,36 @@ func TestEvents_NodeAndLargeLimitBypassCache(t *testing.T) {
 		t.Errorf("unknown region = %v, want empty", got)
 	}
 }
+
+// When the direct upstream fetch fails, that region falls back to the cache
+// narrowed by node; a region whose fetch succeeds is served from upstream.
+func TestEvents_DirectFetchFailureFallsBackToCache(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	cached := []model.Event{
+		{EventID: "c-n1", NodeID: "n1", Timestamp: base},
+		{EventID: "c-n2", NodeID: "n2", Timestamp: base.Add(-time.Second)},
+	}
+	failing := false
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/nodes", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) })
+	mux.HandleFunc("/api/alerts", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) })
+	mux.HandleFunc("/api/events", func(w http.ResponseWriter, r *http.Request) {
+		if failing && r.URL.Query().Get("node") != "" {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(cached)
+	})
+	bad := httptest.NewServer(mux)
+	t.Cleanup(bad.Close)
+	good := limitAwareCollector(t, []model.Event{{EventID: "g-n1", NodeID: "n1", Timestamp: base.Add(-time.Minute)}})
+
+	a := New([]Upstream{{Region: "bad", URL: bad.URL}, {Region: "good", URL: good.URL}}, 0, "", nil)
+	a.PollOnce(context.Background())
+	failing = true
+
+	got := getEventIDs(t, a, "/api/events?node=n1")
+	if len(got) != 2 || got[0] != "c-n1" || got[1] != "g-n1" {
+		t.Fatalf("node=n1 = %v, want [c-n1 g-n1]", got)
+	}
+}

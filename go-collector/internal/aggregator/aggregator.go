@@ -284,6 +284,24 @@ func (a *Aggregator) Nodes() []registry.AgentNode {
 // Events returns merged events across all reachable regions, newest first.
 func (a *Aggregator) Events() []model.Event { return a.EventsIn("") }
 
+// cachedEvents returns one reachable region's cached events, narrowed to node
+// when non-empty. It is the fallback when a direct upstream fetch fails.
+func (a *Aggregator) cachedEvents(region, node string) []model.Event {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	s := a.state[region]
+	if s == nil || !s.reachable {
+		return nil
+	}
+	out := make([]model.Event, 0, len(s.events))
+	for _, e := range s.events {
+		if node == "" || e.NodeID == node {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // EventsIn is Events restricted to one region (empty = all regions).
 func (a *Aggregator) EventsIn(region string) []model.Event {
 	a.mu.RLock()
@@ -302,6 +320,11 @@ func (a *Aggregator) EventsIn(region string) []model.Event {
 // agent-supplied Timestamp is only used to interleave the heads of different
 // regions, never to reorder events within one region. Re-sorting the union by
 // Timestamp would let a node with a fast clock pin itself to the top (#78).
+//
+// Known limitation: the cross-region head comparison still uses the
+// agent-reported Timestamp, so a region containing a fast-clock node can still
+// rank above others. Carried over to "the rest of #468" (upstream returns the
+// collector receive time); model.Event has no such field yet.
 func mergeEvents(lists [][]model.Event) []model.Event {
 	total := 0
 	for _, l := range lists {
@@ -351,8 +374,9 @@ func (a *Aggregator) FetchEvents(ctx context.Context, region, node string, limit
 			}
 			var evs []model.Event
 			if err := a.fetchJSON(ctx, u.URL+api.PathEvents+"?"+q.Encode(), &evs); err != nil {
-				a.log.Warn("upstream events fetch failed",
+				a.log.Warn("upstream events fetch failed, falling back to cache",
 					zap.String("region", u.Region), zap.String("url", u.URL), zap.Error(err))
+				lists[i] = a.cachedEvents(u.Region, node)
 				return
 			}
 			lists[i] = evs
