@@ -212,3 +212,33 @@ func TestSaveEventDedup_ReportsDuplicate(t *testing.T) {
 		}
 	}
 }
+
+// #465: alerts are idempotent per (node, event_id, rule).
+func TestSaveAlertDedup(t *testing.T) {
+	st := newInternalStore(t)
+	ctx := context.Background()
+	mk := func(id, node, ev, rule string) model.Alert {
+		return model.Alert{AlertID: id, NodeID: node, EventID: ev, RuleID: rule, Timestamp: time.Now()}
+	}
+	cases := []struct {
+		a   model.Alert
+		dup bool
+	}{
+		{mk("1", "a:b", "c", "r"), false},
+		{mk("2", "a:b", "c", "r"), true},  // same triple
+		{mk("3", "a", "b:c", "r"), false}, // ':' must not collide
+		{mk("4", "a:b", "c", "r2"), false},
+		{mk("5", "a:b", "", "r"), false}, // empty event_id: never deduped
+		{mk("6", "a:b", "", "r"), false},
+	}
+	for i, c := range cases {
+		dup, err := st.SaveAlertDedup(ctx, c.a)
+		if err != nil || dup != c.dup {
+			t.Fatalf("case %d: dup=%v err=%v, want dup=%v", i, dup, err, c.dup)
+		}
+	}
+	got, err := st.ListAlerts(ctx, "", 100)
+	if err != nil || len(got) != 5 {
+		t.Fatalf("stored alerts = %d (err %v), want 5", len(got), err)
+	}
+}

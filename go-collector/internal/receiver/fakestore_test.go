@@ -2,6 +2,7 @@ package receiver
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -22,6 +23,10 @@ type fakeStorage struct {
 	// seen tracks (node, event_id) pairs like the real store: a repeat is
 	// reported as a duplicate and not appended. Empty event_id never dedups.
 	seen map[string]bool
+	// alertErrs makes the next N SaveAlertDedup calls fail; seenAlerts mirrors
+	// the real (node, event_id, rule) alert index (#465).
+	alertErrs  int
+	seenAlerts map[string]bool
 }
 
 func (f *fakeStorage) SaveEventDedup(_ context.Context, e model.Event) (bool, error) {
@@ -46,11 +51,25 @@ func (f *fakeStorage) SaveEvent(ctx context.Context, e model.Event) error {
 	return err
 }
 
-func (f *fakeStorage) SaveAlert(_ context.Context, a model.Alert) error {
+func (f *fakeStorage) SaveAlertDedup(_ context.Context, a model.Alert) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.alertErrs > 0 {
+		f.alertErrs--
+		return false, errors.New("injected alert save failure")
+	}
+	if a.EventID != "" {
+		k := a.NodeID + "\x00" + a.EventID + "\x00" + a.RuleID
+		if f.seenAlerts == nil {
+			f.seenAlerts = map[string]bool{}
+		}
+		if f.seenAlerts[k] {
+			return true, nil
+		}
+		f.seenAlerts[k] = true
+	}
 	f.alerts = append(f.alerts, a)
-	return nil
+	return false, nil
 }
 
 func (f *fakeStorage) LookupNodeID(_ context.Context, token string) (string, bool, error) {
