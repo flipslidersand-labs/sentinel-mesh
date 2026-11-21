@@ -12,7 +12,6 @@ import (
 // DefaultRegion is assigned when an agent registers without a region.
 const DefaultRegion = "default"
 
-// AgentNode represents a registered eBPF agent.
 // StatusActive is the AgentNode.Status of a node that is currently reporting.
 const StatusActive = "active"
 
@@ -27,6 +26,7 @@ func CountActive(nodes []AgentNode) int {
 	return n
 }
 
+// AgentNode represents a registered eBPF agent.
 type AgentNode struct {
 	NodeID     string    `json:"node_id"`
 	Hostname   string    `json:"hostname"`
