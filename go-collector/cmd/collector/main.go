@@ -320,7 +320,10 @@ because the bearer token would otherwise cross the network in plaintext.`,
 			}
 
 			// REST API in background, tied to ctx for graceful shutdown (#117).
-			router := exporter.Router(st, reg, detector, staticDir, corsOrigins, apiToken)
+			router := exporter.Router(exporter.RouterConfig{
+				Events: st, Alerts: st, Stats: st, Nodes: reg, Detector: detector,
+				StaticDir: staticDir, CORSOrigins: corsOrigins, APIToken: apiToken,
+			})
 			httpServer := newHTTPServer(httpAddr, router)
 
 			// gRPC server (blocking, but ctx-aware so SIGINT/SIGTERM gracefully

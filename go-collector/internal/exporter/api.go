@@ -1,6 +1,7 @@
 package exporter
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/flipslidersand/sentinel-mesh/internal/anomaly"
 	"github.com/flipslidersand/sentinel-mesh/internal/httpauth"
 	"github.com/flipslidersand/sentinel-mesh/internal/httpserver"
+	"github.com/flipslidersand/sentinel-mesh/internal/model"
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
 	"github.com/flipslidersand/sentinel-mesh/internal/store"
 )
@@ -28,7 +30,7 @@ func parseLimit(c *gin.Context, key string, def int) (limit int, ok bool) {
 }
 
 // regionNodeSet returns the set of node IDs registered in the given region.
-func regionNodeSet(reg *registry.Registry, region string) map[string]struct{} {
+func regionNodeSet(reg NodeLister, region string) map[string]struct{} {
 	nodes := reg.ListByRegion(region)
 	set := make(map[string]struct{}, len(nodes))
 	for _, n := range nodes {
@@ -44,14 +46,58 @@ type regionSummary struct {
 	ActiveCount int    `json:"active_count"`
 }
 
-// Router builds the gin HTTP router with REST endpoints and static UI.
-// staticDir must be an absolute path or relative to the process CWD.
-// corsOrigins restricts cross-origin access; when empty, no cross-origin
+// EventLister lists stored events. *store.Store satisfies it.
+type EventLister interface {
+	ListEvents(ctx context.Context, node string, limit int) ([]model.Event, error)
+}
+
+// AlertLister lists stored alerts. *store.Store satisfies it.
+type AlertLister interface {
+	ListAlerts(ctx context.Context, node string, limit int) ([]model.Alert, error)
+}
+
+// StatsProvider returns event counts. *store.Store satisfies it.
+type StatsProvider interface {
+	Stats() (map[string]int, error)
+}
+
+// NodeLister reads the node registry. *registry.Registry satisfies it.
+type NodeLister interface {
+	List() []registry.AgentNode
+	ListByRegion(region string) []registry.AgentNode
+	Regions() []string
+}
+
+var (
+	_ EventLister   = (*store.Store)(nil)
+	_ AlertLister   = (*store.Store)(nil)
+	_ StatsProvider = (*store.Store)(nil)
+	_ NodeLister    = (*registry.Registry)(nil)
+)
+
+// RouterConfig carries the dependencies and options for Router.
+//
+// StaticDir must be an absolute path or relative to the process CWD.
+// CORSOrigins restricts cross-origin access; when empty, no cross-origin
 // requests are allowed (the UI is served same-origin, so this is the safe
-// default). apiToken, when non-empty, gates /api/* and /metrics behind
+// default). APIToken, when non-empty, gates /api/* and /metrics behind
 // bearer auth (/healthz stays open for unauthenticated liveness probes).
-func Router(st *store.Store, reg *registry.Registry, detector *anomaly.Detector, staticDir string, corsOrigins []string, apiToken string) *gin.Engine {
-	r := httpserver.NewBaseRouter(staticDir, corsOrigins, gin.H{"status": "ok"})
+// Detector may be nil.
+type RouterConfig struct {
+	Events      EventLister
+	Alerts      AlertLister
+	Stats       StatsProvider
+	Nodes       NodeLister
+	Detector    *anomaly.Detector
+	StaticDir   string
+	CORSOrigins []string
+	APIToken    string
+}
+
+// Router builds the gin HTTP router with REST endpoints and static UI.
+func Router(cfg RouterConfig) *gin.Engine {
+	reg, detector := cfg.Nodes, cfg.Detector
+	r := httpserver.NewBaseRouter(cfg.StaticDir, cfg.CORSOrigins, gin.H{"status": "ok"})
 
 	// Gated behind the same bearer auth as /api/* (#177): the exposed
 	// Prometheus counters carry node/rule/severity labels (internal/otel),
@@ -59,7 +105,7 @@ func Router(st *store.Store, reg *registry.Registry, detector *anomaly.Detector,
 	// outside the auth group let it bypass that protection entirely.
 	// One middleware instance so /metrics and /api/* share a single
 	// failed-auth budget per source (#360).
-	auth := httpauth.BearerAuth(apiToken)
+	auth := httpauth.BearerAuth(cfg.APIToken)
 	r.GET("/metrics", auth, gin.WrapH(promhttp.Handler()))
 
 	api := r.Group("/api", auth)
@@ -69,7 +115,7 @@ func Router(st *store.Store, reg *registry.Registry, detector *anomaly.Detector,
 			if !ok {
 				return
 			}
-			events, err := st.ListEvents(c.Request.Context(), c.Query("node"), limit)
+			events, err := cfg.Events.ListEvents(c.Request.Context(), c.Query("node"), limit)
 			if err != nil {
 				internalError(c, err)
 				return
@@ -78,7 +124,7 @@ func Router(st *store.Store, reg *registry.Registry, detector *anomaly.Detector,
 			// Applied post-fetch (region→node mapping lives in the registry).
 			if region := c.Query("region"); region != "" {
 				set := regionNodeSet(reg, region)
-				filtered := make([]store.Event, 0, len(events))
+				filtered := make([]model.Event, 0, len(events))
 				for _, e := range events {
 					if _, ok := set[e.NodeID]; ok {
 						filtered = append(filtered, e)
@@ -118,7 +164,7 @@ func Router(st *store.Store, reg *registry.Registry, detector *anomaly.Detector,
 		})
 
 		api.GET("/stats", func(c *gin.Context) {
-			counts, err := st.Stats()
+			counts, err := cfg.Stats.Stats()
 			if err != nil {
 				internalError(c, err)
 				return
@@ -131,7 +177,7 @@ func Router(st *store.Store, reg *registry.Registry, detector *anomaly.Detector,
 			if !ok {
 				return
 			}
-			alerts, err := st.ListAlerts(c.Request.Context(), c.Query("node"), limit)
+			alerts, err := cfg.Alerts.ListAlerts(c.Request.Context(), c.Query("node"), limit)
 			if err != nil {
 				internalError(c, err)
 				return
@@ -139,7 +185,7 @@ func Router(st *store.Store, reg *registry.Registry, detector *anomaly.Detector,
 			// Optional region filter (applied post-fetch, same as /api/events).
 			if region := c.Query("region"); region != "" {
 				set := regionNodeSet(reg, region)
-				filtered := make([]store.Alert, 0, len(alerts))
+				filtered := make([]model.Alert, 0, len(alerts))
 				for _, a := range alerts {
 					if _, ok := set[a.NodeID]; ok {
 						filtered = append(filtered, a)
