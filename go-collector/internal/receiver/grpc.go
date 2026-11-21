@@ -250,6 +250,11 @@ func recvOrRevoked(stream pb.SentinelCollector_StreamEventsServer, revoked <-cha
 	if revoked == nil {
 		return stream.Recv()
 	}
+	// A closed revoked channel must win over a Recv that is ready at the same
+	// time (select picks randomly), so check it before and after.
+	if isClosed(revoked) {
+		return nil, errTokenRevoked
+	}
 	type result struct {
 		ev  *pb.KernelEvent
 		err error
@@ -261,9 +266,21 @@ func recvOrRevoked(stream pb.SentinelCollector_StreamEventsServer, revoked <-cha
 	}()
 	select {
 	case r := <-ch:
+		if isClosed(revoked) {
+			return nil, errTokenRevoked
+		}
 		return r.ev, r.err
 	case <-revoked:
 		return nil, errTokenRevoked
+	}
+}
+
+func isClosed(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
 	}
 }
 

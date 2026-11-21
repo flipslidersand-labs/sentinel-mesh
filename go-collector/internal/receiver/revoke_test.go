@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/flipslidersand/sentinel-mesh/internal/pb"
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
 )
 
@@ -130,4 +131,55 @@ func TestStreamEvents_TransientLookupErrorKeepsStream(t *testing.T) {
 		t.Fatal("stream not closed after revoke")
 	}
 	cancel()
+}
+
+// busyStream always has an event ready, like an agent streaming flat out.
+type busyStream struct {
+	fakeStream
+	ctx context.Context
+}
+
+func (b *busyStream) Recv() (*pb.KernelEvent, error) {
+	return &pb.KernelEvent{NodeId: "node-1", Type: pb.EventType_EXEC, Timestamp: time.Now().UnixNano()}, nil
+}
+func (b *busyStream) Context() context.Context { return b.ctx }
+
+// A closed revoked channel must win over a ready Recv every time, not only
+// when select happens to pick it.
+func TestRecvOrRevoked_ClosedRevokedWinsOverReadyRecv(t *testing.T) {
+	revoked := make(chan struct{})
+	close(revoked)
+	stream := &busyStream{ctx: context.Background()}
+	for i := 0; i < 200; i++ {
+		if _, err := recvOrRevoked(stream, revoked); status.Code(err) != codes.Unauthenticated {
+			t.Fatalf("iteration %d: err = %v, want Unauthenticated", i, err)
+		}
+	}
+}
+
+// Revoking while events are flowing closes the stream within about a tick.
+func TestStreamEvents_RevokeWhileEventsFlowing(t *testing.T) {
+	const interval = 20 * time.Millisecond
+	st := &switchStore{node: "node-1"}
+	s := &server{st: st, reg: registry.New(), log: zap.NewNop(), livenessInterval: interval}
+	idle, cancel := newAuthedIdleStream(t, "node-1")
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- s.StreamEvents(&busyStream{ctx: idle.ctx}) }()
+
+	time.Sleep(3 * interval)
+	select {
+	case err := <-done:
+		t.Fatalf("stream closed while token valid: %v", err)
+	default:
+	}
+	st.set(true, nil)
+	select {
+	case err := <-done:
+		if status.Code(err) != codes.Unauthenticated {
+			t.Fatalf("err = %v, want Unauthenticated", err)
+		}
+	case <-time.After(2 * time.Second): // generous: bound is one tick, slack is for CI load
+		t.Fatal("busy stream not closed after revoke")
+	}
 }
