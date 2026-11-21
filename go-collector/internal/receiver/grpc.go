@@ -24,6 +24,7 @@ import (
 
 	"github.com/flipslidersand/sentinel-mesh/internal/alerting"
 	"github.com/flipslidersand/sentinel-mesh/internal/anomaly"
+	"github.com/flipslidersand/sentinel-mesh/internal/eventtype"
 	"github.com/flipslidersand/sentinel-mesh/internal/model"
 	"github.com/flipslidersand/sentinel-mesh/internal/notify"
 	"github.com/flipslidersand/sentinel-mesh/internal/otel"
@@ -564,67 +565,14 @@ func (s *server) evaluateAndNotify(ctx context.Context, ev model.Event) (alerts 
 }
 
 func (s *server) eventTypeName(e *pb.KernelEvent) string {
-	switch e.Type {
-	case pb.EventType_EXEC:
-		return "exec"
-	case pb.EventType_TCP:
-		return "tcp"
-	case pb.EventType_FILE:
-		return "file"
-	default:
-		return fmt.Sprintf("unknown(%d)", e.Type)
-	}
-}
-
-// The generated pb structs tag every field `omitempty`, so json.Marshal drops
-// numeric zeros (uid=0, ports, ret=0) and `uid eq 0` rules never fire (#249).
-// These mirror them with identical keys/order/types but no omitempty on
-// numbers. String fields keep omitempty to preserve the existing payload.
-type execPayload struct {
-	Pid     uint32 `json:"pid"`
-	Ppid    uint32 `json:"ppid"`
-	Comm    string `json:"comm,omitempty"`
-	Cmdline string `json:"cmdline,omitempty"`
-	Cwd     string `json:"cwd,omitempty"`
-	Uid     uint32 `json:"uid"`
-}
-
-type tcpPayload struct {
-	Pid       uint32 `json:"pid"`
-	Comm      string `json:"comm,omitempty"`
-	SrcIp     string `json:"src_ip,omitempty"`
-	SrcPort   uint32 `json:"src_port"`
-	DstIp     string `json:"dst_ip,omitempty"`
-	DstPort   uint32 `json:"dst_port"`
-	Direction string `json:"direction,omitempty"`
-}
-
-type filePayload struct {
-	Pid  uint32 `json:"pid"`
-	Comm string `json:"comm,omitempty"`
-	Path string `json:"path,omitempty"`
-	Op   string `json:"op,omitempty"`
-	Ret  int32  `json:"ret"`
+	return eventtype.Name(e.Type)
 }
 
 func (s *server) eventPayload(e *pb.KernelEvent) json.RawMessage {
 	var payload any
-
-	switch e.Type {
-	case pb.EventType_EXEC:
-		if ex := e.GetExec(); ex != nil {
-			payload = execPayload{ex.Pid, ex.Ppid, ex.Comm, ex.Cmdline, ex.Cwd, ex.Uid}
-		}
-	case pb.EventType_TCP:
-		if t := e.GetTcp(); t != nil {
-			payload = tcpPayload{t.Pid, t.Comm, t.SrcIp, t.SrcPort, t.DstIp, t.DstPort, t.Direction}
-		}
-	case pb.EventType_FILE:
-		if f := e.GetFile(); f != nil {
-			payload = filePayload{f.Pid, f.Comm, f.Path, f.Op, f.Ret}
-		}
+	if info, ok := eventtype.Lookup(e.Type); ok {
+		payload = info.Payload(e)
 	}
-
 	raw, _ := json.Marshal(payload)
 	return raw
 }

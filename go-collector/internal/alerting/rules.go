@@ -7,15 +7,12 @@ import (
 	"strconv"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/flipslidersand/sentinel-mesh/internal/eventtype"
 )
 
-// validEventTypes is the set of event types a Rule may match against.
-var validEventTypes = map[string]bool{
-	"exec": true,
-	"tcp":  true,
-	"file": true,
-	"*":    true,
-}
+// validEventType reports whether t is an event type a Rule may match against.
+func validEventType(t string) bool { return t == eventtype.Any || eventtype.IsValid(t) }
 
 // validOperators is the set of operators a Condition may use.
 var validOperators = map[string]bool{
@@ -68,7 +65,7 @@ func (rs *RuleSet) Validate() error {
 		}
 		seenIDs[rule.ID] = true
 
-		if !validEventTypes[rule.EventType] {
+		if !validEventType(rule.EventType) {
 			return fmt.Errorf("rule[%d] (id=%q): unknown event_type %q", i, rule.ID, rule.EventType)
 		}
 
