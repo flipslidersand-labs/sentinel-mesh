@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **rust-agent (eBPF, #369):** `tcp_connect` now checks `skc_family` and skips non-IPv4 sockets, so IPv6 connections are no longer recorded with bogus IPv4 addresses (IPv6 is not yet supported). Known limitation: dual-stack IPv6 sockets connecting to v4-mapped addresses are also skipped (tracked in #429).
 
 ### Changed
+- **go-collector (#469):** anomaly detector keeps a fixed ring of 1-second counters per key (about 1.2KB for the default 5m window) instead of one timestamp per event; window counts now have 1-second precision, and maxDuration is computed once in New.
 
 - **api/aggregator/exporter (#357):** route paths (`/api/nodes` etc.) and the region roll-up type now live in the new `internal/api` package, with `registry.StatusActive` / `registry.CountActive`, shared by the exporter and the aggregator; a contract test polls the real exporter router. No change to the REST responses.
 - **BREAKING (rust-agent, #420):** the agent now refuses to start when `--grpc-token`/`$SENTINEL_API_TOKEN` is set but the collector is plaintext (`http://`) and not loopback (127.0.0.0/8, `::1`, `localhost`); it was a warning before. Use an `https://` collector, or pass the new `--allow-insecure-token` to keep the old behavior.
