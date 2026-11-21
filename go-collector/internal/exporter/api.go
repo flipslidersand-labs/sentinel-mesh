@@ -9,6 +9,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/flipslidersand/sentinel-mesh/internal/anomaly"
+	"github.com/flipslidersand/sentinel-mesh/internal/api"
 	"github.com/flipslidersand/sentinel-mesh/internal/httpauth"
 	"github.com/flipslidersand/sentinel-mesh/internal/httpserver"
 	"github.com/flipslidersand/sentinel-mesh/internal/model"
@@ -37,13 +38,6 @@ func regionNodeSet(reg NodeLister, region string) map[string]struct{} {
 		set[n.NodeID] = struct{}{}
 	}
 	return set
-}
-
-// regionSummary is the per-region roll-up returned by GET /api/regions.
-type regionSummary struct {
-	Region      string `json:"region"`
-	NodeCount   int    `json:"node_count"`
-	ActiveCount int    `json:"active_count"`
 }
 
 // EventLister lists stored events. *store.Store satisfies it.
@@ -108,9 +102,9 @@ func Router(cfg RouterConfig) *gin.Engine {
 	auth := httpauth.BearerAuth(cfg.APIToken)
 	r.GET("/metrics", auth, gin.WrapH(promhttp.Handler()))
 
-	api := r.Group("/api", auth)
+	rest := r.Group("", auth)
 	{
-		api.GET("/events", func(c *gin.Context) {
+		rest.GET(api.PathEvents, func(c *gin.Context) {
 			limit, ok := parseLimit(c, "limit", 100)
 			if !ok {
 				return
@@ -135,7 +129,7 @@ func Router(cfg RouterConfig) *gin.Engine {
 			c.JSON(http.StatusOK, events)
 		})
 
-		api.GET("/nodes", func(c *gin.Context) {
+		rest.GET(api.PathNodes, func(c *gin.Context) {
 			if region := c.Query("region"); region != "" {
 				c.JSON(http.StatusOK, reg.ListByRegion(region))
 				return
@@ -143,27 +137,21 @@ func Router(cfg RouterConfig) *gin.Engine {
 			c.JSON(http.StatusOK, reg.List())
 		})
 
-		api.GET("/regions", func(c *gin.Context) {
+		rest.GET(api.PathRegions, func(c *gin.Context) {
 			regions := reg.Regions()
-			out := make([]regionSummary, 0, len(regions))
+			out := make([]api.RegionSummary, 0, len(regions))
 			for _, region := range regions {
 				nodes := reg.ListByRegion(region)
-				active := 0
-				for _, n := range nodes {
-					if n.Status == "active" {
-						active++
-					}
-				}
-				out = append(out, regionSummary{
+				out = append(out, api.RegionSummary{
 					Region:      region,
 					NodeCount:   len(nodes),
-					ActiveCount: active,
+					ActiveCount: registry.CountActive(nodes),
 				})
 			}
 			c.JSON(http.StatusOK, out)
 		})
 
-		api.GET("/stats", func(c *gin.Context) {
+		rest.GET("/api/stats", func(c *gin.Context) {
 			counts, err := cfg.Stats.Stats()
 			if err != nil {
 				internalError(c, err)
@@ -172,7 +160,7 @@ func Router(cfg RouterConfig) *gin.Engine {
 			c.JSON(http.StatusOK, counts)
 		})
 
-		api.GET("/alerts", func(c *gin.Context) {
+		rest.GET(api.PathAlerts, func(c *gin.Context) {
 			limit, ok := parseLimit(c, "limit", 100)
 			if !ok {
 				return
@@ -196,7 +184,7 @@ func Router(cfg RouterConfig) *gin.Engine {
 			c.JSON(http.StatusOK, alerts)
 		})
 
-		api.GET("/stats/windows", func(c *gin.Context) {
+		rest.GET("/api/stats/windows", func(c *gin.Context) {
 			if detector == nil {
 				c.JSON(http.StatusOK, gin.H{})
 				return

@@ -5,6 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/flipslidersand/sentinel-mesh/internal/api"
 	"github.com/flipslidersand/sentinel-mesh/internal/httpauth"
 	"github.com/flipslidersand/sentinel-mesh/internal/httpserver"
 	"github.com/flipslidersand/sentinel-mesh/internal/model"
@@ -21,9 +22,9 @@ const defaultLimit = 100
 func Router(a *Aggregator, staticDir string, corsOrigins []string, apiToken string) *gin.Engine {
 	r := httpserver.NewBaseRouter(staticDir, corsOrigins, gin.H{"status": "ok", "mode": "aggregator"})
 
-	api := r.Group("/api", httpauth.BearerAuth(apiToken))
+	rest := r.Group("", httpauth.BearerAuth(apiToken))
 	{
-		api.GET("/nodes", func(c *gin.Context) {
+		rest.GET(api.PathNodes, func(c *gin.Context) {
 			nodes := a.Nodes()
 			if region := c.Query("region"); region != "" {
 				filtered := nodes[:0:0]
@@ -37,7 +38,7 @@ func Router(a *Aggregator, staticDir string, corsOrigins []string, apiToken stri
 			c.JSON(http.StatusOK, nodes)
 		})
 
-		api.GET("/events", func(c *gin.Context) {
+		rest.GET(api.PathEvents, func(c *gin.Context) {
 			limit, ok := httpserver.ParseLimit(c, "limit", defaultLimit)
 			if !ok {
 				return
@@ -56,7 +57,7 @@ func Router(a *Aggregator, staticDir string, corsOrigins []string, apiToken stri
 			c.JSON(http.StatusOK, out)
 		})
 
-		api.GET("/alerts", func(c *gin.Context) {
+		rest.GET(api.PathAlerts, func(c *gin.Context) {
 			limit, ok := httpserver.ParseLimit(c, "limit", defaultLimit)
 			if !ok {
 				return
@@ -75,7 +76,7 @@ func Router(a *Aggregator, staticDir string, corsOrigins []string, apiToken stri
 			c.JSON(http.StatusOK, out)
 		})
 
-		api.GET("/regions", func(c *gin.Context) {
+		rest.GET(api.PathRegions, func(c *gin.Context) {
 			c.JSON(http.StatusOK, a.Regions())
 		})
 	}
