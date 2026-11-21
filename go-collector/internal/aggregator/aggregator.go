@@ -323,7 +323,7 @@ func (a *Aggregator) EventsIn(region string) []model.Event {
 //
 // Known limitation: the cross-region head comparison still uses the
 // agent-reported Timestamp, so a region containing a fast-clock node can still
-// rank above others. Carried over to "the rest of #468" (upstream returns the
+// rank above others. Carried over to #473 (upstream returns the
 // collector receive time); model.Event has no such field yet.
 func mergeEvents(lists [][]model.Event) []model.Event {
 	total := 0
