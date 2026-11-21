@@ -52,7 +52,10 @@ type Store struct {
 	// sem bounds how many run goroutines may exist at once. runWithContext
 	// leaves fn running after ctx is done, so without a cap a stalled disk
 	// plus repeated timeouts piles up goroutines without limit (#452).
-	sem chan struct{}
+	// Writes and reads have separate slots so that reads stuck on a slow
+	// disk cannot stop event ingestion (#466).
+	sem     chan struct{}
+	readSem chan struct{}
 
 	// countersMu/counters back Stats(): an in-memory per-type count,
 	// incremented in SaveEvent (after a successful write) and seeded once at startup by loadCounters,
@@ -78,6 +81,9 @@ type Store struct {
 	// beforeUpdateFn is a test seam run inside SaveEvent's background write
 	// just before db.Update; nil in production.
 	beforeUpdateFn func()
+	// beforeViewFn is a test seam run inside scanNewestFirst's background read
+	// just before db.View; nil in production.
+	beforeViewFn func()
 
 	gcStop chan struct{}
 	gcDone chan struct{}
@@ -94,6 +100,7 @@ func New(dir string) (*Store, error) {
 		retention: DefaultRetention,
 		counters:  map[string]int{"exec": 0, "tcp": 0, "file": 0},
 		sem:       make(chan struct{}, maxInflight),
+		readSem:   make(chan struct{}, maxReadInflight),
 		gcStop:    make(chan struct{}),
 		gcDone:    make(chan struct{}),
 	}
@@ -192,27 +199,41 @@ func runWithContext(ctx context.Context, fn func() error) error {
 	}
 }
 
-// maxInflight caps concurrent run goroutines, including ones still finishing
-// in the background after their caller's ctx expired (#452).
-const maxInflight = 256
+// maxInflight caps concurrent write goroutines (run), including ones still
+// finishing in the background after their caller's ctx expired (#452).
+// maxReadInflight is the separate cap for reads (runRead, #466).
+const (
+	maxInflight     = 256
+	maxReadInflight = 64
+)
 
 // ErrBusy is returned without touching the db when maxInflight operations
 // are already in flight (typically writes stuck behind a stalled disk).
 var ErrBusy = errors.New("store: too many operations in flight")
 
-// run is runWithContext, tracked so Close waits for the goroutine fn runs on.
-// fn must not start a db transaction once ctx is done. If the in-flight limit
-// is reached, run fails fast with ErrBusy instead of queueing.
+// run is runWithContext for writes, tracked so Close waits for the goroutine
+// fn runs on. fn must not start a db transaction once ctx is done. If the
+// write in-flight limit is reached, run fails fast with ErrBusy instead of
+// queueing.
 func (s *Store) run(ctx context.Context, fn func() error) error {
+	return s.runOn(ctx, s.sem, fn)
+}
+
+// runRead is run for read-only fn, limited by its own slots (#466).
+func (s *Store) runRead(ctx context.Context, fn func() error) error {
+	return s.runOn(ctx, s.readSem, fn)
+}
+
+func (s *Store) runOn(ctx context.Context, sem chan struct{}, fn func() error) error {
 	select {
-	case s.sem <- struct{}{}:
+	case sem <- struct{}{}:
 	default:
 		return ErrBusy
 	}
 	s.inflight.Add(1)
 	return runWithContext(ctx, func() error {
 		defer func() {
-			<-s.sem
+			<-sem
 			s.inflight.Done()
 		}()
 		if err := ctx.Err(); err != nil {
@@ -302,6 +323,14 @@ func (s *Store) SaveEvent(ctx context.Context, e model.Event) error {
 		}
 		var err error
 		for i := 0; i < maxConflictRetries; i++ {
+			// Do not retry a conflict once the caller gave up, so the slot is
+			// freed. The first attempt still runs: a write already handed to
+			// fn lands even if ctx is cancelled now (#325).
+			if i > 0 {
+				if err = ctx.Err(); err != nil {
+					break
+				}
+			}
 			// A concurrent save of the same event_id wins the index write;
 			// retrying then sees it and reports a duplicate.
 			if err = s.db.Update(update); !errors.Is(err, badger.ErrConflict) {
@@ -351,7 +380,10 @@ func nodeMatcher(node string) func(string) bool {
 func scanNewestFirst[T any](ctx context.Context, s *Store, prefixStr, label string, nodeOf func(T) string, keep func(string) bool, limit int) ([]T, error) {
 	// Non-nil so callers that JSON-marshal the result return "[]" not "null".
 	out := make([]T, 0)
-	err := s.run(ctx, func() error {
+	err := s.runRead(ctx, func() error {
+		if s.beforeViewFn != nil {
+			s.beforeViewFn()
+		}
 		return s.db.View(func(tx *badger.Txn) error {
 			opts := badger.DefaultIteratorOptions
 			opts.Reverse = true

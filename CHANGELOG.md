@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **store (#452):** `SaveEvent` is now idempotent per `(node_id, event_id)` within the retention window, so resending an event after a timed-out Ack no longer stores it twice (events with an empty `event_id` are not deduplicated). Store operations are capped at 256 in flight, including writes still finishing after their caller timed out; beyond that they fail fast with `store.ErrBusy` (Ack `ok=false`) instead of piling up goroutines.
+- **store (#466):** Reads (`ListEvents`/`ListAlerts`/token reads) now have their own in-flight cap (64), separate from writes (256), so reads stuck on a slow disk can no longer make `SaveEvent` fail with `ErrBusy` and stop ingestion. A conflicting `SaveEvent` no longer retries after its caller's context is done.
 - **rust-agent (eBPF, #347):** EXEC events are now emitted from `sched/sched_process_exec` (successful execs only), so `comm` is the executed binary's name instead of the caller's (e.g. `curl`, not `bash`). Rules matching on `comm` (e.g. `bash_execution`) now fire when bash itself is executed, not for every child it spawns.
 - **notify (#319):** the per-(rule, node) cooldown map now prunes expired keys, and the cooldown is released when every notifier fails so alerts are retried instead of being silenced for a full cooldown.
 - **rust-agent (eBPF, #373):** FILE events are now emitted from `sys_exit_openat`, so `ret` carries the real result (negative errno for failed opens) instead of always 0.
