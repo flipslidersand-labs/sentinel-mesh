@@ -58,7 +58,7 @@ fn check_token_transport(collector: &str, has_token: bool, allow_insecure: bool)
         return Ok(());
     }
     let rest = collector.split_once("://").map_or(collector, |(_, r)| r);
-    let authority = rest.split(['/', '?']).next().unwrap_or("");
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
     let hostport = authority.rsplit('@').next().unwrap_or("");
     let host = match hostport.strip_prefix('[') {
         Some(v6) => v6.split(']').next().unwrap_or(""),
@@ -232,6 +232,7 @@ mod tests {
             "192.0.2.10:50051",
             "http://127.0.0.1.evil.example:50051",
             "http://user@192.0.2.10:50051",
+            "http://192.0.2.10#@127.0.0.1:50051",
         ] {
             let e = check_token_transport(c, true, false)
                 .unwrap_err()

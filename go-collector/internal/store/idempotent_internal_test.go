@@ -119,13 +119,17 @@ func TestRun_FailsFastWhenInflightLimitReached(t *testing.T) {
 	}
 
 	for i := 0; i < 2; i++ {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		// Cancel only after the write reached the seam, so a slow goroutine
+		// start cannot make fn return early and leave <-stuck waiting (#466).
+		ctx, cancel := context.WithCancel(context.Background())
 		e := model.Event{EventID: "stuck" + string(rune('a'+i)), NodeID: "n1", Type: "exec", Payload: json.RawMessage(`{}`)}
-		if err := st.SaveEvent(ctx, e); !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("SaveEvent %d: err=%v; want DeadlineExceeded", i, err)
-		}
-		cancel()
+		done := make(chan error, 1)
+		go func() { done <- st.SaveEvent(ctx, e) }()
 		<-stuck
+		cancel()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Fatalf("SaveEvent %d: err=%v; want Canceled", i, err)
+		}
 	}
 
 	e := model.Event{EventID: "over", NodeID: "n1", Type: "exec", Payload: json.RawMessage(`{}`)}
@@ -145,6 +149,51 @@ func TestRun_FailsFastWhenInflightLimitReached(t *testing.T) {
 	}
 	if stored, n := countStored(t, st); stored != 3 || n != 3 {
 		t.Fatalf("stored=%d stats[exec]=%d; want both 3", stored, n)
+	}
+}
+
+// Reads stuck behind a stalled disk must not use up the slots writes need:
+// otherwise repeated /api/events requests stop event ingestion (#466).
+func TestRun_StuckReadsDoNotBlockWrites(t *testing.T) {
+	st := newInternalStore(t)
+
+	release := make(chan struct{})
+	entered := make(chan struct{}, maxInflight)
+	st.beforeViewFn = func() {
+		entered <- struct{}{}
+		<-release
+	}
+	defer func() {
+		close(release)
+		st.inflight.Wait()
+	}()
+
+	// Start reads until the store refuses one; each accepted read is left
+	// blocked in the seam, like a View on a stalled disk.
+	for i := 0; i <= maxInflight; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() {
+			_, err := st.ListEvents(ctx, "", 10)
+			done <- err
+		}()
+		select {
+		case <-entered:
+			cancel()
+			<-done
+			continue
+		case err := <-done:
+			cancel()
+			if !errors.Is(err, ErrBusy) {
+				t.Fatalf("read %d: err=%v; want ErrBusy once read slots are full", i, err)
+			}
+		}
+		break
+	}
+
+	e := model.Event{EventID: "w1", NodeID: "n1", Type: "exec", Payload: json.RawMessage(`{}`)}
+	if err := st.SaveEvent(context.Background(), e); err != nil {
+		t.Fatalf("SaveEvent with read slots full: %v; want writes to keep their own slots", err)
 	}
 }
 

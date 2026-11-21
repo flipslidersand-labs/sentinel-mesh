@@ -137,7 +137,7 @@ func (s *Store) ListTokens(ctx context.Context) ([]AgentToken, error) {
 	// caller must never read them (#382).
 	var result []AgentToken
 	var brokenKeys []string
-	err := s.run(ctx, func() error {
+	err := s.runRead(ctx, func() error {
 		tokens := make([]AgentToken, 0)
 		var broken []string
 		err := s.db.View(func(tx *badger.Txn) error {
@@ -223,7 +223,7 @@ func (s *Store) LookupNodeID(ctx context.Context, token string) (nodeID string, 
 func (s *Store) loadTokenIndex() {
 	idx := make(map[string]string)
 	var brokenKeys []string
-	err := s.run(context.Background(), func() error {
+	err := s.runRead(context.Background(), func() error {
 		return s.db.View(func(tx *badger.Txn) error {
 			prefix := []byte("agenttoken:")
 			it := tx.NewIterator(badger.DefaultIteratorOptions)
@@ -263,9 +263,9 @@ func (s *Store) loadTokenIndex() {
 
 func (s *Store) getAgentToken(ctx context.Context, nodeID string) (*AgentToken, error) {
 	// out is written by the goroutine only on success and read by the caller
-	// only after s.run returned nil (#382).
+	// only after s.runRead returned nil (#382).
 	var out *AgentToken
-	err := s.run(ctx, func() error {
+	err := s.runRead(ctx, func() error {
 		var rec *AgentToken
 		err := s.db.View(func(tx *badger.Txn) error {
 			item, err := tx.Get(agentTokenKey(nodeID))
