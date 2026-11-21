@@ -7,7 +7,7 @@ import (
 
 	"github.com/flipslidersand/sentinel-mesh/internal/httpauth"
 	"github.com/flipslidersand/sentinel-mesh/internal/httpserver"
-	"github.com/flipslidersand/sentinel-mesh/internal/store"
+	"github.com/flipslidersand/sentinel-mesh/internal/model"
 )
 
 // defaultLimit matches the collector API default for /api/events and /api/alerts.
@@ -43,7 +43,7 @@ func Router(a *Aggregator, staticDir string, corsOrigins []string, apiToken stri
 				return
 			}
 			node := c.Query("node")
-			out := make([]store.Event, 0)
+			out := make([]model.Event, 0)
 			for _, e := range a.EventsIn(c.Query("region")) {
 				if node != "" && e.NodeID != node {
 					continue
@@ -62,7 +62,7 @@ func Router(a *Aggregator, staticDir string, corsOrigins []string, apiToken stri
 				return
 			}
 			node := c.Query("node")
-			out := make([]store.Alert, 0)
+			out := make([]model.Alert, 0)
 			for _, al := range a.AlertsIn(c.Query("region")) {
 				if node != "" && al.NodeID != node {
 					continue

@@ -9,6 +9,8 @@ import (
 	"time"
 
 	badger "github.com/dgraph-io/badger/v4"
+
+	"github.com/flipslidersand/sentinel-mesh/internal/model"
 )
 
 // DefaultRetention bounds how long events/alerts are kept before BadgerDB
@@ -38,14 +40,8 @@ const vlogGCDiscardRatio = 0.5
 // records to exercise the cap.
 var maxNodeFilterScan = 10000
 
-// Event is the normalized form stored in BadgerDB.
-type Event struct {
-	EventID   string          `json:"event_id"`
-	NodeID    string          `json:"node_id"`
-	Timestamp time.Time       `json:"timestamp"`
-	Type      string          `json:"type"` // "exec" | "tcp" | "file"
-	Payload   json.RawMessage `json:"payload"`
-}
+// Event is the normalized form stored in BadgerDB (alias of model.Event).
+type Event = model.Event
 
 type Store struct {
 	db        *badger.DB
@@ -319,16 +315,8 @@ func (s *Store) Stats() (map[string]int, error) {
 	return out, nil
 }
 
-// Alert represents a triggered alert.
-type Alert struct {
-	AlertID   string    `json:"alert_id"`
-	RuleID    string    `json:"rule_id"`
-	NodeID    string    `json:"node_id"`
-	EventID   string    `json:"event_id"`
-	Timestamp time.Time `json:"timestamp"`
-	Message   string    `json:"message"`
-	Severity  string    `json:"severity"`
-}
+// Alert represents a triggered alert (alias of model.Alert).
+type Alert = model.Alert
 
 // SaveAlert persists an alert to the store.
 func (s *Store) SaveAlert(ctx context.Context, a Alert) error {
