@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Agent / eBPF:** IPv6 TCP connections and IPv4 connections made through dual-stack
+  AF_INET6 sockets (v4-mapped) are now emitted as TCP events; `TcpEvent` carries a family
+  and 16-byte addresses (#429). Not yet verified on a real host (no CAP_BPF test): the
+  eBPF object builds, but the verifier/runtime behaviour and the raw `sock_common`
+  offsets (assume x86_64, CONFIG_NET_NS, CONFIG_IPV6) are untested.
 - **CI:** `go mod tidy` consistency check for `go-collector` (fails if `go.mod`/`go.sum` would change) (#330).
 - **go-collector:** `--http-tls-cert`/`--http-tls-key` serve the REST API (normal and
   `--aggregate` mode) over TLS; they must be given together. Without them the REST API stays
