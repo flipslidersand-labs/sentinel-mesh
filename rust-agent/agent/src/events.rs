@@ -674,6 +674,27 @@ mod tests {
         assert_eq!(tcp_addr_to_string(10, &v6), "2001:db8::1");
     }
 
+    #[test]
+    fn tcp_addr_to_string_v4_mapped_is_emitted_as_ipv4() {
+        use super::tcp_addr_to_string;
+        // The eBPF side reports family=AF_INET with the IPv4 in the first 4 bytes
+        // for a v4-mapped connect on an AF_INET6 socket.
+        let mut a = [0u8; 16];
+        a[..4].copy_from_slice(&[192, 0, 2, 33]);
+        assert_eq!(tcp_addr_to_string(2, &a), "192.0.2.33");
+    }
+
+    #[test]
+    fn tcp_addr_to_string_unknown_family_falls_back_to_ipv4() {
+        use super::tcp_addr_to_string;
+        // Any family other than AF_INET6 (10) is read as IPv4 from the first 4 bytes
+        // (the eBPF side never emits other families).
+        let mut a = [0u8; 16];
+        a[..4].copy_from_slice(&[192, 0, 2, 7]);
+        assert_eq!(tcp_addr_to_string(99, &a), "192.0.2.7");
+        assert_eq!(tcp_addr_to_string(0, &[0u8; 16]), "0.0.0.0");
+    }
+
     use super::*;
     use crate::pb::{kernel_event::Payload, ExecEvent, FileEvent, KernelEvent, TcpEvent};
 
