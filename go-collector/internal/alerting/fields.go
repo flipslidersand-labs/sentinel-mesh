@@ -3,39 +3,15 @@ package alerting
 import (
 	"fmt"
 
-	"google.golang.org/protobuf/proto"
-
-	"github.com/flipslidersand/sentinel-mesh/internal/pb"
+	"github.com/flipslidersand/sentinel-mesh/internal/eventtype"
 )
 
-// payloadMessages maps an event type to the protobuf message the receiver
-// serialises (json.Marshal) as the event payload. The JSON keys of that
-// payload are the proto field names, so the known-field sets are derived
-// from the generated descriptors rather than hand-maintained (#248).
-var payloadMessages = map[string]proto.Message{
-	"exec": &pb.ExecEvent{},
-	"tcp":  &pb.TcpEvent{},
-	"file": &pb.FileEvent{},
-}
-
 // payloadFields returns the set of top-level payload keys for an event type.
-// "*" yields the union across all event types.
+// "*" yields the union across all event types. The keys come from the payload
+// structs the receiver actually serialises (eventtype), not from the pb
+// descriptors, so they cannot drift from the real payload (#248, #353).
 func payloadFields(eventType string) map[string]bool {
-	set := map[string]bool{}
-	add := func(m proto.Message) {
-		fs := m.ProtoReflect().Descriptor().Fields()
-		for i := 0; i < fs.Len(); i++ {
-			set[string(fs.Get(i).Name())] = true
-		}
-	}
-	if m, ok := payloadMessages[eventType]; ok {
-		add(m)
-		return set
-	}
-	for _, m := range payloadMessages {
-		add(m)
-	}
-	return set
+	return eventtype.Fields(eventType)
 }
 
 // UnknownFieldWarnings lists conditions whose field is not a key of the
