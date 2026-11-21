@@ -181,7 +181,9 @@ func TestNodeLabeler_Concurrent(t *testing.T) {
 	}
 }
 
-func distinctNodeLabels(t *testing.T, name string) map[string]bool {
+// distinctNodes returns the node label values of family `name` whose series
+// carry label key=val.
+func distinctNodes(t *testing.T, name, key, val string) map[string]bool {
 	t.Helper()
 	families, err := prometheus.DefaultGatherer.Gather()
 	if err != nil {
@@ -193,27 +195,38 @@ func distinctNodeLabels(t *testing.T, name string) map[string]bool {
 			continue
 		}
 		for _, m := range f.GetMetric() {
+			node, match := "", false
 			for _, lp := range m.GetLabel() {
 				if lp.GetName() == "node" {
-					out[lp.GetValue()] = true
+					node = lp.GetValue()
 				}
+				if lp.GetName() == key && lp.GetValue() == val {
+					match = true
+				}
+			}
+			if match {
+				out[node] = true
 			}
 		}
 	}
 	return out
 }
 
+// Uses a private provider with a small cap so the shared provider's node
+// allowlist is never saturated (tests share the default registry).
 func TestMetrics_NodeCardinalityBounded(t *testing.T) {
-	mp := sharedProvider(t)
-	for i := 0; i < MaxNodeLabels+500; i++ {
+	const limit = 8
+	mp := &MetricsProvider{nodes: newNodeLabeler(limit)}
+	for i := 0; i < limit+500; i++ {
 		id := fmt.Sprintf("throwaway-%d", i)
 		mp.RecordEvent("cardinality_test", id)
 		mp.RecordAlert("cardinality_rule", "low", id)
 	}
-	for _, name := range []string{"sentinel_events_total", "sentinel_alerts_total"} {
-		if n := len(distinctNodeLabels(t, name)); n > MaxNodeLabels+1 {
-			t.Fatalf("%s node series = %d, want <= %d", name, n, MaxNodeLabels+1)
-		}
+	if n := len(distinctNodes(t, "sentinel_events_total", "type", "cardinality_test")); n > limit+1 {
+		t.Fatalf("events node series = %d, want <= %d", n, limit+1)
+	}
+	if n := len(distinctNodes(t, "sentinel_alerts_total", "rule", "cardinality_rule")); n > limit+1 {
+		t.Fatalf("alerts node series = %d, want <= %d", n, limit+1)
 	}
 	if v := counterValue(t, "sentinel_events_total", map[string]string{"type": "cardinality_test", "node": OtherNodeLabel}); v < 500 {
 		t.Fatalf("other bucket = %v, want >= 500", v)

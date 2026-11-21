@@ -70,10 +70,10 @@ func (l *nodeLabeler) label(nodeID string) string {
 	return nodeID
 }
 
-var nodeLabels = newNodeLabeler(MaxNodeLabels)
-
 // MetricsProvider records collector metrics on the Prometheus default registry.
-type MetricsProvider struct{}
+type MetricsProvider struct {
+	nodes *nodeLabeler
+}
 
 // Fixed reason label values for RecordAuthFailure.
 const (
@@ -85,17 +85,17 @@ const (
 // NewMetricsProvider returns a provider backed by the package-level Prometheus
 // counters. The ctx parameter and error result are kept for API compatibility.
 func NewMetricsProvider(ctx context.Context) (*MetricsProvider, error) {
-	return &MetricsProvider{}, nil
+	return &MetricsProvider{nodes: newNodeLabeler(MaxNodeLabels)}, nil
 }
 
 // RecordEvent increments the event counter for a given event type and node.
 func (mp *MetricsProvider) RecordEvent(eventType, nodeID string) {
-	eventsTotal.WithLabelValues(eventType, nodeLabels.label(nodeID)).Inc()
+	eventsTotal.WithLabelValues(eventType, mp.nodes.label(nodeID)).Inc()
 }
 
 // RecordAlert increments the alert counter for a given rule and node.
 func (mp *MetricsProvider) RecordAlert(ruleID, severity, nodeID string) {
-	alertsTotal.WithLabelValues(ruleID, severity, nodeLabels.label(nodeID)).Inc()
+	alertsTotal.WithLabelValues(ruleID, severity, mp.nodes.label(nodeID)).Inc()
 }
 
 // RecordStoreWriteFailure increments the store write failure counter for a
