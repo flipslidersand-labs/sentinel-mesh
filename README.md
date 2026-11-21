@@ -94,6 +94,7 @@ Options:
   --region <NAME>       Region this node belongs to [env: SENTINEL_REGION]
   --grpc-token <TOKEN>  Bearer token sent with every RPC [env: SENTINEL_API_TOKEN]
   --grpc-ca-cert <PATH> CA cert (PEM) to verify a self-signed collector TLS cert [env: SENTINEL_GRPC_CA_CERT]
+  --allow-insecure-token  Allow --grpc-token over plaintext http:// to a non-loopback collector (insecure; default: refused)
 ```
 
 ## Collector CLI
