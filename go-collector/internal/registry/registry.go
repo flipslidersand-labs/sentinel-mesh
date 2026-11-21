@@ -12,6 +12,20 @@ import (
 // DefaultRegion is assigned when an agent registers without a region.
 const DefaultRegion = "default"
 
+// StatusActive is the AgentNode.Status of a node that is currently reporting.
+const StatusActive = "active"
+
+// CountActive returns how many of nodes have Status == StatusActive.
+func CountActive(nodes []AgentNode) int {
+	n := 0
+	for _, node := range nodes {
+		if node.Status == StatusActive {
+			n++
+		}
+	}
+	return n
+}
+
 // AgentNode represents a registered eBPF agent.
 type AgentNode struct {
 	NodeID     string    `json:"node_id"`
@@ -57,7 +71,7 @@ func (r *Registry) Register(nodeID, hostname, ip, version, region string) error 
 	now := time.Now().UTC()
 	if existing, ok := r.nodes[nodeID]; ok {
 		existing.LastSeen = now
-		existing.Status = "active"
+		existing.Status = StatusActive
 		existing.Region = region
 		// Refresh identity attributes (e.g. after HeartbeatOrRegister
 		// re-created the node without them); empty values keep what is stored.
@@ -81,7 +95,7 @@ func (r *Registry) Register(nodeID, hostname, ip, version, region string) error 
 		Region:     region,
 		Registered: now,
 		LastSeen:   now,
-		Status:     "active",
+		Status:     StatusActive,
 	}
 	return nil
 }
@@ -91,7 +105,7 @@ func (r *Registry) Heartbeat(nodeID string) {
 	defer r.mu.Unlock()
 	if n, ok := r.nodes[nodeID]; ok {
 		n.LastSeen = time.Now().UTC()
-		n.Status = "active"
+		n.Status = StatusActive
 		n.inactiveSince = time.Time{}
 	}
 }
@@ -110,7 +124,7 @@ func (r *Registry) HeartbeatOrRegister(nodeID, ip, region string) {
 	now := time.Now().UTC()
 	if n, ok := r.nodes[nodeID]; ok {
 		n.LastSeen = now
-		n.Status = "active"
+		n.Status = StatusActive
 		n.inactiveSince = time.Time{}
 		return
 	}
@@ -120,7 +134,7 @@ func (r *Registry) HeartbeatOrRegister(nodeID, ip, region string) {
 		Region:     normalizeRegion(region),
 		Registered: now,
 		LastSeen:   now,
-		Status:     "active",
+		Status:     StatusActive,
 	}
 }
 
@@ -225,7 +239,7 @@ func (r *Registry) markStaleInactive(timeout, evictAfter time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for id, n := range r.nodes {
-		if n.Status == "active" && n.LastSeen.Before(deadline) {
+		if n.Status == StatusActive && n.LastSeen.Before(deadline) {
 			n.Status = "inactive"
 			n.inactiveSince = now
 		}
