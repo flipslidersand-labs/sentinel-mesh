@@ -64,6 +64,27 @@ describe("Alerts page", () => {
     expect(within(table).getByText("info").className).toContain("sev-info");
   });
 
+  it("renders alerts whose severity is null/undefined/non-string without throwing", async () => {
+    alertsMock.mockResolvedValue([
+      alert({ alert_id: "a-1", message: "null-sev", severity: null as unknown as string }),
+      alert({ alert_id: "a-2", message: "undef-sev", severity: undefined as unknown as string }),
+      alert({ alert_id: "a-3", message: "num-sev", severity: 5 as unknown as string }),
+      alert({ alert_id: "a-4", message: "ok-sev", severity: "critical" }),
+    ]);
+    render(<Alerts />);
+
+    expect(await screen.findByText("null-sev")).toBeTruthy();
+    const table = screen.getByRole("table");
+    expect(within(table).getAllByRole("row")).toHaveLength(5); // header + 4
+    expect(within(table).getByText("critical").className).toContain("sev-critical");
+
+    // the severity filter must not throw on such rows either
+    const [severity] = screen.getAllByRole("combobox");
+    fireEvent.change(severity, { target: { value: "critical" } });
+    expect(screen.queryByText("null-sev")).toBeNull();
+    expect(screen.getByText("ok-sev")).toBeTruthy();
+  });
+
   it("filters by severity and rule on the client", async () => {
     alertsMock.mockResolvedValue([
       alert({ alert_id: "a-1", rule_id: "rule-a", message: "m1", severity: "critical" }),
