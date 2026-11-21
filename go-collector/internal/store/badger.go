@@ -280,9 +280,17 @@ const maxConflictRetries = 3
 // event_id cannot be deduplicated. Stats() counts the event once the write
 // actually succeeds.
 func (s *Store) SaveEvent(ctx context.Context, e model.Event) error {
+	_, err := s.SaveEventDedup(ctx, e)
+	return err
+}
+
+// SaveEventDedup is SaveEvent that also reports whether e was skipped as a
+// duplicate of an already stored (node_id, event_id) (#457). duplicate is
+// meaningful only when err is nil.
+func (s *Store) SaveEventDedup(ctx context.Context, e model.Event) (duplicate bool, err error) {
 	val, err := json.Marshal(e)
 	if err != nil {
-		return err
+		return false, err
 	}
 	// Key by the collector's own receive time, not e.Timestamp — that field
 	// is agent-supplied and untrusted. Keying by it let a malicious agent
@@ -295,7 +303,8 @@ func (s *Store) SaveEvent(ctx context.Context, e model.Event) error {
 	// The counter is bumped inside fn, right after db.Update succeeds: if ctx
 	// is cancelled while the write is in flight, run returns an error to the
 	// caller but the write still lands, and Stats() must count it (#325).
-	return s.run(ctx, func() error {
+	var dup bool // written in the write goroutine; read only when run returns nil
+	err = s.run(ctx, func() error {
 		if s.beforeUpdateFn != nil {
 			s.beforeUpdateFn()
 		}
@@ -341,6 +350,7 @@ func (s *Store) SaveEvent(ctx context.Context, e model.Event) error {
 			return err
 		}
 		if duplicate {
+			dup = true
 			return nil
 		}
 		s.countersMu.Lock()
@@ -348,6 +358,10 @@ func (s *Store) SaveEvent(ctx context.Context, e model.Event) error {
 		s.countersMu.Unlock()
 		return nil
 	})
+	if err != nil {
+		return false, err
+	}
+	return dup, nil
 }
 
 // ListEvents returns up to limit events, newest first.

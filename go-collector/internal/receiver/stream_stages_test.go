@@ -45,7 +45,7 @@ func TestPersistEvent(t *testing.T) {
 	t.Run("ok", func(t *testing.T) {
 		st := newStageTestStore(t)
 		s := &server{st: st, log: zap.NewNop()}
-		if !s.persistEvent(context.Background(), ev) {
+		if ok, _ := s.persistEvent(context.Background(), ev); !ok {
 			t.Fatal("want ok=true")
 		}
 		got, _ := st.ListEvents(context.Background(), "n", 10)
@@ -56,7 +56,7 @@ func TestPersistEvent(t *testing.T) {
 	t.Run("store failure", func(t *testing.T) {
 		st := newClosedStageTestStore(t)
 		s := &server{st: st, log: zap.NewNop()}
-		if s.persistEvent(context.Background(), ev) {
+		if ok, _ := s.persistEvent(context.Background(), ev); ok {
 			t.Fatal("want ok=false")
 		}
 	})

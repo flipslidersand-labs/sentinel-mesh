@@ -196,3 +196,22 @@ func TestRun_StuckReadsDoNotBlockWrites(t *testing.T) {
 		t.Fatalf("SaveEvent with read slots full: %v; want writes to keep their own slots", err)
 	}
 }
+
+// SaveEventDedup reports duplicates to the caller (#457).
+func TestSaveEventDedup_ReportsDuplicate(t *testing.T) {
+	st := newInternalStore(t)
+	ctx := context.Background()
+	e := model.Event{EventID: "e1", NodeID: "n1", Timestamp: time.Now(), Type: "exec", Payload: json.RawMessage(`{}`)}
+	if dup, err := st.SaveEventDedup(ctx, e); err != nil || dup {
+		t.Fatalf("first save = dup %v, err %v; want false, nil", dup, err)
+	}
+	if dup, err := st.SaveEventDedup(ctx, e); err != nil || !dup {
+		t.Fatalf("resend = dup %v, err %v; want true, nil", dup, err)
+	}
+	e.EventID = ""
+	for i := 0; i < 2; i++ {
+		if dup, err := st.SaveEventDedup(ctx, e); err != nil || dup {
+			t.Fatalf("empty event_id save %d = dup %v, err %v; want false, nil", i, dup, err)
+		}
+	}
+}
