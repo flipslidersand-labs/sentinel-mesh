@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -283,23 +284,106 @@ func (a *Aggregator) Nodes() []registry.AgentNode {
 // Events returns merged events across all reachable regions, newest first.
 func (a *Aggregator) Events() []model.Event { return a.EventsIn("") }
 
+// cachedEvents returns one reachable region's cached events, narrowed to node
+// when non-empty. It is the fallback when a direct upstream fetch fails.
+func (a *Aggregator) cachedEvents(region, node string) []model.Event {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	s := a.state[region]
+	if s == nil || !s.reachable {
+		return nil
+	}
+	out := make([]model.Event, 0, len(s.events))
+	for _, e := range s.events {
+		if node == "" || e.NodeID == node {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // EventsIn is Events restricted to one region (empty = all regions).
 func (a *Aggregator) EventsIn(region string) []model.Event {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	out := make([]model.Event, 0)
-	for r, s := range a.state {
-		if s.reachable && (region == "" || r == region) {
-			out = append(out, s.events...)
+	lists := make([][]model.Event, 0, len(a.upstreams))
+	for _, u := range a.upstreams {
+		if s := a.state[u.Region]; s != nil && s.reachable && (region == "" || u.Region == region) {
+			lists = append(lists, s.events)
 		}
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if !out[i].Timestamp.Equal(out[j].Timestamp) {
-			return out[i].Timestamp.After(out[j].Timestamp)
+	return mergeEvents(lists)
+}
+
+// mergeEvents k-way merges per-region event lists. Each list is already in its
+// collector's order (store receive time, newest first), which is trusted; the
+// agent-supplied Timestamp is only used to interleave the heads of different
+// regions, never to reorder events within one region. Re-sorting the union by
+// Timestamp would let a node with a fast clock pin itself to the top (#78).
+//
+// Known limitation: the cross-region head comparison still uses the
+// agent-reported Timestamp, so a region containing a fast-clock node can still
+// rank above others. Carried over to #473 (upstream returns the
+// collector receive time); model.Event has no such field yet.
+func mergeEvents(lists [][]model.Event) []model.Event {
+	total := 0
+	for _, l := range lists {
+		total += len(l)
+	}
+	out := make([]model.Event, 0, total)
+	pos := make([]int, len(lists))
+	for len(out) < total {
+		best := -1
+		for i, l := range lists {
+			if pos[i] >= len(l) {
+				continue
+			}
+			if best < 0 {
+				best = i
+				continue
+			}
+			h, b := l[pos[i]], lists[best][pos[best]]
+			if h.Timestamp.After(b.Timestamp) || (h.Timestamp.Equal(b.Timestamp) && h.EventID < b.EventID) {
+				best = i
+			}
 		}
-		return out[i].EventID < out[j].EventID
-	})
+		out = append(out, lists[best][pos[best]])
+		pos[best]++
+	}
 	return out
+}
+
+// FetchEvents queries the upstream collectors directly (bypassing the capped
+// per-region cache) with node/limit forwarded, so a node whose events are
+// older than the cache window, or a limit above the cache size, can still be
+// served. region restricts to one upstream (empty = all). Upstreams that
+// fail are skipped, like unreachable regions in the cached view.
+func (a *Aggregator) FetchEvents(ctx context.Context, region, node string, limit int) []model.Event {
+	lists := make([][]model.Event, len(a.upstreams))
+	var wg sync.WaitGroup
+	for i, u := range a.upstreams {
+		if region != "" && u.Region != region {
+			continue
+		}
+		wg.Add(1)
+		go func(i int, u Upstream) {
+			defer wg.Done()
+			q := url.Values{"limit": {strconv.Itoa(limit)}}
+			if node != "" {
+				q.Set("node", node)
+			}
+			var evs []model.Event
+			if err := a.fetchJSON(ctx, u.URL+api.PathEvents+"?"+q.Encode(), &evs); err != nil {
+				a.log.Warn("upstream events fetch failed, falling back to cache",
+					zap.String("region", u.Region), zap.String("url", u.URL), zap.Error(err))
+				lists[i] = a.cachedEvents(u.Region, node)
+				return
+			}
+			lists[i] = evs
+		}(i, u)
+	}
+	wg.Wait()
+	return mergeEvents(lists)
 }
 
 // Alerts returns merged alerts across all reachable regions, newest first.
