@@ -337,3 +337,23 @@ func TestListAlerts_EmptyStore_ReturnsNonNilSlice(t *testing.T) {
 		t.Error("ListAlerts on empty store returned nil, want non-nil empty slice")
 	}
 }
+
+// The collector stamps ReceivedAt itself; a value supplied by the agent is
+// overwritten (#473).
+func TestSaveEvent_StampsReceivedAt(t *testing.T) {
+	st := newTempStore(t)
+	forged := time.Now().Add(24 * time.Hour)
+	e := makeEvent("node-a", "exec", 1)
+	e.ReceivedAt = forged
+	before := time.Now().Add(-time.Second)
+	if err := st.SaveEvent(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.ListEvents(context.Background(), "", 10)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("ListEvents = %v, %v", got, err)
+	}
+	if got[0].ReceivedAt.Before(before) || got[0].ReceivedAt.After(time.Now().Add(time.Second)) {
+		t.Fatalf("ReceivedAt = %v, want collector receive time", got[0].ReceivedAt)
+	}
+}
