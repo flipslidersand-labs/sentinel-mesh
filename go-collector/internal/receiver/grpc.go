@@ -155,6 +155,45 @@ type server struct {
 	nodeLimiters  nodeLimiters     // per-authenticated-node event rate limit shared across streams (#254)
 	defaultRegion string           // used when an agent registers without a region
 	log           *zap.Logger
+	// livenessInterval is how often a live StreamEvents stream refreshes its
+	// node's registry LastSeen while idle (#260). Zero means
+	// defaultLivenessInterval.
+	livenessInterval time.Duration
+}
+
+// defaultLivenessInterval is a third of the registry's default heartbeat
+// timeout, so an idle but connected agent is refreshed several times before
+// it could be marked inactive.
+const defaultLivenessInterval = registry.DefaultHeartbeatTimeout / 3
+
+// startLiveness refreshes nodeID's registry entry every interval until the
+// returned stop function is called (which also waits for the goroutine to
+// exit) or ctx is done. Heartbeat is a no-op for unknown nodes, so this never
+// registers anything by itself.
+func (s *server) startLiveness(ctx context.Context, nodeID string) (stop func()) {
+	interval := s.livenessInterval
+	if interval <= 0 {
+		interval = defaultLivenessInterval
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				s.reg.Heartbeat(nodeID)
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
 }
 
 // limitServerOptions returns the resource-limit server options. A single
@@ -384,6 +423,20 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 	// (#183/#190, per ADR-005) — "" when auth is disabled; constant for the
 	// lifetime of this stream.
 
+	// Keep the node active while the stream is open but idle (#260). With
+	// auth the node is known now; without auth there is no trusted identity,
+	// so the ticker starts after the first accepted event, using the same
+	// node_id HeartbeatOrRegister registered.
+	var stopLiveness func()
+	defer func() {
+		if stopLiveness != nil {
+			stopLiveness()
+		}
+	}()
+	if authedNodeID != "" {
+		stopLiveness = s.startLiveness(stream.Context(), authedNodeID)
+	}
+
 	for {
 		// Bail out promptly once the stream's context is done (e.g. the
 		// server is shutting down and srv.GracefulStop()/srv.Stop() has
@@ -455,6 +508,9 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 		}
 
 		s.reg.HeartbeatOrRegister(event.NodeId, peerIP(stream.Context()), s.defaultRegion)
+		if stopLiveness == nil {
+			stopLiveness = s.startLiveness(stream.Context(), event.NodeId)
+		}
 
 		storedEvent := model.Event{
 			EventID:   event.EventId,
@@ -625,6 +681,11 @@ type Config struct {
 	TLSKeyFile    string
 	AuthEnabled   bool
 	DefaultRegion string
+	// LivenessInterval is how often an idle open StreamEvents stream
+	// refreshes its node in the registry. Zero uses a third of
+	// registry.DefaultHeartbeatTimeout; set it to a third of the heartbeat
+	// timeout in use.
+	LivenessInterval time.Duration
 }
 
 // Deps holds the collaborators for Serve. Fields are passed through
@@ -681,7 +742,7 @@ func Serve(ctx context.Context, cfg Config, deps Deps) error {
 	opts = append(opts, limitServerOptions()...)
 	srv := grpc.NewServer(opts...)
 
-	s := &server{st: st, reg: deps.Registry, engine: deps.Engine, detector: deps.Detector, notifier: deps.Notifier, metrics: metrics, tracer: deps.Tracer, defaultRegion: cfg.DefaultRegion, log: log, authFail: authLim}
+	s := &server{st: st, reg: deps.Registry, engine: deps.Engine, detector: deps.Detector, notifier: deps.Notifier, metrics: metrics, tracer: deps.Tracer, defaultRegion: cfg.DefaultRegion, log: log, authFail: authLim, livenessInterval: cfg.LivenessInterval}
 	pb.RegisterSentinelCollectorServer(srv, s)
 
 	// Stop the server when ctx is cancelled (e.g. SIGINT/SIGTERM) so the
