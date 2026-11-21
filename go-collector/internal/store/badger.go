@@ -462,18 +462,77 @@ func (s *Store) Stats() map[string]int {
 	return out
 }
 
-// SaveAlert persists an alert to the store.
+// alertIDKey is the idempotency index entry for (node, event_id, rule). Node
+// and event_id are length-prefixed like eventIDKey, so ':' in any field cannot
+// make two distinct triples collide. It does not start with "alert:", so alert
+// prefix scans skip it.
+func alertIDKey(nodeID, eventID, ruleID string) []byte {
+	return []byte(fmt.Sprintf("alertid:%d:%s:%d:%s:%s", len(nodeID), nodeID, len(eventID), eventID, ruleID))
+}
+
+// SaveAlert persists an alert to the store. See SaveAlertDedup.
 func (s *Store) SaveAlert(ctx context.Context, a model.Alert) error {
+	_, err := s.SaveAlertDedup(ctx, a)
+	return err
+}
+
+// SaveAlertDedup is SaveAlert that is idempotent per (node_id, event_id,
+// rule_id): if an alert with the same triple was already stored within the
+// retention window, a is not stored and duplicate is true (#465). The alert and
+// its index entry are written in one transaction with the same TTL. Alerts with
+// an empty event_id cannot be deduplicated. duplicate is meaningful only when
+// err is nil.
+func (s *Store) SaveAlertDedup(ctx context.Context, a model.Alert) (duplicate bool, err error) {
 	val, err := json.Marshal(a)
 	if err != nil {
-		return err
+		return false, err
 	}
 	key := []byte(fmt.Sprintf("alert:%s:%s", timeKey(a.Timestamp), a.AlertID))
-	return s.run(ctx, func() error {
-		return s.db.Update(func(tx *badger.Txn) error {
+	var dup bool // written in the write goroutine; read only when run returns nil
+	err = s.run(ctx, func() error {
+		var idKey []byte
+		if a.EventID != "" {
+			idKey = alertIDKey(a.NodeID, a.EventID, a.RuleID)
+		}
+		var duplicate bool
+		update := func(tx *badger.Txn) error {
+			duplicate = false
+			if idKey != nil {
+				_, err := tx.Get(idKey)
+				if err == nil {
+					duplicate = true
+					return nil
+				}
+				if !errors.Is(err, badger.ErrKeyNotFound) {
+					return err
+				}
+				if err := tx.SetEntry(badger.NewEntry(idKey, key).WithTTL(s.retention)); err != nil {
+					return err
+				}
+			}
 			return tx.SetEntry(badger.NewEntry(key, val).WithTTL(s.retention))
-		})
+		}
+		var err error
+		for i := 0; i < maxConflictRetries; i++ {
+			if i > 0 {
+				if err = ctx.Err(); err != nil {
+					break
+				}
+			}
+			if err = s.db.Update(update); !errors.Is(err, badger.ErrConflict) {
+				break
+			}
+		}
+		if err != nil {
+			return err
+		}
+		dup = duplicate
+		return nil
 	})
+	if err != nil {
+		return false, err
+	}
+	return dup, nil
 }
 
 // ListAlerts returns up to limit alerts, newest first.

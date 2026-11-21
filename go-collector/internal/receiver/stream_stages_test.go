@@ -69,7 +69,7 @@ func TestEvaluateAndNotify(t *testing.T) {
 	}
 	t.Run("no engine or detector", func(t *testing.T) {
 		s := &server{log: zap.NewNop()}
-		alerts, ok := s.evaluateAndNotify(context.Background(), ev)
+		alerts, ok := s.evaluateAndNotify(context.Background(), ev, false)
 		if len(alerts) != 0 || !ok {
 			t.Fatalf("got %v, %v; want none, true", alerts, ok)
 		}
@@ -77,8 +77,8 @@ func TestEvaluateAndNotify(t *testing.T) {
 	t.Run("alert saved", func(t *testing.T) {
 		st := newStageTestStore(t)
 		s := &server{st: st, detector: newDet(), notifier: &notify.Dispatcher{}, tracer: otel.Tracer("t"), log: zap.NewNop()}
-		s.evaluateAndNotify(context.Background(), ev)
-		alerts, ok := s.evaluateAndNotify(context.Background(), ev)
+		s.evaluateAndNotify(context.Background(), ev, false)
+		alerts, ok := s.evaluateAndNotify(context.Background(), ev, false)
 		if len(alerts) == 0 || !ok {
 			t.Fatalf("got %d alerts, ok=%v; want >0, true", len(alerts), ok)
 		}
@@ -90,8 +90,8 @@ func TestEvaluateAndNotify(t *testing.T) {
 	t.Run("alert save failure", func(t *testing.T) {
 		st := newClosedStageTestStore(t)
 		s := &server{st: st, detector: newDet(), notifier: &notify.Dispatcher{}, tracer: otel.Tracer("t"), log: zap.NewNop()}
-		s.evaluateAndNotify(context.Background(), ev)
-		alerts, ok := s.evaluateAndNotify(context.Background(), ev)
+		s.evaluateAndNotify(context.Background(), ev, false)
+		alerts, ok := s.evaluateAndNotify(context.Background(), ev, false)
 		if len(alerts) == 0 || ok {
 			t.Fatalf("got %d alerts, ok=%v; want >0, false", len(alerts), ok)
 		}
