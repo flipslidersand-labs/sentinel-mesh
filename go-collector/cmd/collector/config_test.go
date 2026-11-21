@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -15,7 +16,7 @@ func TestLoadServeConfig_UnknownFlagReturnsError(t *testing.T) {
 }
 
 func TestLoadServeConfig_Defaults(t *testing.T) {
-	t.Setenv("SENTINEL_API_TOKEN", "0123456789abcdef0123456789abcdef")
+	t.Setenv("SENTINEL_API_TOKEN", strings.Repeat("x", 32))
 	cfg, err := loadServeConfig(serveCmd())
 	if err != nil {
 		t.Fatal(err)
