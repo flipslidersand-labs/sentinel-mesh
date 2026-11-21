@@ -76,7 +76,7 @@ The agent collects kernel events via eBPF tracepoints and kprobes. Each event is
 | Type   | Trigger                       | Example                                  |
 | ------ | ----------------------------- | ---------------------------------------- |
 | `exec` | `sched_process_exec` tracepoint | Process execution (binary, args)         |
-| `tcp`  | `tcp_connect` kprobe          | TCP connection attempt (src/dst IP/port, IPv4 only) |
+| `tcp`  | `tcp_connect` kprobe          | TCP connection attempt (src/dst IP/port; IPv4, IPv6 and v4-mapped; not yet verified on a real host) |
 | `file` | `sys_enter_openat` + `sys_exit_openat` tracepoints | File open (path, ret from sys_exit_openat) |
 
 In **mock mode** (`--mock`), events are synthetic and evenly distributed across types. In **eBPF mode** (requires `CAP_BPF`), events are captured from running kernel.
