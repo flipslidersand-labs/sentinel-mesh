@@ -143,6 +143,8 @@ async fn stream_to_collector_with(
         .unwrap_or_else(|_| node_id.clone());
 
     let mut backoff = INITIAL_BACKOFF;
+    // Owned here so it survives reconnects (#241).
+    let mut pending = Pending::default();
 
     loop {
         let mut stats = DeliveryStats::default();
@@ -155,7 +157,7 @@ async fn stream_to_collector_with(
             ca_cert_path: &ca_cert_path,
             tuning,
         };
-        match run_once_tracked(session, &mut rx, &mut stats).await {
+        match run_once_tracked(session, &mut rx, &mut pending, &mut stats).await {
             // rx.recv() returned None: every event-source Sender was dropped,
             // so there will never be another event. Exit for good.
             Ok(()) => return Ok(()),
@@ -170,6 +172,7 @@ async fn stream_to_collector_with(
                 backoff = next;
                 let wait = jittered(base);
                 eprintln!("collector connection lost/failed: {e} — reconnecting in {wait:.1?}");
+                eprintln!("{}", pending.summary());
                 tokio::time::sleep(wait).await;
             }
         }
@@ -231,14 +234,18 @@ struct Session<'a> {
 /// `Err` for the caller to retry.
 ///
 /// On `Err`, events already taken from `rx` that the collector never acked
-/// are gone (no re-send, #241). The error text reports that count: it is
-/// `taken - acked`, i.e. the events with no delivery confirmation. It is an
-/// upper bound on true loss (an event may have arrived with its ack lost),
-/// and it includes events still buffered in the bridge / HTTP/2 window.
+/// stay in `pending` and are re-sent first on the next connection (#241,
+/// at-least-once). The error text reports how many are queued. Events whose
+/// ack was lost are sent again, so the collector may see duplicates (it
+/// dedups by `event_id`).
 #[cfg(test)]
-async fn run_once(session: Session<'_>, rx: &mut Receiver<KernelEvent>) -> Result<()> {
+async fn run_once(
+    session: Session<'_>,
+    rx: &mut Receiver<KernelEvent>,
+    pending: &mut Pending,
+) -> Result<()> {
     let mut stats = DeliveryStats::default();
-    run_once_tracked(session, rx, &mut stats).await
+    run_once_tracked(session, rx, pending, &mut stats).await
 }
 
 /// `run_once` that leaves its `DeliveryStats` (incl. when the stream was
@@ -246,29 +253,103 @@ async fn run_once(session: Session<'_>, rx: &mut Receiver<KernelEvent>) -> Resul
 async fn run_once_tracked(
     session: Session<'_>,
     rx: &mut Receiver<KernelEvent>,
+    pending: &mut Pending,
     stats: &mut DeliveryStats,
 ) -> Result<()> {
-    let res = run_session(session, rx, stats).await;
+    let res = run_session(session, rx, pending, stats).await;
     res.map_err(|e| {
-        let unacked = stats.taken.saturating_sub(stats.acked);
-        if unacked > 0 {
-            anyhow::anyhow!(
-                "{e}; unacknowledged events: {unacked} discarded (taken from queue, no collector ack; \
-                 may include events delivered whose ack was lost)"
-            )
+        let n = pending.q.len();
+        if n > 0 {
+            anyhow::anyhow!("{e}; {n} events queued for resend")
         } else {
             e
         }
     })
 }
 
-/// Counts for one connection attempt: events pulled from `rx` vs. acks seen.
+/// Per-connection state.
 #[derive(Default)]
 struct DeliveryStats {
-    taken: u64,
-    acked: u64,
     /// Set once Register succeeded and the event stream is open.
     established_at: Option<Instant>,
+}
+
+/// Max events / encoded bytes held un-acked (the smaller limit wins). When
+/// full, `rx` is not read; the upstream bounded channel then drops and counts
+/// (events.rs), so loss stays visible.
+const PENDING_MAX_EVENTS: usize = 2048;
+const PENDING_MAX_BYTES: usize = 2 * 1024 * 1024;
+
+/// Events taken from `rx` and not yet acked, oldest first. Lives across
+/// reconnects. The collector acks every received event in order, so each ack
+/// confirms the front of the queue.
+struct Pending {
+    q: std::collections::VecDeque<KernelEvent>,
+    bytes: usize,
+    max_events: usize,
+    max_bytes: usize,
+    /// Events re-sent after a reconnect (cumulative).
+    resent: u64,
+    /// Times reading `rx` was suspended because the queue was full.
+    full_stalls: u64,
+    max_len: usize,
+    was_full: bool,
+}
+
+impl Default for Pending {
+    fn default() -> Self {
+        Self::new(PENDING_MAX_EVENTS, PENDING_MAX_BYTES)
+    }
+}
+
+impl Pending {
+    fn new(max_events: usize, max_bytes: usize) -> Self {
+        Self {
+            q: Default::default(),
+            bytes: 0,
+            max_events,
+            max_bytes,
+            resent: 0,
+            full_stalls: 0,
+            max_len: 0,
+            was_full: false,
+        }
+    }
+
+    fn is_full(&self) -> bool {
+        self.q.len() >= self.max_events || self.bytes >= self.max_bytes
+    }
+
+    /// Call before deciding whether to read `rx`; counts full transitions.
+    fn note_fullness(&mut self) {
+        let full = self.is_full();
+        if full && !self.was_full {
+            self.full_stalls += 1;
+        }
+        self.was_full = full;
+    }
+
+    fn push(&mut self, e: KernelEvent) {
+        self.bytes += prost::Message::encoded_len(&e);
+        self.q.push_back(e);
+        self.max_len = self.max_len.max(self.q.len());
+    }
+
+    fn ack(&mut self) -> Option<KernelEvent> {
+        let e = self.q.pop_front()?;
+        self.bytes = self.bytes.saturating_sub(prost::Message::encoded_len(&e));
+        Some(e)
+    }
+
+    fn summary(&self) -> String {
+        format!(
+            "resend queue: {} queued, {} resent in total, {} full stalls, max {} queued",
+            self.q.len(),
+            self.resent,
+            self.full_stalls,
+            self.max_len
+        )
+    }
 }
 
 /// TLS config for https endpoints: always trust the platform roots (tonic
@@ -287,6 +368,7 @@ fn build_tls_config(ca_cert_path: &Option<String>) -> Result<ClientTlsConfig> {
 async fn run_session(
     session: Session<'_>,
     rx: &mut Receiver<KernelEvent>,
+    pending: &mut Pending,
     stats: &mut DeliveryStats,
 ) -> Result<()> {
     let Session {
@@ -363,15 +445,37 @@ async fn run_session(
 
     // Run the pump as a block so that every exit path (clean end or any
     // error) flushes pending rejection counts before returning.
+    // Everything still queued is (re)sent on this connection, oldest first.
+    pending.resent += pending.q.len() as u64;
+    // Number of queue-front events already sent on this connection.
+    let mut cursor = 0usize;
+    let mut rx_closed = false;
+
     let result: Result<()> = async {
         loop {
+            pending.note_fullness();
+            if rx_closed && pending.q.is_empty() {
+                // Source exhausted and everything acked: close cleanly.
+                drop(bridge_tx);
+                return Ok(());
+            }
+            let can_send = cursor < pending.q.len();
+            let can_read = !rx_closed && !pending.is_full();
+
             tokio::select! {
                 biased;
 
                 ack = response.message() => {
                     match ack? {
                         Some(a) => {
-                            stats.acked += 1;
+                            // Acks are 1:1 and in order with sent events.
+                            if cursor == 0 || pending.ack().is_none() {
+                                anyhow::bail!("collector sent an ack with no event in flight");
+                            }
+                            cursor -= 1;
+                            // ok=false (validation error, rate limit) is only
+                            // logged and NOT re-sent: the same event would be
+                            // rejected again, looping forever.
                             if !a.ok {
                                 if let Some(r) = rejects.record(Instant::now()) {
                                     log_rejects(r);
@@ -379,35 +483,27 @@ async fn run_session(
                             }
                         }
                         // Server closed the stream — a connection failure, not a
-                        // clean shutdown; retry.
+                        // clean shutdown; retry (unacked events are re-sent).
                         None => anyhow::bail!("collector closed the event stream"),
                     }
                 }
 
-                maybe_event = rx.recv() => {
+                permit = bridge_tx.reserve(), if can_send => {
+                    let permit = permit
+                        .map_err(|_| anyhow::anyhow!("outbound stream to collector closed"))?;
+                    permit.send(pending.q[cursor].clone());
+                    cursor += 1;
+                }
+
+                maybe_event = rx.recv(), if can_read => {
                     match maybe_event {
                         Some(mut event) => {
-                            stats.taken += 1;
                             event.node_id = node_id.to_string();
-                            if bridge_tx.send(event).await.is_err() {
-                                anyhow::bail!("outbound stream to collector closed");
-                            }
+                            pending.push(event);
                         }
-                        // Every event-source Sender was dropped — there will
-                        // never be another event. Close the outbound stream
-                        // cleanly, drain remaining acks, then signal "done".
-                        None => {
-                            drop(bridge_tx);
-                            while let Some(ack) = response.message().await? {
-                                stats.acked += 1;
-                                if !ack.ok {
-                                    if let Some(r) = rejects.record(Instant::now()) {
-                                        log_rejects(r);
-                                    }
-                                }
-                            }
-                            return Ok(());
-                        }
+                        // Every event-source Sender was dropped. Keep going
+                        // until the queue is fully acked.
+                        None => rx_closed = true,
                     }
                 }
             }
@@ -543,6 +639,31 @@ mod tests {
     }
 
     #[test]
+    fn pending_full_by_count_or_bytes_and_acks_in_order() {
+        let ev = |id: &str| KernelEvent {
+            event_id: id.into(),
+            ..Default::default()
+        };
+        let mut p = Pending::new(2, usize::MAX);
+        p.push(ev("a"));
+        assert!(!p.is_full());
+        p.push(ev("b"));
+        p.note_fullness();
+        assert!(p.is_full());
+        assert_eq!(p.full_stalls, 1);
+        assert_eq!(p.ack().unwrap().event_id, "a");
+        assert!(!p.is_full());
+        assert_eq!(p.max_len, 2);
+
+        let mut p = Pending::new(usize::MAX, 10);
+        p.push(ev(&"x".repeat(20)));
+        assert!(p.is_full(), "byte limit must stop reads");
+        p.ack();
+        assert_eq!(p.bytes, 0);
+        assert!(p.ack().is_none());
+    }
+
+    #[test]
     fn jittered_stays_within_25_percent() {
         let base = Duration::from_secs(1);
         for _ in 0..200 {
@@ -634,6 +755,8 @@ mod tests {
         struct FakeCollector {
             got_event: tokio::sync::mpsc::Sender<()>,
             registered: tokio::sync::mpsc::Sender<()>,
+            /// event_id of every event received, in arrival order.
+            seen: Arc<std::sync::Mutex<Vec<String>>>,
         }
 
         #[tonic::async_trait]
@@ -658,8 +781,10 @@ mod tests {
             ) -> std::result::Result<Response<Self::StreamEventsStream>, Status> {
                 let mut inbound = req.into_inner();
                 let got_event = self.got_event.clone();
+                let seen = self.seen.clone();
                 let s = async_stream::stream! {
-                    while let Ok(Some(_)) = inbound.message().await {
+                    while let Ok(Some(ev)) = inbound.message().await {
+                        seen.lock().unwrap().push(ev.event_id);
                         let _ = got_event.try_send(());
                         yield Ok(EventAck { ok: true });
                     }
@@ -697,12 +822,22 @@ mod tests {
         /// Freeze flags of every connection the proxy has accepted so far.
         /// `freeze()` silences only those, so a reconnect gets a working link.
         #[derive(Clone, Default)]
-        struct Conns(Arc<std::sync::Mutex<Vec<Arc<AtomicBool>>>>);
+        struct Conns(Arc<std::sync::Mutex<Vec<(Arc<AtomicBool>, Arc<AtomicBool>)>>>);
 
         impl Conns {
+            /// Both directions go silent.
             fn freeze(&self) {
-                for f in self.0.lock().unwrap().iter() {
-                    f.store(true, Ordering::SeqCst);
+                for (up, down) in self.0.lock().unwrap().iter() {
+                    up.store(true, Ordering::SeqCst);
+                    down.store(true, Ordering::SeqCst);
+                }
+            }
+
+            /// Only collector -> agent goes silent: events still arrive and
+            /// are stored, but their acks are lost.
+            fn freeze_acks(&self) {
+                for (_, down) in self.0.lock().unwrap().iter() {
+                    down.store(true, Ordering::SeqCst);
                 }
             }
         }
@@ -715,12 +850,13 @@ mod tests {
             tokio::spawn(async move {
                 while let Ok((client, _)) = listener.accept().await {
                     let server = TcpStream::connect(upstream).await.unwrap();
-                    let frozen = Arc::new(AtomicBool::new(false));
-                    c.0.lock().unwrap().push(frozen.clone());
+                    let up = Arc::new(AtomicBool::new(false));
+                    let down = Arc::new(AtomicBool::new(false));
+                    c.0.lock().unwrap().push((up.clone(), down.clone()));
                     let (cr, cw) = client.into_split();
                     let (sr, sw) = server.into_split();
-                    tokio::spawn(pipe(cr, sw, frozen.clone()));
-                    tokio::spawn(pipe(sr, cw, frozen));
+                    tokio::spawn(pipe(cr, sw, up));
+                    tokio::spawn(pipe(sr, cw, down));
                 }
             });
             (addr, conns)
@@ -731,6 +867,7 @@ mod tests {
             conns: Conns,
             got_event: tokio::sync::mpsc::Receiver<()>,
             registered: tokio::sync::mpsc::Receiver<()>,
+            seen: Arc<std::sync::Mutex<Vec<String>>>,
         }
 
         /// Real tonic collector behind a proxy that can go silent.
@@ -739,11 +876,13 @@ mod tests {
             let srv_addr = srv_listener.local_addr().unwrap();
             let (got_tx, got_event) = tokio::sync::mpsc::channel(1);
             let (reg_tx, registered) = tokio::sync::mpsc::channel(8);
+            let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
             tokio::spawn(
                 tonic::transport::Server::builder()
                     .add_service(SentinelCollectorServer::new(FakeCollector {
                         got_event: got_tx,
                         registered: reg_tx,
+                        seen: seen.clone(),
                     }))
                     .serve_with_incoming(tokio_stream_from(srv_listener)),
             );
@@ -753,6 +892,7 @@ mod tests {
                 conns,
                 got_event,
                 registered,
+                seen,
             }
         }
 
@@ -790,6 +930,7 @@ mod tests {
                         tuning: fast_tuning(),
                     },
                     &mut ev_rx,
+                    &mut Pending::default(),
                 )
                 .await
             });
@@ -831,6 +972,7 @@ mod tests {
                         tuning: fast_tuning(),
                     },
                     &mut ev_rx,
+                    &mut Pending::default(),
                 )
                 .await
             });
@@ -873,8 +1015,8 @@ mod tests {
 
         #[tokio::test]
         async fn run_once_error_reports_unacknowledged_event_count() {
-            // #241: events already taken from `rx` but never acked are lost on
-            // disconnect; the error (which the caller logs) must say how many.
+            // #241: events already taken from `rx` but never acked are kept for
+            // resend on disconnect; the error (which the caller logs) says how many.
             let mut h = harness().await;
             let (ev_tx, mut ev_rx) = tokio::sync::mpsc::channel::<KernelEvent>(256);
             let endpoint = h.endpoint.clone();
@@ -890,6 +1032,7 @@ mod tests {
                         tuning: fast_tuning(),
                     },
                     &mut ev_rx,
+                    &mut Pending::default(),
                 )
                 .await
             });
@@ -916,11 +1059,11 @@ mod tests {
             let _ = flood.await;
             let msg = format!("{}", res.unwrap_err());
             let n: u64 = msg
-                .split("unacknowledged events: ")
-                .nth(1)
-                .and_then(|r| r.split_whitespace().next())
+                .split(" events queued for resend")
+                .next()
+                .and_then(|r| r.rsplit(' ').next())
                 .and_then(|n| n.parse().ok())
-                .unwrap_or_else(|| panic!("no 'unacknowledged events: N' count in error: {msg}"));
+                .unwrap_or_else(|| panic!("no 'N events queued for resend' in error: {msg}"));
             // The bridge channel alone holds 256 frozen-link events.
             assert!(n >= 256, "count {n} too small: {msg}");
         }
@@ -960,6 +1103,80 @@ mod tests {
             )
             .await;
             agent.abort();
+        }
+
+        /// #241: unique ids survive a link loss. `ack_only` freezes just the
+        /// collector -> agent direction (events stored, acks lost).
+        async fn resend_case(ack_only: bool) {
+            const FIRST: usize = 50;
+            const TOTAL: usize = 400;
+            let mut h = harness().await;
+            let (ev_tx, ev_rx) = tokio::sync::mpsc::channel::<KernelEvent>(16);
+            let agent = tokio::spawn(stream_to_collector_with(
+                h.endpoint.clone(),
+                "n1".into(),
+                String::new(),
+                None,
+                None,
+                fast_tuning(),
+                ev_rx,
+            ));
+            let ev = |i: usize| KernelEvent {
+                event_id: format!("ev-{i}"),
+                ..Default::default()
+            };
+
+            within(5, "first register", h.registered.recv()).await;
+            for i in 0..FIRST {
+                ev_tx.send(ev(i)).await.unwrap();
+            }
+            within(5, "stream never got established", h.got_event.recv()).await;
+
+            if ack_only {
+                h.conns.freeze_acks();
+            } else {
+                h.conns.freeze();
+            }
+            for i in FIRST..TOTAL {
+                ev_tx.send(ev(i)).await.unwrap();
+            }
+            // Source exhausted; the agent may only finish once all are acked.
+            drop(ev_tx);
+
+            let res = within(20, "agent did not finish after reconnect", agent)
+                .await
+                .unwrap();
+            assert!(res.is_ok(), "expected clean exit, got {res:?}");
+
+            // Reconnected at least once.
+            let mut registers = 0;
+            while h.registered.try_recv().is_ok() {
+                registers += 1;
+            }
+            assert!(registers >= 1, "agent never re-registered");
+
+            let seen = h.seen.lock().unwrap().clone();
+            let unique: std::collections::HashSet<_> = seen.iter().cloned().collect();
+            let dups = seen.len() - unique.len();
+            eprintln!(
+                "ack_only={ack_only}: {} received, {dups} duplicates",
+                seen.len()
+            );
+            assert_eq!(unique.len(), TOTAL, "events went missing");
+            if ack_only {
+                // Stored but un-acked events must have been sent again.
+                assert!(dups > 0, "expected duplicates from lost acks");
+            }
+        }
+
+        #[tokio::test]
+        async fn no_events_lost_across_full_freeze() {
+            resend_case(false).await;
+        }
+
+        #[tokio::test]
+        async fn no_events_lost_when_acks_are_lost() {
+            resend_case(true).await;
         }
 
         /// Collector whose `Register` always answers with `reply`.
