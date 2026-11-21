@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/flipslidersand/sentinel-mesh/internal/model"
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
 	"github.com/flipslidersand/sentinel-mesh/internal/store"
 )
@@ -168,7 +169,7 @@ func TestEvents_RegionFilter(t *testing.T) {
 
 	now := time.Now().UTC()
 	for i, node := range []string{"a1", "a1", "b1"} {
-		if err := st.SaveEvent(context.Background(), store.Event{
+		if err := st.SaveEvent(context.Background(), model.Event{
 			EventID:   node + "-" + string(rune('0'+i)),
 			NodeID:    node,
 			Timestamp: now.Add(time.Duration(i) * time.Millisecond),
@@ -179,7 +180,7 @@ func TestEvents_RegionFilter(t *testing.T) {
 		}
 	}
 
-	var east []store.Event
+	var east []model.Event
 	doGET(t, st, reg, "/api/events?region=us-east", &east)
 	if len(east) != 2 {
 		t.Errorf("us-east events = %d, want 2", len(east))
@@ -191,7 +192,7 @@ func TestEvents_RegionFilter(t *testing.T) {
 	}
 
 	// No region → all events.
-	var all []store.Event
+	var all []model.Event
 	doGET(t, st, reg, "/api/events", &all)
 	if len(all) != 3 {
 		t.Errorf("all events = %d, want 3", len(all))
@@ -214,7 +215,7 @@ func TestEvents_LimitClampedToMax(t *testing.T) {
 
 	now := time.Now().UTC()
 	for i := 0; i < 5; i++ {
-		if err := st.SaveEvent(context.Background(), store.Event{
+		if err := st.SaveEvent(context.Background(), model.Event{
 			EventID:   "a1-" + string(rune('0'+i)),
 			NodeID:    "a1",
 			Timestamp: now.Add(time.Duration(i) * time.Millisecond),
@@ -227,7 +228,7 @@ func TestEvents_LimitClampedToMax(t *testing.T) {
 
 	// A limit far above maxLimit is clamped, not rejected: request succeeds
 	// and simply returns everything the store has.
-	var events []store.Event
+	var events []model.Event
 	if code := doGET(t, st, reg, "/api/events?limit=999999999", &events); code != http.StatusOK {
 		t.Fatalf("code=%d, want 200", code)
 	}
@@ -279,7 +280,7 @@ func TestAlerts_RegionFilter(t *testing.T) {
 	_ = reg.Register("node-b", "h", "ip", "v1", "eu-west")
 
 	for i, nodeID := range []string{"node-a", "node-b"} {
-		alert := store.Alert{
+		alert := model.Alert{
 			AlertID:   fmt.Sprintf("alert-%d", i),
 			RuleID:    "rule-1",
 			NodeID:    nodeID,
@@ -293,7 +294,7 @@ func TestAlerts_RegionFilter(t *testing.T) {
 		}
 	}
 
-	var got []store.Alert
+	var got []model.Alert
 	if code := doGET(t, st, reg, "/api/alerts?region=us-east", &got); code != http.StatusOK {
 		t.Fatalf("code=%d, want %d", code, http.StatusOK)
 	}

@@ -5,11 +5,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/flipslidersand/sentinel-mesh/internal/store"
+	"github.com/flipslidersand/sentinel-mesh/internal/model"
 )
 
-func makeEvent(nodeID, eventType string) store.Event {
-	return store.Event{
+func makeEvent(nodeID, eventType string) model.Event {
+	return model.Event{
 		EventID: "test-id",
 		NodeID:  nodeID,
 		Type:    eventType,
@@ -31,7 +31,7 @@ func TestRecord_AlertAtThresholdBreach(t *testing.T) {
 	d := New([]WindowConfig{{Duration: time.Minute, Threshold: 3}})
 	ev := makeEvent("node1", "exec")
 
-	var lastAlerts []store.Alert
+	var lastAlerts []model.Alert
 	for i := 0; i < 5; i++ {
 		if a := d.Record(ev); len(a) > 0 {
 			lastAlerts = a // alert fires once on the crossing (cooldown after)

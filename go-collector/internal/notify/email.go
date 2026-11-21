@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/flipslidersand/sentinel-mesh/internal/store"
+	"github.com/flipslidersand/sentinel-mesh/internal/model"
 )
 
 // EmailNotifier delivers alerts over SMTP.
@@ -74,7 +74,7 @@ func smtpHost(addr string) string {
 func (e *EmailNotifier) Name() string { return "email" }
 
 // buildMessage renders an RFC 5322 message for the alert.
-func (e *EmailNotifier) buildMessage(a store.Alert) []byte {
+func (e *EmailNotifier) buildMessage(a model.Alert) []byte {
 	subject := fmt.Sprintf("[SentinelMesh][%s] %s", a.Severity, a.Message)
 	body := fmt.Sprintf(
 		"A SentinelMesh alert was triggered.\r\n\r\n"+
@@ -100,7 +100,7 @@ func (e *EmailNotifier) buildMessage(a store.Alert) []byte {
 }
 
 // Send implements Notifier.
-func (e *EmailNotifier) Send(ctx context.Context, a store.Alert) error {
+func (e *EmailNotifier) Send(ctx context.Context, a model.Alert) error {
 	if len(e.to) == 0 {
 		return fmt.Errorf("no recipients configured")
 	}

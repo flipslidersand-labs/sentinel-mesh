@@ -9,6 +9,7 @@ import (
 	"time"
 
 	badger "github.com/dgraph-io/badger/v4"
+	"github.com/flipslidersand/sentinel-mesh/internal/model"
 )
 
 // TestSaveEvent_SetsTTL verifies stored events carry a TTL (#77) — without
@@ -21,7 +22,7 @@ func TestSaveEvent_SetsTTL(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() }) //nolint:errcheck
 
-	e := Event{EventID: "e1", NodeID: "n1", Timestamp: time.Now(), Type: "exec", Payload: json.RawMessage(`{}`)}
+	e := model.Event{EventID: "e1", NodeID: "n1", Timestamp: time.Now(), Type: "exec", Payload: json.RawMessage(`{}`)}
 	if err := st.SaveEvent(context.Background(), e); err != nil {
 		t.Fatalf("SaveEvent: %v", err)
 	}
@@ -98,7 +99,7 @@ func TestListEvents_NodeFilterScanCap(t *testing.T) {
 
 	// 20 events, none for "node-x": more than the shrunk scan cap.
 	for i := 0; i < 20; i++ {
-		e := Event{
+		e := model.Event{
 			EventID:   strconv.Itoa(i),
 			NodeID:    "node-a",
 			Timestamp: time.Now(),
@@ -119,7 +120,7 @@ func TestListEvents_NodeFilterScanCap(t *testing.T) {
 	}
 
 	// A match that falls within the cap is still found.
-	e := Event{EventID: "match-1", NodeID: "node-x", Timestamp: time.Now(), Type: "exec", Payload: json.RawMessage(`{}`)}
+	e := model.Event{EventID: "match-1", NodeID: "node-x", Timestamp: time.Now(), Type: "exec", Payload: json.RawMessage(`{}`)}
 	if err := st.SaveEvent(ctx, e); err != nil {
 		t.Fatalf("SaveEvent: %v", err)
 	}
@@ -267,7 +268,7 @@ func TestListAlerts_NewestFirstWithinOneSecond(t *testing.T) {
 
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	for i, d := range []time.Duration{0, 100 * time.Millisecond, 500 * time.Millisecond} {
-		a := Alert{AlertID: "a" + strconv.Itoa(i), NodeID: "n1", Timestamp: base.Add(d)}
+		a := model.Alert{AlertID: "a" + strconv.Itoa(i), NodeID: "n1", Timestamp: base.Add(d)}
 		if err := st.SaveAlert(context.Background(), a); err != nil {
 			t.Fatalf("SaveAlert: %v", err)
 		}
@@ -294,10 +295,10 @@ func TestList_CancelledContextReturnsNilWithoutRacing(t *testing.T) {
 	bg := context.Background()
 	for i := 0; i < 200; i++ {
 		id := strconv.Itoa(i)
-		if err := st.SaveEvent(bg, Event{EventID: id, NodeID: "n"}); err != nil {
+		if err := st.SaveEvent(bg, model.Event{EventID: id, NodeID: "n"}); err != nil {
 			t.Fatalf("SaveEvent: %v", err)
 		}
-		if err := st.SaveAlert(bg, Alert{AlertID: id, NodeID: "n", Timestamp: time.Now()}); err != nil {
+		if err := st.SaveAlert(bg, model.Alert{AlertID: id, NodeID: "n", Timestamp: time.Now()}); err != nil {
 			t.Fatalf("SaveAlert: %v", err)
 		}
 	}
@@ -330,7 +331,7 @@ func TestClose_WaitsForAbandonedViewGoroutines(t *testing.T) {
 	bg := context.Background()
 	for i := 0; i < 50; i++ {
 		id := strconv.Itoa(i)
-		if err := st.SaveEvent(bg, Event{EventID: id, NodeID: "n"}); err != nil {
+		if err := st.SaveEvent(bg, model.Event{EventID: id, NodeID: "n"}); err != nil {
 			t.Fatalf("SaveEvent: %v", err)
 		}
 	}
@@ -364,7 +365,7 @@ func TestSaveEvent_CancelledMidWriteStillCountedInStats(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
-	e := Event{EventID: "e1", NodeID: "n1", Timestamp: time.Now(), Type: "exec", Payload: json.RawMessage(`{}`)}
+	e := model.Event{EventID: "e1", NodeID: "n1", Timestamp: time.Now(), Type: "exec", Payload: json.RawMessage(`{}`)}
 	go func() { errCh <- st.SaveEvent(ctx, e) }()
 
 	<-started

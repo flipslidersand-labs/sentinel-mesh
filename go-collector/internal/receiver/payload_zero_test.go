@@ -8,8 +8,8 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/flipslidersand/sentinel-mesh/internal/alerting"
+	"github.com/flipslidersand/sentinel-mesh/internal/model"
 	"github.com/flipslidersand/sentinel-mesh/internal/pb"
-	"github.com/flipslidersand/sentinel-mesh/internal/store"
 )
 
 func decodePayload(t *testing.T, raw json.RawMessage) map[string]any {
@@ -101,13 +101,13 @@ func TestUIDZeroExecFiresUIDEqZeroRule(t *testing.T) {
 
 	ev := &pb.KernelEvent{Type: pb.EventType_EXEC,
 		Payload: &pb.KernelEvent_Exec{Exec: &pb.ExecEvent{Pid: 9, Ppid: 1, Comm: "sh", Uid: 0}}}
-	alerts := eng.Evaluate(store.Event{Type: "exec", Payload: s.eventPayload(ev)})
+	alerts := eng.Evaluate(model.Event{Type: "exec", Payload: s.eventPayload(ev)})
 	if len(alerts) != 1 {
 		t.Fatalf("uid=0 exec: got %d alerts, want 1", len(alerts))
 	}
 
 	ev.GetExec().Uid = 1000
-	if n := len(eng.Evaluate(store.Event{Type: "exec", Payload: s.eventPayload(ev)})); n != 0 {
+	if n := len(eng.Evaluate(model.Event{Type: "exec", Payload: s.eventPayload(ev)})); n != 0 {
 		t.Fatalf("uid=1000 exec: got %d alerts, want 0", n)
 	}
 }

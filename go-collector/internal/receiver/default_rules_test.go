@@ -8,8 +8,8 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/flipslidersand/sentinel-mesh/internal/alerting"
+	"github.com/flipslidersand/sentinel-mesh/internal/model"
 	"github.com/flipslidersand/sentinel-mesh/internal/pb"
-	"github.com/flipslidersand/sentinel-mesh/internal/store"
 )
 
 // loadDefaultRules loads the shipped rules.yaml (repo root), not a
@@ -43,7 +43,7 @@ func TestDefaultRuleTCPSuspiciousPortFires(t *testing.T) {
 			DstIp: "10.0.0.2", DstPort: 31337, Direction: "outbound",
 		}},
 	}
-	stored := store.Event{
+	stored := model.Event{
 		EventID: ev.EventId, NodeID: ev.NodeId, Timestamp: time.Now().UTC(),
 		Type: s.eventTypeName(ev), Payload: s.eventPayload(ev),
 	}
