@@ -196,31 +196,14 @@ because the bearer token would otherwise cross the network in plaintext.`,
   SENTINEL_API_TOKEN=<token> sentinel-collector serve --aggregate --aggregate-allow-insecure-http \
     --upstreams=us-east=http://collector-us-east:8081`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Validate --grpc-auth first so a typo exits before the store lock or
-			// any listener is taken (#222).
-			grpcAuthMode, _ := cmd.Flags().GetString("grpc-auth")
-			grpcAuthEnabled, err := httpauth.ParseMode("grpc-auth", grpcAuthMode)
+			// loadServeConfig validates --grpc-auth first so a typo exits before the
+			// store lock or any listener is taken (#222), and refuses to start
+			// without SENTINEL_API_TOKEN unless unauthenticated REST is explicitly
+			// requested (#254).
+			cfg, err := loadServeConfig(cmd)
 			if err != nil {
 				return err
 			}
-
-			aggregate, _ := cmd.Flags().GetBool("aggregate")
-			upstreamsSet := cmd.Flags().Changed("upstreams") || cmd.Flags().Changed("poll-interval")
-			if !aggregate && upstreamsSet {
-				return fmt.Errorf("--upstreams/--poll-interval require --aggregate")
-			}
-
-			// Same for --http-auth: refuse to start without SENTINEL_API_TOKEN
-			// unless unauthenticated REST is explicitly requested (#254).
-			httpAuthMode, _ := cmd.Flags().GetString("http-auth")
-			apiToken, restUnauth, err := httpauth.ResolveToken(httpAuthMode)
-			if err != nil {
-				return err
-			}
-
-			grpcAddr, _ := cmd.Flags().GetString("grpc-addr")
-			httpAddr, _ := cmd.Flags().GetString("http-addr")
-			dataDir, _ := cmd.Flags().GetString("data-dir")
 
 			logger, err := zap.NewProduction()
 			if err != nil {
@@ -229,132 +212,20 @@ because the bearer token would otherwise cross the network in plaintext.`,
 			defer logger.Sync() //nolint:errcheck
 
 			// Validate REST TLS files before opening the store or any listener.
-			httpTLSCert, httpTLSKey, err := httpTLSFlags(cmd, logger, "REST API")
-			if err != nil {
+			if err := checkHTTPTLS(cfg, logger, "REST API"); err != nil {
 				return err
 			}
 
 			// Aggregate mode: no gRPC/store — poll upstream region collectors and
 			// serve a merged read-only view.
-			if aggregate {
-				warnIgnoredNormalModeFlags(cmd, grpcAddr, logger)
-				return runAggregate(cmd, logger, apiToken, restUnauth, httpTLSCert, httpTLSKey)
+			if cfg.aggregate {
+				warnIgnoredNormalModeFlags(cmd, cfg.grpcAddr, logger)
+				return runAggregate(cfg, logger)
 			}
-
-			st, err := store.New(dataDir)
-			if err != nil {
-				return fmt.Errorf("badger open: %w", err)
-			}
-			defer st.Close() //nolint:errcheck
-
-			reg := registry.New()
-
-			ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-			defer cancel()
-
-			// Phase 4: mark agents inactive after 60s of silence, check every 30s
-			heartbeatTimeout, _ := cmd.Flags().GetDuration("heartbeat-timeout")
-			if heartbeatTimeout <= 0 {
-				return fmt.Errorf("--heartbeat-timeout must be positive, got %s", heartbeatTimeout)
-			}
-			reg.StartHeartbeatChecker(ctx, heartbeatTimeout, heartbeatTimeout/2, registry.DefaultEvictAfter)
-			logger.Info("heartbeat checker started", zap.Duration("timeout", heartbeatTimeout))
-
-			// Phase 5: load alerting rules and initialize engine
-			rulesPath, _ := cmd.Flags().GetString("rules")
-			ruleset, err := alerting.LoadRules(rulesPath)
-			if err != nil {
-				return fmt.Errorf("load rules: %w", err)
-			}
-			if err := ruleset.Validate(); err != nil {
-				return fmt.Errorf("validate rules: %w", err)
-			}
-			for _, w := range ruleset.UnknownFieldWarnings() {
-				logger.Warn("rule references unknown payload field", zap.String("detail", w))
-			}
-			engine := alerting.New(ruleset, logger)
-			if len(ruleset.Rules) > 0 {
-				logger.Info("alerting engine loaded", zap.Int("rules", len(ruleset.Rules)))
-			}
-
-			// Phase 6: initialize OTel metrics and traces
-			metricsProvider, err := otel.NewMetricsProvider(ctx)
-			if err != nil {
-				return fmt.Errorf("otel metrics: %w", err)
-			}
-			logger.Info("Prometheus metrics endpoint enabled", zap.String("addr", httpAddr+"/metrics"))
-
-			otelEndpoint, _ := cmd.Flags().GetString("otel-endpoint")
-			tracesProvider, err := otel.NewTracesProvider(ctx, otelEndpoint)
-			if err != nil {
-				return fmt.Errorf("otel traces: %w", err)
-			}
-			defer tracesProvider.Close(ctx) //nolint:errcheck
-			if otelEndpoint != "" {
-				logger.Info("distributed tracing enabled", zap.String("endpoint", otelEndpoint))
-			}
-
-			// Phase 7: anomaly detector (sliding-window frequency detection)
-			detector := anomaly.New(nil)
-			detector.StartGC(ctx, time.Minute)
-			logger.Info("anomaly detector started",
-				zap.Int("windows", len(anomaly.DefaultWindows)))
-
-			// Alert notifications (Slack/email) — configured via SENTINEL_* env vars.
-			notifier, err := notify.DispatcherFromEnv(logger)
-			if err != nil {
-				return fmt.Errorf("notify config: %w", err)
-			}
-			if notifier.Enabled() {
-				logger.Info("alert notifications enabled")
-			}
-
-			// Default region for agents that register without one.
-			defaultRegion, _ := cmd.Flags().GetString("region")
-			logger.Info("collector default region", zap.String("region", defaultRegion))
-
-			staticDir, _ := cmd.Flags().GetString("static-dir")
-			corsOrigins, _ := cmd.Flags().GetStringSlice("cors-origins")
-			if restUnauth {
-				logger.Warn("REST API is UNAUTHENTICATED (--http-auth=disabled) — set " + httpauth.EnvAPIToken + " and use --http-auth=required")
-			}
-
-			// REST API in background, tied to ctx for graceful shutdown (#117).
-			router := exporter.Router(st, reg, detector, staticDir, corsOrigins, apiToken)
-			httpServer := newHTTPServer(httpAddr, router)
-
-			// gRPC server (blocking, but ctx-aware so SIGINT/SIGTERM gracefully
-			// stops it instead of hanging forever — #117).
-			grpcTLSCert, _ := cmd.Flags().GetString("grpc-tls-cert")
-			grpcTLSKey, _ := cmd.Flags().GetString("grpc-tls-key")
-			if grpcTLSCert == "" || grpcTLSKey == "" {
-				logger.Warn("gRPC server is running WITHOUT TLS — set --grpc-tls-cert/--grpc-tls-key to require it")
-			}
-			// gRPC auth is controlled solely by --grpc-auth (#222), independent
-			// of SENTINEL_API_TOKEN (REST only). "required" (default) is
-			// fail-closed: with zero issued per-agent tokens (#189/#191) every
-			// RPC is rejected. Unauthenticated gRPC needs explicit "disabled".
-			if !grpcAuthEnabled {
-				logger.Warn("gRPC server is UNAUTHENTICATED (--grpc-auth=disabled) — use --grpc-auth=required and issue per-agent tokens via `token issue`")
-			}
-			// REST failures (e.g. port in use) cancel ctx and fail the process;
-			// we wait for REST to finish stopping before the deferred
-			// st.Close() runs (#316, #318).
-			return runRESTAndGRPC(ctx, cancel, func(ctx context.Context) error {
-				logger.Info("REST API listening", zap.String("addr", httpAddr))
-				return runHTTPServerTLSUntilDone(ctx, httpServer, "REST API", httpTLSCert, httpTLSKey, logger)
-			}, func(ctx context.Context) error {
-				return receiver.Serve(ctx, receiver.Config{
-					Addr: grpcAddr, TLSCertFile: grpcTLSCert, TLSKeyFile: grpcTLSKey,
-					AuthEnabled: grpcAuthEnabled, DefaultRegion: defaultRegion,
-				}, receiver.Deps{
-					Store: st, Registry: reg, Engine: engine, Detector: detector, Notifier: notifier,
-					Metrics: metricsProvider, Tracer: tracesProvider.Tracer(), Logger: logger,
-				})
-			})
+			return runNormal(cfg, logger)
 		},
 	}
-	cmd.Flags().String("grpc-addr", ":50051", "gRPC listen address")
+	cmd.Flags().String("grpc-addr", defaultGRPCAddr, "gRPC listen address")
 	cmd.Flags().String("grpc-tls-cert", "", "path to gRPC server TLS certificate (PEM); requires --grpc-tls-key")
 	cmd.Flags().String("grpc-tls-key", "", "path to gRPC server TLS private key (PEM); requires --grpc-tls-cert")
 	cmd.Flags().String("grpc-auth", "required", "gRPC authentication: required (per-agent tokens; rejects all RPCs if none issued) or disabled (unauthenticated, dev only)")
@@ -378,19 +249,15 @@ because the bearer token would otherwise cross the network in plaintext.`,
 	return cmd
 }
 
-// httpTLSFlags returns the REST API TLS cert/key paths and logs a warning
-// when REST is served without TLS (#359). The flags are required together
+// checkHTTPTLS validates the REST API TLS cert/key and logs a warning when
+// REST is served without TLS (#359). The flags are required together
 // (enforced by cobra), so both are empty or both are set.
-func httpTLSFlags(cmd *cobra.Command, logger *zap.Logger, name string) (string, string, error) {
-	cert, _ := cmd.Flags().GetString("http-tls-cert")
-	key, _ := cmd.Flags().GetString("http-tls-key")
-	if cert != "" && key != "" {
-		return cert, key, validateTLSFiles(cert, key)
+func checkHTTPTLS(cfg *serveConfig, logger *zap.Logger, name string) error {
+	if cfg.httpTLSCert != "" && cfg.httpTLSKey != "" {
+		return validateTLSFiles(cfg.httpTLSCert, cfg.httpTLSKey)
 	}
-	if cert == "" || key == "" {
-		logger.Warn(name + " is running WITHOUT TLS — the bearer token is sent in plaintext; set --http-tls-cert/--http-tls-key to require it")
-	}
-	return cert, key, nil
+	logger.Warn(name + " is running WITHOUT TLS — the bearer token is sent in plaintext; set --http-tls-cert/--http-tls-key to require it")
+	return nil
 }
 
 // validateTLSFiles loads the cert/key pair so an unreadable or mismatched
@@ -406,10 +273,10 @@ func validateTLSFiles(cert, key string) error {
 // that was explicitly set by the caller but is ignored in --aggregate mode
 // (#152), so a mistaken flag (e.g. --grpc-tls-cert) doesn't silently no-op.
 func warnIgnoredNormalModeFlags(cmd *cobra.Command, grpcAddr string, logger *zap.Logger) {
-	if cmd.Flags().Changed("grpc-addr") && grpcAddr != ":50051" {
+	if cmd.Flags().Changed("grpc-addr") && grpcAddr != defaultGRPCAddr {
 		logger.Warn("--aggregate mode ignores --grpc-addr")
 	}
-	for _, name := range []string{"data-dir", "rules", "grpc-tls-cert", "grpc-tls-key", "grpc-auth", "region"} {
+	for _, name := range normalOnlyFlags {
 		if cmd.Flags().Changed(name) {
 			logger.Warn("--aggregate mode ignores --" + name)
 		}
@@ -418,18 +285,13 @@ func warnIgnoredNormalModeFlags(cmd *cobra.Command, grpcAddr string, logger *zap
 
 // runAggregate starts the cross-region aggregator: it polls upstream region
 // collectors' REST APIs and serves a merged read-only view on --http-addr.
-func runAggregate(cmd *cobra.Command, logger *zap.Logger, apiToken string, restUnauth bool, httpTLSCert, httpTLSKey string) error {
-	httpAddr, _ := cmd.Flags().GetString("http-addr")
-	specs, _ := cmd.Flags().GetStringSlice("upstreams")
-	interval, _ := cmd.Flags().GetDuration("poll-interval")
-	staticDir, _ := cmd.Flags().GetString("static-dir")
-	corsOrigins, _ := cmd.Flags().GetStringSlice("cors-origins")
-	if restUnauth {
+func runAggregate(cfg *serveConfig, logger *zap.Logger) error {
+	httpAddr, apiToken := cfg.httpAddr, cfg.apiToken
+	if cfg.restUnauth {
 		logger.Warn("aggregator REST API is UNAUTHENTICATED (--http-auth=disabled) — set " + httpauth.EnvAPIToken + " and use --http-auth=required")
 	}
 
-	allowInsecure, _ := cmd.Flags().GetBool("aggregate-allow-insecure-http")
-	upstreams, err := aggregator.ParseUpstreams(specs, allowInsecure)
+	upstreams, err := aggregator.ParseUpstreams(cfg.upstreams, cfg.allowInsecureHTTP)
 	if err != nil {
 		return err
 	}
@@ -440,12 +302,123 @@ func runAggregate(cmd *cobra.Command, logger *zap.Logger, apiToken string, restU
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	agg := aggregator.New(upstreams, interval, apiToken, logger)
+	agg := aggregator.New(upstreams, cfg.pollInterval, apiToken, logger)
 	agg.Start(ctx)
 	logger.Info("aggregator started",
-		zap.Int("upstreams", len(upstreams)), zap.Duration("poll_interval", interval))
+		zap.Int("upstreams", len(upstreams)), zap.Duration("poll_interval", cfg.pollInterval))
 
-	httpServer := newHTTPServer(httpAddr, aggregator.Router(agg, staticDir, corsOrigins, apiToken))
+	httpServer := newHTTPServer(httpAddr, aggregator.Router(agg, cfg.staticDir, cfg.corsOrigins, apiToken))
 	logger.Info("aggregator REST API listening", zap.String("addr", httpAddr))
-	return runHTTPServerTLSUntilDone(ctx, httpServer, "aggregator REST API", httpTLSCert, httpTLSKey, logger)
+	return runHTTPServerTLSUntilDone(ctx, httpServer, "aggregator REST API", cfg.httpTLSCert, cfg.httpTLSKey, logger)
+}
+
+// runNormal runs normal mode (gRPC + REST + store) from an already-loaded cfg.
+func runNormal(cfg *serveConfig, logger *zap.Logger) error {
+	st, err := store.New(cfg.dataDir)
+	if err != nil {
+		return fmt.Errorf("badger open: %w", err)
+	}
+	defer st.Close() //nolint:errcheck
+
+	reg := registry.New()
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	// Phase 4: mark agents inactive after 60s of silence, check every 30s
+	heartbeatTimeout := cfg.heartbeatTimeout
+	if heartbeatTimeout <= 0 {
+		return fmt.Errorf("--heartbeat-timeout must be positive, got %s", heartbeatTimeout)
+	}
+	reg.StartHeartbeatChecker(ctx, heartbeatTimeout, heartbeatTimeout/2, registry.DefaultEvictAfter)
+	logger.Info("heartbeat checker started", zap.Duration("timeout", heartbeatTimeout))
+
+	// Phase 5: load alerting rules and initialize engine
+	ruleset, err := alerting.LoadRules(cfg.rulesPath)
+	if err != nil {
+		return fmt.Errorf("load rules: %w", err)
+	}
+	if err := ruleset.Validate(); err != nil {
+		return fmt.Errorf("validate rules: %w", err)
+	}
+	for _, w := range ruleset.UnknownFieldWarnings() {
+		logger.Warn("rule references unknown payload field", zap.String("detail", w))
+	}
+	engine := alerting.New(ruleset, logger)
+	if len(ruleset.Rules) > 0 {
+		logger.Info("alerting engine loaded", zap.Int("rules", len(ruleset.Rules)))
+	}
+
+	// Phase 6: initialize OTel metrics and traces
+	metricsProvider, err := otel.NewMetricsProvider(ctx)
+	if err != nil {
+		return fmt.Errorf("otel metrics: %w", err)
+	}
+	logger.Info("Prometheus metrics endpoint enabled", zap.String("addr", cfg.httpAddr+"/metrics"))
+
+	otelEndpoint := cfg.otelEndpoint
+	tracesProvider, err := otel.NewTracesProvider(ctx, otelEndpoint)
+	if err != nil {
+		return fmt.Errorf("otel traces: %w", err)
+	}
+	defer tracesProvider.Close(ctx) //nolint:errcheck
+	if otelEndpoint != "" {
+		logger.Info("distributed tracing enabled", zap.String("endpoint", otelEndpoint))
+	}
+
+	// Phase 7: anomaly detector (sliding-window frequency detection)
+	detector := anomaly.New(nil)
+	detector.StartGC(ctx, time.Minute)
+	logger.Info("anomaly detector started",
+		zap.Int("windows", len(anomaly.DefaultWindows)))
+
+	// Alert notifications (Slack/email) — configured via SENTINEL_* env vars.
+	notifier, err := notify.DispatcherFromEnv(logger)
+	if err != nil {
+		return fmt.Errorf("notify config: %w", err)
+	}
+	if notifier.Enabled() {
+		logger.Info("alert notifications enabled")
+	}
+
+	// Default region for agents that register without one.
+	defaultRegion := cfg.region
+	logger.Info("collector default region", zap.String("region", defaultRegion))
+
+	if cfg.restUnauth {
+		logger.Warn("REST API is UNAUTHENTICATED (--http-auth=disabled) — set " + httpauth.EnvAPIToken + " and use --http-auth=required")
+	}
+
+	// REST API in background, tied to ctx for graceful shutdown (#117).
+	router := exporter.Router(st, reg, detector, cfg.staticDir, cfg.corsOrigins, cfg.apiToken)
+	httpServer := newHTTPServer(cfg.httpAddr, router)
+
+	// gRPC server (blocking, but ctx-aware so SIGINT/SIGTERM gracefully
+	// stops it instead of hanging forever — #117).
+	grpcTLSCert, grpcTLSKey := cfg.grpcTLSCert, cfg.grpcTLSKey
+	if grpcTLSCert == "" || grpcTLSKey == "" {
+		logger.Warn("gRPC server is running WITHOUT TLS — set --grpc-tls-cert/--grpc-tls-key to require it")
+	}
+	// gRPC auth is controlled solely by --grpc-auth (#222), independent
+	// of SENTINEL_API_TOKEN (REST only). "required" (default) is
+	// fail-closed: with zero issued per-agent tokens (#189/#191) every
+	// RPC is rejected. Unauthenticated gRPC needs explicit "disabled".
+	if !cfg.grpcAuthEnabled {
+		logger.Warn("gRPC server is UNAUTHENTICATED (--grpc-auth=disabled) — use --grpc-auth=required and issue per-agent tokens via `token issue`")
+	}
+	// REST failures (e.g. port in use) cancel ctx and fail the process;
+	// we wait for REST to finish stopping before the deferred
+	// st.Close() runs (#316, #318).
+	return runRESTAndGRPC(ctx, cancel, func(ctx context.Context) error {
+		logger.Info("REST API listening", zap.String("addr", cfg.httpAddr))
+		return runHTTPServerTLSUntilDone(ctx, httpServer, "REST API", cfg.httpTLSCert, cfg.httpTLSKey, logger)
+	}, func(ctx context.Context) error {
+		return receiver.Serve(ctx, receiver.Config{
+			Addr: cfg.grpcAddr, TLSCertFile: grpcTLSCert, TLSKeyFile: grpcTLSKey,
+			AuthEnabled: cfg.grpcAuthEnabled, DefaultRegion: defaultRegion,
+		}, receiver.Deps{
+			Store: st, Registry: reg, Engine: engine, Detector: detector, Notifier: notifier,
+			Metrics: metricsProvider, Tracer: tracesProvider.Tracer(), Logger: logger,
+		})
+	})
 }
