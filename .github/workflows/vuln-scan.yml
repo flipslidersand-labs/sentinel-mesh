@@ -48,8 +48,8 @@ jobs:
         if: env.install_failed != '1'
         run: |
           out="$(mktemp)"
-          "$(go env GOPATH)/bin/govulncheck" ./... >"$out" 2>&1
-          rc=$?
+          rc=0
+          "$(go env GOPATH)/bin/govulncheck" ./... >"$out" 2>&1 || rc=$?
           cat "$out"
           if [ "$rc" -eq 0 ]; then
             echo "## govulncheck: no findings" >> "$GITHUB_STEP_SUMMARY"
@@ -58,7 +58,7 @@ jobs:
               echo "## ⚠ findings detected (govulncheck, exit $rc)"
               echo "Vulnerabilities: $(grep -c '^Vulnerability #' "$out")"
               echo "IDs: $(grep -o 'GO-[0-9]*-[0-9]*' "$out" | sort -u | tr '\n' ' ')"
-              echo '```'; grep -E '^(Your code|This scan|Vulnerability #)' "$out" | head -20; echo '```'
+              echo '```'; grep -E '^(Your code|This scan|Vulnerability #)' "$out" | head -20 || true; echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
             echo "::warning::govulncheck が脆弱性を検出"
           fi
@@ -86,8 +86,8 @@ jobs:
         # licenses は deny.toml の許可リスト整備が前提のため本 PR では対象外。advisories のみ。
         run: |
           out="$(mktemp)"
-          cargo deny check advisories >"$out" 2>&1
-          rc=$?
+          rc=0
+          cargo deny check advisories >"$out" 2>&1 || rc=$?
           cat "$out"
           if [ "$rc" -eq 0 ]; then
             echo "## cargo-deny advisories: no findings" >> "$GITHUB_STEP_SUMMARY"
@@ -96,7 +96,7 @@ jobs:
               echo "## ⚠ findings detected (cargo-deny advisories, exit $rc)"
               echo "Errors: $(grep -c '^error\[' "$out")"
               echo "IDs: $(grep -oE 'RUSTSEC-[0-9]+-[0-9]+' "$out" | sort -u | tr '\n' ' ')"
-              echo '```'; grep -E '^error\[' "$out" | sort | uniq -c | head -20; echo '```'
+              echo '```'; grep -E '^error\[' "$out" | sort | uniq -c | head -20 || true; echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
             echo "::warning::cargo deny が advisory を検出"
           fi
@@ -119,8 +119,8 @@ jobs:
         # package-lock.json のみを対象にし、依存はインストールしない。
         run: |
           out="$(mktemp)"
-          npm audit --package-lock-only --audit-level=high >"$out" 2>&1
-          rc=$?
+          rc=0
+          npm audit --package-lock-only --audit-level=high >"$out" 2>&1 || rc=$?
           cat "$out"
           if [ "$rc" -eq 0 ]; then
             echo "## npm audit: no findings (high+)" >> "$GITHUB_STEP_SUMMARY"
