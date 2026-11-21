@@ -146,19 +146,16 @@ async fn stream_to_collector_with(
 
     loop {
         let mut stats = DeliveryStats::default();
-        match run_once_tracked(
-            &endpoint,
-            &node_id,
-            &region,
-            &hostname,
-            auth_token.clone(),
-            &ca_cert_path,
+        let session = Session {
+            endpoint: &endpoint,
+            node_id: &node_id,
+            region: &region,
+            hostname: &hostname,
+            auth_token: auth_token.clone(),
+            ca_cert_path: &ca_cert_path,
             tuning,
-            &mut rx,
-            &mut stats,
-        )
-        .await
-        {
+        };
+        match run_once_tracked(session, &mut rx, &mut stats).await {
             // rx.recv() returned None: every event-source Sender was dropped,
             // so there will never be another event. Exit for good.
             Ok(()) => return Ok(()),
@@ -218,6 +215,17 @@ fn jittered(base: Duration) -> Duration {
     base.mul_f64(factor)
 }
 
+/// Parameters shared by every connection attempt (identity, auth, TLS, timing).
+struct Session<'a> {
+    endpoint: &'a str,
+    node_id: &'a str,
+    region: &'a str,
+    hostname: &'a str,
+    auth_token: Option<MetadataValue<tonic::metadata::Ascii>>,
+    ca_cert_path: &'a Option<String>,
+    tuning: ConnTuning,
+}
+
 /// One connect→register→stream attempt. Returns `Ok(())` only when the event
 /// source is exhausted (rx closed); any connection/RPC failure is returned as
 /// `Err` for the caller to retry.
@@ -228,58 +236,19 @@ fn jittered(base: Duration) -> Duration {
 /// upper bound on true loss (an event may have arrived with its ack lost),
 /// and it includes events still buffered in the bridge / HTTP/2 window.
 #[cfg(test)]
-#[allow(clippy::too_many_arguments)]
-async fn run_once(
-    endpoint: &str,
-    node_id: &str,
-    region: &str,
-    hostname: &str,
-    auth_token: Option<MetadataValue<tonic::metadata::Ascii>>,
-    ca_cert_path: &Option<String>,
-    tuning: ConnTuning,
-    rx: &mut Receiver<KernelEvent>,
-) -> Result<()> {
+async fn run_once(session: Session<'_>, rx: &mut Receiver<KernelEvent>) -> Result<()> {
     let mut stats = DeliveryStats::default();
-    run_once_tracked(
-        endpoint,
-        node_id,
-        region,
-        hostname,
-        auth_token,
-        ca_cert_path,
-        tuning,
-        rx,
-        &mut stats,
-    )
-    .await
+    run_once_tracked(session, rx, &mut stats).await
 }
 
 /// `run_once` that leaves its `DeliveryStats` (incl. when the stream was
 /// established) with the caller, so the reconnect loop can decide on backoff.
-#[allow(clippy::too_many_arguments)]
 async fn run_once_tracked(
-    endpoint: &str,
-    node_id: &str,
-    region: &str,
-    hostname: &str,
-    auth_token: Option<MetadataValue<tonic::metadata::Ascii>>,
-    ca_cert_path: &Option<String>,
-    tuning: ConnTuning,
+    session: Session<'_>,
     rx: &mut Receiver<KernelEvent>,
     stats: &mut DeliveryStats,
 ) -> Result<()> {
-    let res = run_session(
-        endpoint,
-        node_id,
-        region,
-        hostname,
-        auth_token,
-        ca_cert_path,
-        tuning,
-        rx,
-        stats,
-    )
-    .await;
+    let res = run_session(session, rx, stats).await;
     res.map_err(|e| {
         let unacked = stats.taken.saturating_sub(stats.acked);
         if unacked > 0 {
@@ -315,18 +284,20 @@ fn build_tls_config(ca_cert_path: &Option<String>) -> Result<ClientTlsConfig> {
     Ok(tls)
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn run_session(
-    endpoint: &str,
-    node_id: &str,
-    region: &str,
-    hostname: &str,
-    auth_token: Option<MetadataValue<tonic::metadata::Ascii>>,
-    ca_cert_path: &Option<String>,
-    tuning: ConnTuning,
+    session: Session<'_>,
     rx: &mut Receiver<KernelEvent>,
     stats: &mut DeliveryStats,
 ) -> Result<()> {
+    let Session {
+        endpoint,
+        node_id,
+        region,
+        hostname,
+        auth_token,
+        ca_cert_path,
+        tuning,
+    } = session;
     let mut builder = Endpoint::from_shared(endpoint.to_string())?
         .connect_timeout(tuning.connect_timeout)
         .timeout(tuning.rpc_timeout)
@@ -809,13 +780,15 @@ mod tests {
             let endpoint = h.endpoint.clone();
             let agent = tokio::spawn(async move {
                 run_once(
-                    &endpoint,
-                    "n1",
-                    "",
-                    "h",
-                    None,
-                    &None,
-                    fast_tuning(),
+                    Session {
+                        endpoint: &endpoint,
+                        node_id: "n1",
+                        region: "",
+                        hostname: "h",
+                        auth_token: None,
+                        ca_cert_path: &None,
+                        tuning: fast_tuning(),
+                    },
                     &mut ev_rx,
                 )
                 .await
@@ -848,13 +821,15 @@ mod tests {
             let endpoint = h.endpoint.clone();
             let agent = tokio::spawn(async move {
                 run_once(
-                    &endpoint,
-                    "n1",
-                    "",
-                    "h",
-                    None,
-                    &None,
-                    fast_tuning(),
+                    Session {
+                        endpoint: &endpoint,
+                        node_id: "n1",
+                        region: "",
+                        hostname: "h",
+                        auth_token: None,
+                        ca_cert_path: &None,
+                        tuning: fast_tuning(),
+                    },
                     &mut ev_rx,
                 )
                 .await
@@ -905,13 +880,15 @@ mod tests {
             let endpoint = h.endpoint.clone();
             let agent = tokio::spawn(async move {
                 run_once(
-                    &endpoint,
-                    "n1",
-                    "",
-                    "h",
-                    None,
-                    &None,
-                    fast_tuning(),
+                    Session {
+                        endpoint: &endpoint,
+                        node_id: "n1",
+                        region: "",
+                        hostname: "h",
+                        auth_token: None,
+                        ca_cert_path: &None,
+                        tuning: fast_tuning(),
+                    },
                     &mut ev_rx,
                 )
                 .await

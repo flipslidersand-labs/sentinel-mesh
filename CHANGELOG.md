@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **refactor (#421):** removed the unreachable heartbeat-timeout fallback in `registry.StartHeartbeatChecker` (caller validates), and bundled the per-connection parameters of the rust-agent gRPC session functions into one struct (no behavior change).
+
 ### Fixed
 
 - **rust-agent (#432):** EXEC events now carry `ppid` and `cmdline` (argv joined by spaces, ASCII-sanitized (bytes outside 0x20-0x7E become `?`) and capped at 256 bytes to match the collector limit), read in userspace from `/proc/<pid>/status` and `/proc/<pid>/cmdline`. Very short-lived processes that exit before the read still report `ppid` 0 / empty `cmdline`. Not verified on a real eBPF run.
