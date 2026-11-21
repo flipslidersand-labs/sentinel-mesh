@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **rust-agent (eBPF, #369):** `tcp_connect` now checks `skc_family` and skips non-IPv4 sockets, so IPv6 connections are no longer recorded with bogus IPv4 addresses (IPv6 is not yet supported). Known limitation: dual-stack IPv6 sockets connecting to v4-mapped addresses are also skipped (tracked in #429).
 
 ### Changed
+- **rust-agent (#477):** eBPF loader (`--features ebpf`) no longer uses deprecated APIs: `aya::Bpf` -> `aya::Ebpf`, `AsyncFd::new` -> `unsafe AsyncFd::register` (needs tokio >= 1.54, as locked). Ring buffer ownership is unchanged. Not verified on a real eBPF run; compile/clippy/test only.
 - **go-collector (#469):** anomaly detector keeps a fixed ring of 1-second counters per key (about 1.2KB for the default 5m window) instead of one timestamp per event; window counts now have 1-second precision, and maxDuration is computed once in New.
 
 - **api/aggregator/exporter (#357):** route paths (`/api/nodes` etc.) and the region roll-up type now live in the new `internal/api` package, with `registry.StatusActive` / `registry.CountActive`, shared by the exporter and the aggregator; a contract test polls the real exporter router. No change to the REST responses.
