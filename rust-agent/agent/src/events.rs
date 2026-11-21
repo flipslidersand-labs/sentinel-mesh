@@ -373,8 +373,9 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
             return;
         }
     };
-    // SAFETY: AsyncFd takes ownership of ring_buf, whose as_raw_fd is the
-    // map fd it owns; that fd stays open and unchanged until the AsyncFd drops.
+    // SAFETY: the map fd is owned by `bpf`; ring_buf (and so async_fd) borrows
+    // it, so `bpf` cannot drop before async_fd and the fd stays open and
+    // unchanged while the AsyncFd lives. Dropping AsyncFd only deregisters.
     let mut async_fd = match unsafe { tokio::io::unix::AsyncFd::register(ring_buf) } {
         Ok(fd) => fd,
         Err(e) => {

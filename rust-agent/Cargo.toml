@@ -5,7 +5,7 @@ members = ["agent"]
 resolver = "2"
 
 [workspace.dependencies]
-tokio        = { version = "1", features = ["full"] }
+tokio        = { version = "1.54", features = ["full"] }
 tonic        = { version = "0.14", features = ["tls-ring", "tls-native-roots"] }
 prost        = "0.14"
 tonic-prost  = "0.14"
