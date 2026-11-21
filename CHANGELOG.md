@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **rust-agent (eBPF, #419):** FILE events now carry the `openat` flags, and `op` is derived from them: `create` (O_CREAT), `write` (O_WRONLY/O_RDWR/O_TRUNC/O_APPEND) or `open` (read-only). Previously `op` was always `open`; `open` now means read-only opens only. Not yet verified on a real host (CAP_BPF, no `--mock`).
 - **rust-agent (eBPF, #347):** EXEC events are now emitted from `sched/sched_process_exec` (successful execs only), so `comm` is the executed binary's name instead of the caller's (e.g. `curl`, not `bash`). Rules matching on `comm` (e.g. `bash_execution`) now fire when bash itself is executed, not for every child it spawns.
 - **notify (#319):** the per-(rule, node) cooldown map now prunes expired keys, and the cooldown is released when every notifier fails so alerts are retried instead of being silenced for a full cooldown.
 - **rust-agent (eBPF, #373):** FILE events are now emitted from `sys_exit_openat`, so `ret` carries the real result (negative errno for failed opens) instead of always 0.

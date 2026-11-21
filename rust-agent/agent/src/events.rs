@@ -440,7 +440,7 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
                             pid: raw.pid,
                             comm: bytes_to_str(&raw.comm),
                             path: bytes_to_str(&raw.path),
-                            op: "open".into(),
+                            op: open_flags_to_op(raw.flags).into(),
                             ret: raw.ret,
                         })),
                     }
@@ -497,6 +497,24 @@ struct EbpfExecEvent {
     comm: [u8; 16],
 }
 
+/// Maps open(2) flags to an op string (#419). O_CREAT -> "create"; any
+/// write intent (O_WRONLY, O_RDWR, O_TRUNC, O_APPEND) -> "write"; else "open".
+/// Constants are the Linux values (identical on x86_64 and aarch64).
+#[cfg_attr(not(any(feature = "ebpf", test)), allow(dead_code))]
+fn open_flags_to_op(flags: u32) -> &'static str {
+    const O_ACCMODE: u32 = 0o3;
+    const O_CREAT: u32 = 0o100;
+    const O_TRUNC: u32 = 0o1000;
+    const O_APPEND: u32 = 0o2000;
+    if flags & O_CREAT != 0 {
+        "create"
+    } else if flags & O_ACCMODE != 0 || flags & (O_TRUNC | O_APPEND) != 0 {
+        "write"
+    } else {
+        "open"
+    }
+}
+
 #[cfg(feature = "ebpf")]
 #[repr(C)]
 struct EbpfFileEvent {
@@ -506,6 +524,7 @@ struct EbpfFileEvent {
     comm: [u8; 16],
     path: [u8; 256],
     ret: i32,
+    flags: u32,
 }
 
 #[cfg(feature = "ebpf")]
@@ -621,6 +640,18 @@ mod tests {
         assert_eq!(log.pid, 7);
         assert_eq!(log.comm, "curl");
         assert_eq!(log.detail, "10.0.0.1:40000 -> 1.1.1.1:443");
+    }
+
+    #[test]
+    fn open_flags_map_to_op() {
+        assert_eq!(open_flags_to_op(0), "open"); // O_RDONLY
+        assert_eq!(open_flags_to_op(0o2000000), "open"); // O_RDONLY|O_CLOEXEC
+        assert_eq!(open_flags_to_op(0o1), "write"); // O_WRONLY
+        assert_eq!(open_flags_to_op(0o2), "write"); // O_RDWR
+        assert_eq!(open_flags_to_op(0o2000), "write"); // O_APPEND
+        assert_eq!(open_flags_to_op(0o1000), "write"); // O_TRUNC
+        assert_eq!(open_flags_to_op(0o101), "create"); // O_WRONLY|O_CREAT
+        assert_eq!(open_flags_to_op(0o100), "create"); // O_CREAT
     }
 
     #[test]

@@ -30,6 +30,8 @@ pub struct FileEvent {
     pub comm: [u8; 16],
     pub path: [u8; 256],
     pub ret: i32,
+    /// open(2) flags from sys_enter_openat (#419).
+    pub flags: u32,
 }
 
 #[repr(C)]
@@ -46,11 +48,19 @@ pub struct TcpEvent {
 #[map]
 static EVENTS: RingBuf = RingBuf::with_byte_size(512 * 1024, 0);
 
-/// pid_tgid -> userspace filename pointer, stored at sys_enter_openat and
+/// Args saved at sys_enter_openat and consumed at exit (#373, #419).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct OpenArgs {
+    pub filename_ptr: u64,
+    pub flags: u64,
+}
+
+/// pid_tgid -> OpenArgs (userspace filename pointer + flags), stored at sys_enter_openat and
 /// consumed at sys_exit_openat (#373). LRU so entries orphaned by a thread
 /// that dies between enter and exit are evicted instead of filling the map.
 #[map]
-static OPEN_ARGS: LruHashMap<u64, u64> = LruHashMap::with_max_entries(10240, 0);
+static OPEN_ARGS: LruHashMap<u64, OpenArgs> = LruHashMap::with_max_entries(10240, 0);
 
 // ─── Exec: sched_process_exec ─────────────────────────────────────────────
 // Attached to sched/sched_process_exec, which fires only after a successful
@@ -106,8 +116,10 @@ fn try_openat_enter(ctx: TracePointContext) -> Result<(), i64> {
     // (common fields occupy 0-7, __syscall_nr is padded to 8 bytes at 8-15).
     // Offset 16 is dfd, not the filename pointer (#169).
     let filename_ptr: u64 = unsafe { ctx.read_at(24) }.map_err(|_| 1i64)?;
+    let flags: u64 = unsafe { ctx.read_at(32) }.map_err(|_| 1i64)?;
     let pid_tgid = bpf_get_current_pid_tgid();
-    OPEN_ARGS.insert(&pid_tgid, &filename_ptr, 0)?;
+    let args = OpenArgs { filename_ptr, flags };
+    OPEN_ARGS.insert(&pid_tgid, &args, 0)?;
     Ok(())
 }
 
@@ -124,8 +136,8 @@ fn try_openat_exit(ctx: TracePointContext) -> Result<(), i64> {
     use aya_ebpf::helpers::bpf_probe_read_user_str_bytes;
 
     let pid_tgid = bpf_get_current_pid_tgid();
-    let filename_ptr: u64 = match unsafe { OPEN_ARGS.get(&pid_tgid) } {
-        Some(p) => *p,
+    let (filename_ptr, flags) = match unsafe { OPEN_ARGS.get(&pid_tgid) } {
+        Some(a) => (a.filename_ptr, a.flags),
         None => return Ok(()),
     };
     let _ = OPEN_ARGS.remove(&pid_tgid);
@@ -150,6 +162,7 @@ fn try_openat_exit(ctx: TracePointContext) -> Result<(), i64> {
         (*ev).pid = pid;
         (*ev).uid = uid;
         (*ev).ret = if ret < 0 { ret as i32 } else { 0 };
+        (*ev).flags = flags as u32;
         for i in 0..16 {
             (*ev).comm[i] = raw_comm[i] as u8;
         }
