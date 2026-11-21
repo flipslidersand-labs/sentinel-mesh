@@ -288,9 +288,13 @@ sudo -u sentinel sentinel-collector token revoke web-01 --data-dir /var/lib/sent
 sudo -u sentinel sentinel-collector token list --data-dir /var/lib/sentinel   # confirm status
 ```
 
+With auth enabled, a stream that is already established with a revoked token is closed with `Unauthenticated` at the next liveness tick (within `heartbeat-timeout / 3`). If the token lookup fails transiently, the stream is kept and the check is retried on the next tick.
+
 ## Heartbeat Tracking
 
 The collector runs a background goroutine that checks agent liveness every `heartbeat-timeout / 2`. An agent is marked `inactive` when its last gRPC message is older than `heartbeat-timeout`. Status is visible in `GET /api/nodes`.
+
+While a `StreamEvents` stream is open, the collector also records a heartbeat every `heartbeat-timeout / 3` even if no events arrive, so an idle but connected agent stays `active`. Once the stream closes, the agent becomes `inactive` after `heartbeat-timeout`. (With gRPC auth disabled, this starts after the first valid event.)
 
 ## Anomaly Detection
 
@@ -528,7 +532,7 @@ MIT
 sentinel-mesh は、カーネルレベルのイベントを eBPF で集める分散観測基盤です。
 **Rust Agent** が eBPF(またはモック)でカーネルイベント(exec / tcp / file)を収集して gRPC で送り、
 **Go Collector** が BadgerDB に保存して REST API と Web UI(React)を提供します。
-ハートビートが途絶えた Agent は自動で inactive になります。アラートルール(`rules.yaml`)、
+ハートビートが途絶えた Agent は自動で inactive になります(StreamEvents の接続中はイベントが無くても `heartbeat-timeout / 3` ごとに記録するため active のまま)。アラートルール(`rules.yaml`)、
 スライディング窓による異常検知、Slack / メール通知、OpenTelemetry のメトリクス・トレース、
 複数リージョンの集約(`--aggregate`)に対応しています。
 
