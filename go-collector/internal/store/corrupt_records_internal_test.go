@@ -40,9 +40,9 @@ func TestCorruptEventRecord_Skipped(t *testing.T) {
 
 	buf := captureLogs(t)
 	st = openTempStore(t, dir) // must not fail
-	stats, err := st.Stats()
-	if err != nil || stats["exec"] != 1 {
-		t.Fatalf("Stats = %v, %v; want exec=1", stats, err)
+	stats := st.Stats()
+	if stats["exec"] != 1 {
+		t.Fatalf("Stats = %v; want exec=1", stats)
 	}
 	if n := strings.Count(buf.String(), "level=WARN"); n != 1 || !strings.Contains(buf.String(), "count=2") {
 		t.Errorf("want one warning with count=2 at startup, got: %q", buf.String())

@@ -34,7 +34,7 @@ func (fakeData) ListAlertsWhere(_ context.Context, keep func(string) bool, _ int
 	return out, nil
 }
 
-func (fakeData) Stats() (map[string]int, error) { return map[string]int{"total": 7}, nil }
+func (fakeData) Stats() map[string]int { return map[string]int{"total": 7} }
 
 // TestRouter_AcceptsFakeInterfaces verifies Router depends only on the
 // exporter-side interfaces, not on a concrete *store.Store.

@@ -47,7 +47,7 @@ func Router(a *Aggregator, staticDir string, corsOrigins []string, apiToken stri
 			out := make([]model.Event, 0)
 			region := c.Query("region")
 			events := a.EventsIn(region)
-			if node != "" || limit > a.eventLimit {
+			if node != "" || limit > eventLimit {
 				// The cache holds only the latest eventLimit events per
 				// region: ask the upstreams for the node / larger window.
 				events = a.FetchEvents(c.Request.Context(), region, node, limit)

@@ -26,10 +26,7 @@ func countStored(t *testing.T, st *Store) (stored, execCount int) {
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
-	stats, err := st.Stats()
-	if err != nil {
-		t.Fatalf("Stats: %v", err)
-	}
+	stats := st.Stats()
 	return len(events), stats["exec"]
 }
 

@@ -201,8 +201,6 @@ func toFloat64(v interface{}) (float64, error) {
 	switch val := v.(type) {
 	case float64:
 		return val, nil
-	case int:
-		return float64(val), nil
 	case string:
 		return strconv.ParseFloat(val, 64)
 	default:

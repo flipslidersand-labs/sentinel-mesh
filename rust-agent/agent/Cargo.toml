@@ -27,6 +27,8 @@ anyhow       = { workspace = true }
 clap         = { workspace = true }
 hostname     = { workspace = true }
 uuid         = { workspace = true }
+
+[dev-dependencies]
 async-stream = { workspace = true }
 
 [build-dependencies]

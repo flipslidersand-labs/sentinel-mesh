@@ -71,19 +71,16 @@ async function get<T>(path: string): Promise<T> {
   }
 }
 
+function listPath(path: string, node: string | undefined, limit: number): string {
+  const q = new URLSearchParams();
+  if (node) q.set("node", node);
+  q.set("limit", String(limit));
+  return `${path}?${q}`;
+}
+
 export const api = {
   nodes: () => get<NodeInfo[]>("/nodes"),
-  events: (node?: string, limit = 100) => {
-    const q = new URLSearchParams();
-    if (node) q.set("node", node);
-    q.set("limit", String(limit));
-    return get<Event[]>(`/events?${q}`);
-  },
-  alerts: (node?: string, limit = 100) => {
-    const q = new URLSearchParams();
-    if (node) q.set("node", node);
-    q.set("limit", String(limit));
-    return get<Alert[]>(`/alerts?${q}`);
-  },
+  events: (node?: string, limit = 100) => get<Event[]>(listPath("/events", node, limit)),
+  alerts: (node?: string, limit = 100) => get<Alert[]>(listPath("/alerts", node, limit)),
   stats: () => get<Stats>("/stats"),
 };

@@ -380,10 +380,7 @@ func TestSaveEvent_CancelledMidWriteStillCountedInStats(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
-	stats, err := st.Stats()
-	if err != nil {
-		t.Fatalf("Stats: %v", err)
-	}
+	stats := st.Stats()
 	if len(stored) != 1 || stats["exec"] != len(stored) {
 		t.Fatalf("stored=%d stats[exec]=%d; want both 1", len(stored), stats["exec"])
 	}

@@ -81,7 +81,7 @@ type AlertLister interface {
 
 // StatsProvider returns event counts. *store.Store satisfies it.
 type StatsProvider interface {
-	Stats() (map[string]int, error)
+	Stats() map[string]int
 }
 
 // NodeLister reads the node registry. *registry.Registry satisfies it.
@@ -174,12 +174,7 @@ func Router(cfg RouterConfig) *gin.Engine {
 		})
 
 		rest.GET("/api/stats", func(c *gin.Context) {
-			counts, err := cfg.Stats.Stats()
-			if err != nil {
-				internalError(c, err)
-				return
-			}
-			c.JSON(http.StatusOK, counts)
+			c.JSON(http.StatusOK, cfg.Stats.Stats())
 		})
 
 		rest.GET(api.PathAlerts, func(c *gin.Context) {

@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -314,11 +315,30 @@ func TestLoadTokenIndex_TruncatedRealRecordRejectsItsToken(t *testing.T) {
 	}
 }
 
-// Iteration/IO errors at startup must fail closed: LookupNodeID returns the
-// error rather than (false, nil) or a partial index. Injecting an iterator
-// error into badger is not practical, so this sets the state loadTokenIndex
-// records on such an error (tokenIndexErr set, index emptied) and checks
-// that lookups surface it even for a token that was valid.
+// saturateReads fills readSem so the next runRead returns ErrBusy, which
+// makes loadTokenIndex hit its real IO-error branch without touching the
+// fields it sets. The slots are released on cleanup.
+func saturateReads(t *testing.T, st *Store) (release func()) {
+	t.Helper()
+	for i := 0; i < cap(st.readSem); i++ {
+		st.readSem <- struct{}{}
+	}
+	var once sync.Once
+	release = func() {
+		once.Do(func() {
+			for i := 0; i < cap(st.readSem); i++ {
+				<-st.readSem
+			}
+		})
+	}
+	t.Cleanup(release)
+	return release
+}
+
+// A load error at startup must fail closed: LookupNodeID returns the error
+// rather than (false, nil) or a partial index, even for a token that was
+// valid. The error is produced by loadTokenIndex itself (read slots
+// exhausted -> ErrBusy); a badger iterator error cannot be injected (#276).
 func TestLookupNodeID_IndexLoadErrorFailsClosed(t *testing.T) {
 	ctx := context.Background()
 	st := openTempStore(t, t.TempDir())
@@ -326,14 +346,53 @@ func TestLookupNodeID_IndexLoadErrorFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IssueToken: %v", err)
 	}
-	loadErr := fmt.Errorf("injected io error")
-	st.tokensMu.Lock()
-	st.tokenIndex = map[string]string{}
-	st.tokenIndexErr = loadErr
-	st.tokensMu.Unlock()
+	release := saturateReads(t, st)
+	st.loadTokenIndex()
+	release()
 
-	if id, ok, err := st.LookupNodeID(ctx, token); err == nil || ok || id != "" {
-		t.Fatalf("LookupNodeID = (%q, %v, %v), want (\"\", false, error)", id, ok, err)
+	if id, ok, err := st.LookupNodeID(ctx, token); !errors.Is(err, ErrBusy) || ok || id != "" {
+		t.Fatalf("LookupNodeID = (%q, %v, %v), want (\"\", false, ErrBusy)", id, ok, err)
+	}
+}
+
+// RevokeToken on a record that is active on disk but absent from the index
+// (wasActive == false, e.g. after a failed index load) must not put the token
+// into the index when the write fails, and must keep it out when it succeeds (#243).
+func TestRevokeToken_NotInIndex_WriteFailureDoesNotAddToIndex(t *testing.T) {
+	ctx := context.Background()
+	st := openTempStore(t, t.TempDir())
+	if _, err := st.IssueToken(ctx, "node-a"); err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	release := saturateReads(t, st)
+	st.loadTokenIndex() // index emptied, load error recorded
+	release()
+
+	boom := errors.New("injected write failure")
+	st.putTokenFn = func(context.Context, AgentToken) error { return boom }
+	if err := st.RevokeToken(ctx, "node-a"); !errors.Is(err, boom) {
+		t.Fatalf("RevokeToken = %v, want injected error", err)
+	}
+	st.tokensMu.RLock()
+	n := len(st.tokenIndex)
+	st.tokensMu.RUnlock()
+	if n != 0 {
+		t.Fatalf("index has %d entries after failed revoke, want 0", n)
+	}
+
+	st.putTokenFn = nil
+	if err := st.RevokeToken(ctx, "node-a"); err != nil {
+		t.Fatalf("RevokeToken: %v", err)
+	}
+	st.tokensMu.RLock()
+	n = len(st.tokenIndex)
+	st.tokensMu.RUnlock()
+	if n != 0 {
+		t.Fatalf("index has %d entries after revoke, want 0", n)
+	}
+	toks, err := st.ListTokens(ctx)
+	if err != nil || len(toks) != 1 || toks[0].RevokedAt == nil {
+		t.Fatalf("ListTokens = (%+v, %v), want one revoked record", toks, err)
 	}
 }
 
@@ -364,7 +423,8 @@ func TestListTokens_SkipsUndecodableRecords(t *testing.T) {
 	if !strings.Contains(logs, "agenttoken:node-cut") || !strings.Contains(logs, "count=1") {
 		t.Errorf("warning should name the key and count, got: %q", logs)
 	}
-	if strings.Contains(logs, good) || strings.Contains(logs, cut) || strings.Contains(logs, hashToken(good)) {
+	if strings.Contains(logs, good) || strings.Contains(logs, cut) ||
+		strings.Contains(logs, hashToken(good)) || strings.Contains(logs, hashToken(cut)) {
 		t.Errorf("warning must not leak tokens or hashes: %q", logs)
 	}
 }
