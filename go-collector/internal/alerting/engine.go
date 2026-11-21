@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
+	"github.com/flipslidersand/sentinel-mesh/internal/eventtype"
 	"github.com/flipslidersand/sentinel-mesh/internal/model"
 )
 
@@ -71,7 +72,7 @@ func (e *Engine) Evaluate(event model.Event) []Alert {
 	var alerts []Alert
 
 	for _, rule := range e.rules.Rules {
-		if rule.EventType != "*" && rule.EventType != event.Type {
+		if rule.EventType != eventtype.Any && rule.EventType != event.Type {
 			continue
 		}
 
