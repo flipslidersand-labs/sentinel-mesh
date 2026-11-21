@@ -125,7 +125,9 @@ type EventSaver interface {
 	// SaveEventDedup reports duplicate=true when e was skipped because its
 	// (node_id, event_id) was already stored (#457).
 	SaveEventDedup(ctx context.Context, e model.Event) (duplicate bool, err error)
-	SaveAlert(ctx context.Context, a model.Alert) error
+	// SaveAlertDedup reports duplicate=true when a was skipped because an alert
+	// for the same (node_id, event_id, rule_id) was already stored (#465).
+	SaveAlertDedup(ctx context.Context, a model.Alert) (duplicate bool, err error)
 }
 
 // TokenResolver maps a bearer token to the node_id it was issued for.
@@ -614,12 +616,12 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 		}
 
 		saveOk, duplicate := s.persistEvent(stream.Context(), storedEvent)
-		// A resent event already had its alerts/metrics handled on the first
-		// delivery; only ack it (#457).
-		if !duplicate {
-			if _, alertsOk := s.evaluateAndNotify(stream.Context(), storedEvent); !alertsOk {
-				saveOk = false
-			}
+		// A resent event already had its metrics and anomaly counting done on
+		// the first delivery, but its alerts may not have been saved (the event
+		// and alert writes are separate transactions), so rules are still
+		// evaluated; already-saved alerts are skipped by the store (#465).
+		if _, alertsOk := s.evaluateAndNotify(stream.Context(), storedEvent, duplicate); !alertsOk {
+			saveOk = false
 		}
 
 		if err := stream.Send(&pb.EventAck{Ok: saveOk}); err != nil {
@@ -671,10 +673,12 @@ func (s *server) persistEvent(ctx context.Context, ev model.Event) (ok, duplicat
 
 // evaluateAndNotify runs the alert engine and anomaly detector on ev, saves,
 // records and traces each resulting alert and dispatches it to notifiers.
-// saveOk is false if any alert failed to save. engine and detector run
+// saveOk is false if any alert failed to save. For a duplicate (resent) event
+// the anomaly detector is skipped so the event is not counted twice, and an
+// alert the store already holds is neither recorded nor notified again (#465). engine and detector run
 // independently so a nil engine never disables the detector or vice versa
 // (#150).
-func (s *server) evaluateAndNotify(ctx context.Context, ev model.Event) (alerts []alerting.Alert, saveOk bool) {
+func (s *server) evaluateAndNotify(ctx context.Context, ev model.Event, duplicate bool) (alerts []alerting.Alert, saveOk bool) {
 	saveOk = true
 	if s.engine == nil && s.detector == nil {
 		return nil, saveOk
@@ -693,13 +697,13 @@ func (s *server) evaluateAndNotify(ctx context.Context, ev model.Event) (alerts 
 		alerts = append(alerts, s.engine.Evaluate(ev)...)
 	}
 	// Phase 7: frequency-based anomaly detection
-	if s.detector != nil {
+	if s.detector != nil && !duplicate {
 		alerts = append(alerts, s.detector.Record(ev)...)
 	}
 
 	for _, alert := range alerts {
 		alertCtx, alertCancel := context.WithTimeout(ctx, storeOpTimeout)
-		alertErr := s.st.SaveAlert(alertCtx, alert)
+		alertDup, alertErr := s.st.SaveAlertDedup(alertCtx, alert)
 		alertCancel()
 		if alertErr != nil {
 			s.log.Error("save alert", zap.Error(alertErr))
@@ -707,6 +711,14 @@ func (s *server) evaluateAndNotify(ctx context.Context, ev model.Event) (alerts 
 			if s.metrics != nil {
 				s.metrics.RecordStoreWriteFailure("alert")
 			}
+			// The Ack is ok=false so the agent resends; the resend saves and
+			// notifies this alert, so notifying now would notify it twice.
+			if alert.EventID != "" {
+				continue
+			}
+		}
+		if alertDup {
+			continue
 		}
 
 		// Phase 6: record alert metric and trace
