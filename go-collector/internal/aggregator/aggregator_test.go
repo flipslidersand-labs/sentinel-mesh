@@ -436,9 +436,9 @@ func TestAggregator_RouterEventsAlertsQuery(t *testing.T) {
 	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	east := fakeCollector(t, nil,
 		[]model.Event{
-			{EventID: "e1", NodeID: "a1", Timestamp: t0.Add(1 * time.Minute)},
-			{EventID: "e3", NodeID: "a2", Timestamp: t0.Add(3 * time.Minute)},
 			{EventID: "e5", NodeID: "a1", Timestamp: t0.Add(5 * time.Minute)},
+			{EventID: "e3", NodeID: "a2", Timestamp: t0.Add(3 * time.Minute)},
+			{EventID: "e1", NodeID: "a1", Timestamp: t0.Add(1 * time.Minute)},
 		},
 		[]model.Alert{
 			{AlertID: "x1", NodeID: "a1", Timestamp: t0.Add(1 * time.Minute)},
@@ -447,8 +447,8 @@ func TestAggregator_RouterEventsAlertsQuery(t *testing.T) {
 	)
 	west := fakeCollector(t, nil,
 		[]model.Event{
-			{EventID: "e2", NodeID: "b1", Timestamp: t0.Add(2 * time.Minute)},
 			{EventID: "e4", NodeID: "b1", Timestamp: t0.Add(4 * time.Minute)},
+			{EventID: "e2", NodeID: "b1", Timestamp: t0.Add(2 * time.Minute)},
 		},
 		[]model.Alert{{AlertID: "x2", NodeID: "b1", Timestamp: t0.Add(2 * time.Minute)}},
 	)
