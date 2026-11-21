@@ -61,6 +61,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Web UI:** API Token widget; the bundled UI now sends the `Authorization`
   header (#144).
 - gRPC auth-failure and rate-limit rejection metrics (#266).
+- **go-collector:** `sentinel-collector --help` has long descriptions, usage examples and a
+  flag-consistency check (#113).
+- **CI:** gitleaks secret scan (#14).
 
 ### Changed
 
@@ -104,6 +107,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pending spans are flushed on SIGTERM (5s timeout) (#376).
 - **go-collector:** anomaly window counts use a binary search over the sorted
   timestamps instead of a linear scan (#296).
+- **go-collector:** alerting `regex` conditions are compiled once when rules load (and an
+  invalid pattern is a load-time error) instead of on every event (#355).
+- **go-collector:** `/metrics` is served by the Prometheus client directly instead of the OTel
+  bridge (#333). Metric names, labels, HELP and TYPE are unchanged, but the
+  `otel_scope_name`/`otel_scope_schema_url`/`otel_scope_version` labels and the `target_info`
+  gauge are gone; dashboards or alerts selecting on them need updating.
 
 ### Fixed
 
@@ -122,6 +131,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **deploy:** `scripts/deploy-agent.sh` validates `--mock-rate` as an integer in
   1..1000 (#310).
 - **go-collector:** alerting `eq`/`contains`/`regex` now stringify JSON numbers in plain decimal, so values of 1e6 or more (e.g. pid 1234567) no longer become `1.234567e+06` and match rules (#370).
+- **go-collector (store):** BadgerDB entries get a retention TTL and `/api/stats` no longer scans
+  every event (#77); value-log GC runs periodically (#149); the node-filter scan in
+  `ListEvents`/`ListAlerts` is capped (#153); time keys are fixed-width so events within one
+  second keep their order under `limit` (#250); `ListEvents`/`ListAlerts` no longer race after a
+  context timeout (#351); unreadable token records are skipped so other tokens still
+  authenticate (#242); `Stats()` stays in sync when `SaveEvent`'s context is cancelled
+  mid-write (#325).
+- **go-collector (shutdown):** gRPC/REST servers shut down gracefully on SIGINT/SIGTERM (#117),
+  bounded against hung streams and store I/O (#155); REST server failures are propagated and the
+  store closes only after the servers stop (#316, #318); the REST server is force-closed when
+  graceful shutdown fails (#422).
+- **go-collector (receiver):** store failures are reflected in the `Ack` and counted (#103);
+  response headers are sent right after authentication (#217); payload values of 0 (e.g.
+  `uid=0`) are kept (#249); unknown `EventType`s are rejected (#260).
+- **go-collector (registry/heartbeat):** a node that heartbeats again returns to `active` (#79);
+  inactive nodes are evicted after a while to bound memory (#105); `--heartbeat-timeout` of 0 or
+  a negative value no longer panics (#147).
+- **go-collector (alerting/anomaly):** `RuleSet.Validate()` is implemented and a missing
+  `--rules` path is an error (#111); default rules use `dst_port` instead of `dport` and unknown
+  field names are rejected (#248); idle anomaly keys are garbage-collected (#107); the anomaly
+  detector no longer depends on the engine being non-nil (#150); anomaly alerts use a
+  per-window cooldown instead of firing on every event (#422).
+- **go-collector (REST/aggregator):** the `limit` query parameter is validated and capped (#102);
+  the REST server has read/write/idle timeouts (#110); `--aggregate` warns about normal-mode-only
+  flags (#152); the aggregator applies `limit`/`node`/`region` on `/api/events` and
+  `/api/alerts` and returns newest first (#317); the `node` metric label's cardinality is
+  bounded (#326).
+- **go-collector (notify/otel):** `EmailNotifier` honours the dispatcher's context timeout (#109);
+  SMTP to an IPv6 literal uses the right `PlainAuth` host (#246); spans are no longer leaked in
+  the `StreamEvents` loop (#74).
+- **agent:** reconnects to the collector with exponential backoff (#70, #73), reset once a
+  connection is stable (#313); gRPC connect has a timeout (#108); HTTP/2 keepalive detects
+  half-open connections (#231); the ring-buffer drain no longer blocks when full (#70) and the
+  unaligned bytes→struct cast is gone (#69); eBPF-path `unwrap()`s are handled as errors (#118);
+  non-UTF-8 `comm`/path bytes are no longer silently emptied (#104); `--mock-rate` is validated
+  as 1..=1000 (#260, #271); the agent exits non-zero when its event source task ends (#348).
+- **agent (eBPF):** TCP ports use the right byte order and the source address is filled in (#72);
+  the `sys_enter_openat` filename pointer is read from the correct offset (#169).
+- **Web UI:** API responses are type-checked instead of white-screening on unexpected JSON (#80);
+  fetches time out and polls no longer overlap (#151); polling refetches on filter change and
+  ignores stale responses (#320); the Alerts page no longer crashes on a null severity (#422).
+- **scripts:** `deploy-agent.sh` refuses a non-mock deploy of a binary built without eBPF (#349).
 
 ### Fixed
 
@@ -169,6 +220,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   error text (#297); the aggregator's `RegionStatus.error` carries a fixed
   classification instead of the raw upstream error (#306); the rate-limit log
   escapes and caps an unauthenticated client `node_id` (#307).
+- Event keys no longer use the agent-supplied timestamp, so an agent cannot pin events to the
+  front of `ListEvents` or overwrite other events via a timestamp collision (#78).
+- eBPF: reserved ring-buffer records are zero-initialized so struct padding cannot leak kernel
+  memory (#71).
+- The aggregator no longer follows upstream redirects (SSRF) and caps upstream response bodies (#76).
+- SMTP: `EmailNotifier` upgrades with STARTTLS and refuses to send when it is unsupported (#215);
+  with credentials set, a server that does not advertise AUTH is an error (#247).
+- `grpc` and `x/net` updated to versions without the known vulnerabilities, with the Go toolchain
+  pinned (#252).
+- `deploy-agent.sh` no longer prints the gRPC token value when input validation fails (#363).
 
 ## [0.1.0] - 2026-08-17
 
