@@ -42,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **rust-agent (#470):** the plaintext-token loopback check now also ends the collector authority at `#`, so `http://<remote>#@127.0.0.1:50051` is rejected instead of sending the token in plaintext to the remote host.
 - **ci/rust-agent (#420):** pin all GitHub Actions in `ci.yml` to commit SHAs, set top-level `permissions: contents: read`, and hide `SENTINEL_API_TOKEN` from the agent's `--help` output (`hide_env_values`).
 - **go-collector:** REST API now throttles repeated failed bearer-auth attempts per source
   address (5 failures, refilling 5/min) and answers 429 with `Retry-After` (#360).
