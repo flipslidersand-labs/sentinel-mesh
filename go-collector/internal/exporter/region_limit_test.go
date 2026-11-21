@@ -67,3 +67,37 @@ func TestRegionFilter_LimitCountsMatches(t *testing.T) {
 		}
 	}
 }
+
+type countingData struct {
+	fakeData
+	calls int
+}
+
+func (c *countingData) ListEventsWhere(ctx context.Context, keep func(string) bool, n int) ([]model.Event, error) {
+	c.calls++
+	return c.fakeData.ListEventsWhere(ctx, keep, n)
+}
+
+func (c *countingData) ListAlertsWhere(ctx context.Context, keep func(string) bool, n int) ([]model.Alert, error) {
+	c.calls++
+	return c.fakeData.ListAlertsWhere(ctx, keep, n)
+}
+
+// An unregistered region has no nodes, so nothing can match: answer [] without
+// scanning the store (up to maxNodeFilterScan records otherwise).
+func TestRegionFilter_UnknownRegionSkipsStore(t *testing.T) {
+	f := &countingData{}
+	r := Router(RouterConfig{Events: f, Alerts: f, Stats: f, Nodes: registry.New(), StaticDir: t.TempDir(), APIToken: "unused-test-value-0123456789abcdef"})
+	for _, path := range []string{"/api/events", "/api/alerts"} {
+		req := httptest.NewRequest(http.MethodGet, path+"?region=nowhere", nil)
+		req.Header.Set("Authorization", "Bearer unused-test-value-0123456789abcdef")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK || w.Body.String() != "[]" {
+			t.Errorf("%s: code=%d body=%s, want 200 []", path, w.Code, w.Body.String())
+		}
+	}
+	if f.calls != 0 {
+		t.Errorf("store called %d times for an unknown region, want 0", f.calls)
+	}
+}

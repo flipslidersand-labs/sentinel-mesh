@@ -35,7 +35,7 @@ func parseLimit(c *gin.Context, key string, def int) (limit int, ok bool) {
 // still return up to limit matches (#324). The store's scan cap
 // (maxNodeFilterScan) still applies: a region whose events are older than
 // that many records may yield fewer than limit results.
-func nodeFilter(c *gin.Context, reg NodeLister) func(string) bool {
+func nodeFilter(c *gin.Context, reg NodeLister) (keep func(string) bool, none bool) {
 	node, region := c.Query("node"), c.Query("region")
 	var set map[string]struct{}
 	if region != "" {
@@ -45,8 +45,12 @@ func nodeFilter(c *gin.Context, reg NodeLister) func(string) bool {
 			set[n.NodeID] = struct{}{}
 		}
 	}
+	if region != "" && len(set) == 0 {
+		// Unregistered/empty region: nothing can match, skip the store scan.
+		return nil, true
+	}
 	if node == "" && set == nil {
-		return nil
+		return nil, false
 	}
 	return func(id string) bool {
 		if node != "" && id != node {
@@ -57,7 +61,7 @@ func nodeFilter(c *gin.Context, reg NodeLister) func(string) bool {
 			return ok
 		}
 		return true
-	}
+	}, false
 }
 
 // regionSummary is the per-region roll-up returned by GET /api/regions.
@@ -140,7 +144,12 @@ func Router(cfg RouterConfig) *gin.Engine {
 			if !ok {
 				return
 			}
-			events, err := cfg.Events.ListEventsWhere(c.Request.Context(), nodeFilter(c, reg), limit)
+			keep, none := nodeFilter(c, reg)
+			if none {
+				c.JSON(http.StatusOK, []model.Event{})
+				return
+			}
+			events, err := cfg.Events.ListEventsWhere(c.Request.Context(), keep, limit)
 			if err != nil {
 				internalError(c, err)
 				return
@@ -190,7 +199,12 @@ func Router(cfg RouterConfig) *gin.Engine {
 			if !ok {
 				return
 			}
-			alerts, err := cfg.Alerts.ListAlertsWhere(c.Request.Context(), nodeFilter(c, reg), limit)
+			keep, none := nodeFilter(c, reg)
+			if none {
+				c.JSON(http.StatusOK, []model.Alert{})
+				return
+			}
+			alerts, err := cfg.Alerts.ListAlertsWhere(c.Request.Context(), keep, limit)
 			if err != nil {
 				internalError(c, err)
 				return
