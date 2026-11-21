@@ -673,11 +673,19 @@ func (s *server) persistEvent(ctx context.Context, ev model.Event) (ok, duplicat
 
 // evaluateAndNotify runs the alert engine and anomaly detector on ev, saves,
 // records and traces each resulting alert and dispatches it to notifiers.
-// saveOk is false if any alert failed to save. For a duplicate (resent) event
-// the anomaly detector is skipped so the event is not counted twice, and an
-// alert the store already holds is neither recorded nor notified again (#465). engine and detector run
-// independently so a nil engine never disables the detector or vice versa
-// (#150).
+// saveOk is false if any alert failed to save.
+//
+// engine and detector run independently so a nil engine never disables the
+// detector or vice versa (#150).
+//
+// For a duplicate (resent) event (#465):
+//   - the anomaly detector is skipped so the event is not counted twice. Known
+//     limit: if an anomaly alert failed to save on the first delivery, the
+//     resend does not regenerate it.
+//   - an alert the store already holds is neither recorded nor notified again.
+//   - notification is at-least-once: an alert is notified even when its save
+//     failed, so a resend that then saves it notifies a second time. A
+//     duplicate notification is preferred over a missing one.
 func (s *server) evaluateAndNotify(ctx context.Context, ev model.Event, duplicate bool) (alerts []alerting.Alert, saveOk bool) {
 	saveOk = true
 	if s.engine == nil && s.detector == nil {
@@ -710,11 +718,6 @@ func (s *server) evaluateAndNotify(ctx context.Context, ev model.Event, duplicat
 			saveOk = false
 			if s.metrics != nil {
 				s.metrics.RecordStoreWriteFailure("alert")
-			}
-			// The Ack is ok=false so the agent resends; the resend saves and
-			// notifies this alert, so notifying now would notify it twice.
-			if alert.EventID != "" {
-				continue
 			}
 		}
 		if alertDup {

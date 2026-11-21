@@ -54,7 +54,8 @@ func newIdemServer(fs *fakeStorage, c *countNotifier) *server {
 }
 
 // #465: the event save succeeded but the alert save failed (Ack ok=false). The
-// resend is a duplicate event yet must still produce the alert, exactly once.
+// resend is a duplicate event yet must still save the alert, exactly once.
+// Notification is at-least-once: once at the failed save, once at the resend.
 func TestStreamEvents_ResendAfterAlertSaveFailure(t *testing.T) {
 	fs := &fakeStorage{alertErrs: 1}
 	c := &countNotifier{}
@@ -70,6 +71,7 @@ func TestStreamEvents_ResendAfterAlertSaveFailure(t *testing.T) {
 	if len(fs.alerts) != 0 {
 		t.Fatalf("alerts after failure = %d, want 0", len(fs.alerts))
 	}
+	waitNotified(t, c, 1)
 
 	resend := &fakeStream{events: []*pb.KernelEvent{execEvent("e1")}}
 	if err := s.StreamEvents(resend); err != nil {
@@ -84,7 +86,7 @@ func TestStreamEvents_ResendAfterAlertSaveFailure(t *testing.T) {
 	if len(fs.alerts) != 1 {
 		t.Fatalf("alerts = %d, want 1", len(fs.alerts))
 	}
-	waitNotified(t, c, 1)
+	waitNotified(t, c, 2)
 }
 
 // A resend after everything was saved adds no alert and no notification.
