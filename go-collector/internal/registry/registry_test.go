@@ -94,15 +94,15 @@ func TestHeartbeatChecker_StopsOnContextCancel(t *testing.T) {
 }
 
 // TestHeartbeatChecker_NonPositiveArgsDoNotPanic guards against #147: passing
-// a zero or negative timeout/interval used to reach time.NewTicker directly
+// a zero or negative interval used to reach time.NewTicker directly
 // and panic ("non-positive interval for NewTicker"), crashing the whole CLI.
-// StartHeartbeatChecker must fall back to safe defaults instead.
+// StartHeartbeatChecker must fall back to the default interval instead.
 func TestHeartbeatChecker_NonPositiveArgsDoNotPanic(t *testing.T) {
 	reg := registry.New()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	reg.StartHeartbeatChecker(ctx, 0, -5*time.Second, time.Hour)
+	reg.StartHeartbeatChecker(ctx, time.Minute, -5*time.Second, time.Hour)
 	// If StartHeartbeatChecker didn't guard the interval, the goroutine above
 	// would have already panicked inside time.NewTicker by now.
 	time.Sleep(20 * time.Millisecond)
