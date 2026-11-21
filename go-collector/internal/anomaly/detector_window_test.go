@@ -7,40 +7,126 @@ import (
 	"github.com/flipslidersand/sentinel-mesh/internal/model"
 )
 
-// seed fills the detector's history for key with n timestamps evenly spread over
-// the span ending 'ago' before now (oldest first).
-func seed(d *Detector, key windowKey, n int, span, ago time.Duration) {
-	now := time.Now().Add(-ago)
-	ts := make([]time.Time, n)
-	for i := range ts {
-		ts[i] = now.Add(-span + span*time.Duration(i)/time.Duration(n))
+// recordN records n events for key at the detector's current (fake) time.
+func recordN(d *Detector, key windowKey, n int) {
+	ev := makeEvent(key.NodeID, key.EventType)
+	for i := 0; i < n; i++ {
+		d.Record(ev)
 	}
-	d.timestamps[key] = ts
 }
 
-// Characterization: countWithin counts entries at or after now-dur (inclusive boundary).
-func TestCountWithin_Boundary(t *testing.T) {
-	d := New([]WindowConfig{{Duration: time.Minute, Threshold: 1000}})
+// Window boundary at 1-second granularity: an N-second window covers the current
+// second and the N-1 before it. An event recorded 59s ago is inside a 60s
+// window; one recorded 60s ago is outside. (Before #469 the 60s mark was
+// inclusive at nanosecond precision.)
+func TestRing_WindowBoundary(t *testing.T) {
+	d, c := newClocked([]WindowConfig{{Duration: time.Minute, Threshold: 1000}})
 	key := windowKey{"n", "exec"}
-	now := time.Now()
-	d.timestamps[key] = []time.Time{
-		now.Add(-90 * time.Second),
-		now.Add(-61 * time.Second),
-		now.Add(-time.Minute), // exactly on the cutoff: counted
-		now.Add(-30 * time.Second),
-		now,
+	recordN(d, key, 1) // t0
+	c.advance(59 * time.Second)
+	if got := d.rings[key].count(c.now().Unix(), 60); got != 1 {
+		t.Errorf("count at +59s = %d, want 1", got)
 	}
-	if got := d.countWithin(key, now, time.Minute); got != 3 {
-		t.Errorf("countWithin = %d, want 3", got)
+	c.advance(time.Second)
+	if got := d.rings[key].count(c.now().Unix(), 60); got != 0 {
+		t.Errorf("count at +60s = %d, want 0", got)
 	}
-	if got := d.countWithin(key, now, time.Hour); got != 5 {
-		t.Errorf("countWithin(1h) = %d, want 5", got)
+	// Sub-second offsets within the same second are the same bucket.
+	d2, c2 := newClocked([]WindowConfig{{Duration: time.Minute, Threshold: 1000}})
+	recordN(d2, key, 1)
+	c2.advance(900 * time.Millisecond)
+	recordN(d2, key, 1)
+	if got := d2.rings[key].count(c2.now().Unix(), 60); got != 2 {
+		t.Errorf("same-second count = %d, want 2", got)
 	}
-	if got := d.countWithin(key, now, 0); got != 1 {
-		t.Errorf("countWithin(0) = %d, want 1", got)
+}
+
+// Memory per key is bounded by the ring length, independent of event rate.
+func TestRing_BoundedMemory(t *testing.T) {
+	d, c := newClocked(DefaultWindows)
+	key := windowKey{"n", "exec"}
+	for i := 0; i < 100_000; i++ {
+		d.Record(makeEvent("n", "exec"))
+		if i%1000 == 0 {
+			c.advance(time.Second)
+		}
 	}
-	if got := d.countWithin(windowKey{"x", "y"}, now, time.Minute); got != 0 {
-		t.Errorf("countWithin(missing key) = %d, want 0", got)
+	r := d.rings[key]
+	if len(r.buckets) != 300 || cap(r.buckets) != 300 {
+		t.Fatalf("ring len/cap = %d/%d, want 300/300", len(r.buckets), cap(r.buckets))
+	}
+	if d.ringSize != 300 {
+		t.Fatalf("ringSize = %d, want 300 (longest window)", d.ringSize)
+	}
+}
+
+// A key idle for longer than the ring must not resurrect old counts when the
+// ring wraps onto the same bucket indices.
+func TestRing_IdleLongerThanRingResets(t *testing.T) {
+	d, c := newClocked([]WindowConfig{{Duration: time.Minute, Threshold: 1000}})
+	key := windowKey{"n", "exec"}
+	recordN(d, key, 50)
+	c.advance(10 * time.Minute) // > ring length, lands on arbitrary index
+	recordN(d, key, 1)
+	if got := d.rings[key].count(c.now().Unix(), 60); got != 1 {
+		t.Errorf("count after long idle = %d, want 1", got)
+	}
+	// Exactly one ring length later: same bucket index as the old events.
+	c.advance(60 * time.Second)
+	recordN(d, key, 1)
+	if got := d.rings[key].count(c.now().Unix(), 60); got != 1 {
+		t.Errorf("count after exact wrap = %d, want 1", got)
+	}
+	// Partial gap: buckets skipped over are cleared.
+	c.advance(30 * time.Second)
+	recordN(d, key, 1)
+	if got := d.rings[key].count(c.now().Unix(), 60); got != 2 {
+		t.Errorf("count after partial gap = %d, want 2", got)
+	}
+}
+
+// Timestamps older than the newest recorded second (clock stepped back) are not
+// dropped: they are counted in the current bucket.
+func TestRing_OlderTimestampCountedInCurrentBucket(t *testing.T) {
+	d, c := newClocked([]WindowConfig{{Duration: time.Minute, Threshold: 1000}})
+	key := windowKey{"n", "exec"}
+	recordN(d, key, 1)
+	c.advance(10 * time.Second)
+	recordN(d, key, 1)
+	c.advance(-5 * time.Second)
+	recordN(d, key, 1)
+	r := d.rings[key]
+	if r.head != c.now().Unix()+5 {
+		t.Errorf("head moved backwards: %d", r.head)
+	}
+	if got := r.count(r.head, 60); got != 3 {
+		t.Errorf("count = %d, want 3", got)
+	}
+	if got := r.buckets[r.idx(r.head)]; got != 2 {
+		t.Errorf("head bucket = %d, want 2", got)
+	}
+}
+
+// Multiple windows: old events count only toward the wider window.
+func TestRing_MultipleWindows(t *testing.T) {
+	d, c := newClocked([]WindowConfig{
+		{Duration: time.Minute, Threshold: 1000},
+		{Duration: 5 * time.Minute, Threshold: 1000},
+	})
+	key := windowKey{"n", "exec"}
+	recordN(d, key, 4)
+	c.advance(2 * time.Minute)
+	recordN(d, key, 1)
+	sec := c.now().Unix()
+	if got := d.rings[key].count(sec, d.winSecs[0]); got != 1 {
+		t.Errorf("1m count = %d, want 1", got)
+	}
+	if got := d.rings[key].count(sec, d.winSecs[1]); got != 5 {
+		t.Errorf("5m count = %d, want 5", got)
+	}
+	st := d.WindowStats()["exec"]
+	if st["1m"] != 1 || st["5m"] != 5 {
+		t.Errorf("WindowStats = %v, want 1m=1 5m=5", st)
 	}
 }
 
@@ -147,45 +233,49 @@ func TestGC_RemovesExpiredCooldown(t *testing.T) {
 	}
 }
 
-// Characterization: multiple windows; old events count only for the wider window.
+// Old events count only for the wider window; events past the longest window are gone.
 func TestRecord_MultipleWindowsOldEvents(t *testing.T) {
-	d := New([]WindowConfig{
+	ws := []WindowConfig{
 		{Duration: time.Minute, Threshold: 3},
 		{Duration: 5 * time.Minute, Threshold: 6},
-	})
+	}
 	key := windowKey{"n", "exec"}
 	ev := makeEvent("n", "exec")
 
-	// 6 events 2-3 minutes ago: outside the 1m window, inside 5m.
-	seed(d, key, 6, time.Minute, 2*time.Minute)
+	// 6 events 2 minutes ago: outside the 1m window, inside 5m.
+	d, c := newClocked(ws)
+	recordN(d, key, 6)
+	c.advance(2 * time.Minute)
 	if alerts := d.Record(ev); len(alerts) != 1 { // 5m count = 7 > 6
 		t.Fatalf("expected 5m-window alert, got %d", len(alerts))
 	}
 
-	// 5 events 2-3 minutes ago + new one: 5m count 6, not > 6; 1m count 1.
-	d = New(d.windows)
-	seed(d, key, 5, time.Minute, 2*time.Minute)
+	// 5 events 2 minutes ago + new one: 5m count 6, not > 6; 1m count 1.
+	d, c = newClocked(ws)
+	recordN(d, key, 5)
+	c.advance(2 * time.Minute)
 	if alerts := d.Record(ev); len(alerts) != 0 {
 		t.Fatalf("expected no alert, got %d", len(alerts))
 	}
 
-	// Events older than the longest window are pruned.
-	d = New(d.windows)
-	seed(d, key, 10, time.Minute, 10*time.Minute)
+	// Events older than the longest window no longer count.
+	d, c = newClocked(ws)
+	recordN(d, key, 10)
+	c.advance(10 * time.Minute)
 	if alerts := d.Record(ev); len(alerts) != 0 {
 		t.Fatalf("expected no alert for expired events, got %d", len(alerts))
 	}
-	if n := len(d.timestamps[key]); n != 1 {
-		t.Errorf("history len = %d, want 1 after prune", n)
+	if got := d.rings[key].count(c.now().Unix(), d.winSecs[1]); got != 1 {
+		t.Errorf("count = %d, want 1 after expiry", got)
 	}
 }
 
 const benchN = 600_000
 
 func benchRecord(b *testing.B, windows []WindowConfig) {
-	d := New(windows)
+	d, _ := newClocked(windows)
 	key := windowKey{"n", "exec"}
-	seed(d, key, benchN, 4*time.Minute, 0)
+	recordN(d, key, benchN)
 	ev := makeEvent("n", "exec")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
