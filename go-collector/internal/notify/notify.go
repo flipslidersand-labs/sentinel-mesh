@@ -14,7 +14,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/flipslidersand/sentinel-mesh/internal/alerting"
-	"github.com/flipslidersand/sentinel-mesh/internal/store"
+	"github.com/flipslidersand/sentinel-mesh/internal/model"
 )
 
 // Notifier delivers a single alert to one external channel.
@@ -23,7 +23,7 @@ type Notifier interface {
 	Name() string
 	// Send delivers the alert. It should return an error on failure so the
 	// dispatcher can log it; it must not panic.
-	Send(ctx context.Context, a store.Alert) error
+	Send(ctx context.Context, a model.Alert) error
 }
 
 // knownSeverity reports whether s is a canonical severity (alerting.Severity*).
@@ -113,7 +113,7 @@ func (d *Dispatcher) Enabled() bool {
 // every notifier failed so the alert can be retried right away (#319).
 // Keys older than the cooldown are pruned at most once per cooldown interval,
 // bounding the map for throwaway node IDs / anomaly_<type> rule IDs.
-func (d *Dispatcher) shouldSend(a store.Alert) (bool, func()) {
+func (d *Dispatcher) shouldSend(a model.Alert) (bool, func()) {
 	noop := func() {}
 	if rankOf(a.Severity) < d.minRank {
 		return false, noop
@@ -154,7 +154,7 @@ func (d *Dispatcher) shouldSend(a store.Alert) (bool, func()) {
 // the alert notification is dropped (logged + counted, not silently lost)
 // rather than spawning an unbounded goroutine (#75). Safe to call from a
 // hot path (e.g. the gRPC StreamEvents loop) — it never blocks.
-func (d *Dispatcher) DispatchAsync(a store.Alert) {
+func (d *Dispatcher) DispatchAsync(a model.Alert) {
 	if !d.Enabled() {
 		return
 	}
@@ -182,7 +182,7 @@ func (d *Dispatcher) DispatchAsync(a store.Alert) {
 // Dispatch delivers the alert to every notifier if it passes the severity and
 // cooldown gates. It blocks until all notifiers have been attempted; callers
 // that must not block (e.g. the gRPC hot path) should use DispatchAsync instead.
-func (d *Dispatcher) Dispatch(a store.Alert) {
+func (d *Dispatcher) Dispatch(a model.Alert) {
 	if !d.Enabled() {
 		return
 	}

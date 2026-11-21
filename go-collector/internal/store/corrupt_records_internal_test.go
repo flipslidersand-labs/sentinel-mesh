@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/flipslidersand/sentinel-mesh/internal/model"
 )
 
 func captureLogs(t *testing.T) *bytes.Buffer {
@@ -27,7 +29,7 @@ func TestCorruptEventRecord_Skipped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SaveEvent(ctx, Event{EventID: "good", NodeID: "n1", Type: "exec", Timestamp: time.Now()}); err != nil {
+	if err := st.SaveEvent(ctx, model.Event{EventID: "good", NodeID: "n1", Type: "exec", Timestamp: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	putRaw(t, st, "event:2000-01-01T00:00:00.000000000Z:bad1", `{"event_id":"bad1`)
@@ -59,7 +61,7 @@ func TestCorruptEventRecord_Skipped(t *testing.T) {
 func TestCorruptAlertRecord_Skipped(t *testing.T) {
 	ctx := context.Background()
 	st := openTempStore(t, t.TempDir())
-	if err := st.SaveAlert(ctx, Alert{AlertID: "good", NodeID: "n1", Timestamp: time.Now()}); err != nil {
+	if err := st.SaveAlert(ctx, model.Alert{AlertID: "good", NodeID: "n1", Timestamp: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	putRaw(t, st, "alert:2000-01-01T00:00:00.000000000Z:bad", `{"alert_id":`)

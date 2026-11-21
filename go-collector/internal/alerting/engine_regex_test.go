@@ -7,7 +7,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
 
-	"github.com/flipslidersand/sentinel-mesh/internal/store"
+	"github.com/flipslidersand/sentinel-mesh/internal/model"
 )
 
 func regexRuleSet(pattern string) *RuleSet {
@@ -50,7 +50,7 @@ func TestRegexNotInPrecompiledSetStillWorks(t *testing.T) {
 func BenchmarkEvaluateRegex(b *testing.B) {
 	e := New(regexRuleSet(`^(nc|ncat|socat)\s+-[el]\S*$`), zap.NewNop())
 	payload, _ := json.Marshal(map[string]string{"comm": "ncat -lvp"})
-	ev := store.Event{EventID: "b", NodeID: "n", Type: "exec", Payload: payload}
+	ev := model.Event{EventID: "b", NodeID: "n", Type: "exec", Payload: payload}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
