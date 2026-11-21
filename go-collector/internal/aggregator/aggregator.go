@@ -35,6 +35,9 @@ import (
 // unbounded body and OOM the aggregator (#76).
 const maxResponseBytes = 10 * 1024 * 1024 // 10MB
 
+// eventLimit is how many recent events/alerts are fetched and cached per region.
+const eventLimit = 100
+
 // Upstream is a single per-region collector to poll.
 type Upstream struct {
 	Region string
@@ -104,12 +107,11 @@ type regionState struct {
 
 // Aggregator polls upstream collectors and caches a merged view.
 type Aggregator struct {
-	upstreams  []Upstream
-	client     *http.Client
-	interval   time.Duration
-	eventLimit int
-	apiToken   string
-	log        *zap.Logger
+	upstreams []Upstream
+	client    *http.Client
+	interval  time.Duration
+	apiToken  string
+	log       *zap.Logger
 
 	mu    sync.RWMutex
 	state map[string]*regionState
@@ -147,10 +149,9 @@ func New(upstreams []Upstream, interval time.Duration, apiToken string, log *zap
 				return http.ErrUseLastResponse
 			},
 		},
-		interval:   interval,
-		eventLimit: 100,
-		log:        log,
-		state:      state,
+		interval: interval,
+		log:      log,
+		state:    state,
 	}
 }
 
@@ -192,11 +193,11 @@ func (a *Aggregator) pollUpstream(ctx context.Context, u Upstream) {
 		a.markUnreachable(u, "nodes", err)
 		return
 	}
-	if err := a.fetchJSON(ctx, fmt.Sprintf("%s%s?limit=%d", u.URL, api.PathEvents, a.eventLimit), &st.events); err != nil {
+	if err := a.fetchJSON(ctx, fmt.Sprintf("%s%s?limit=%d", u.URL, api.PathEvents, eventLimit), &st.events); err != nil {
 		a.markUnreachable(u, "events", err)
 		return
 	}
-	if err := a.fetchJSON(ctx, fmt.Sprintf("%s%s?limit=%d", u.URL, api.PathAlerts, a.eventLimit), &st.alerts); err != nil {
+	if err := a.fetchJSON(ctx, fmt.Sprintf("%s%s?limit=%d", u.URL, api.PathAlerts, eventLimit), &st.alerts); err != nil {
 		a.markUnreachable(u, "alerts", err)
 		return
 	}

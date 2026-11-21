@@ -39,7 +39,7 @@ func (d contractData) ListAlertsWhere(ctx context.Context, keep func(string) boo
 	}
 	return out, nil
 }
-func (contractData) Stats() (map[string]int, error) { return map[string]int{}, nil }
+func (contractData) Stats() map[string]int { return map[string]int{} }
 
 // TestContract_PollOnceAgainstRealExporterRouter polls the real exporter
 // router (not a hand-written fake) so a route or shape change on the exporter

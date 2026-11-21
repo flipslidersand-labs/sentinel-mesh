@@ -451,14 +451,14 @@ func scanNewestFirst[T any](ctx context.Context, s *Store, prefixStr, label stri
 
 // Stats returns event counts per type, from the in-memory counters (#77) —
 // no longer a full key scan on every call.
-func (s *Store) Stats() (map[string]int, error) {
+func (s *Store) Stats() map[string]int {
 	s.countersMu.Lock()
 	defer s.countersMu.Unlock()
 	out := make(map[string]int, len(s.counters))
 	for t, n := range s.counters {
 		out[t] = n
 	}
-	return out, nil
+	return out
 }
 
 // SaveAlert persists an alert to the store.

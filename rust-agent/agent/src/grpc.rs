@@ -380,14 +380,10 @@ async fn run_session(
     // can't feed it directly from `rx` (borrowed — it must survive this
     // function returning on error, so the caller can retry with it intact).
     // Bridge through a fresh per-attempt channel instead: `bridge_rx` is
-    // owned and moved into the generator (satisfying 'static), while this
+    // owned and moved into the stream (satisfying 'static), while this
     // function keeps driving the outer `rx` and forwarding into `bridge_tx`.
-    let (bridge_tx, mut bridge_rx) = tokio::sync::mpsc::channel::<KernelEvent>(256);
-    let outbound = async_stream::stream! {
-        while let Some(event) = bridge_rx.recv().await {
-            yield event;
-        }
-    };
+    let (bridge_tx, bridge_rx) = tokio::sync::mpsc::channel::<KernelEvent>(256);
+    let outbound = tonic::codegen::tokio_stream::wrappers::ReceiverStream::new(bridge_rx);
 
     let mut response = client.stream_events(outbound).await?.into_inner();
     stats.established_at = Some(Instant::now());

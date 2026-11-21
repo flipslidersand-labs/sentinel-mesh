@@ -304,10 +304,7 @@ func TestStreamEvents_RejectsUnknownEventTypeWithoutPersisting(t *testing.T) {
 		if len(events) != 0 {
 			t.Fatalf("type %d: must not be persisted", typ)
 		}
-		stats, err := st.Stats()
-		if err != nil {
-			t.Fatalf("Stats: %v", err)
-		}
+		stats := st.Stats()
 		// Known types are pre-seeded at zero; no new key or non-zero count may appear.
 		if len(stats) != 3 {
 			t.Fatalf("type %d: counters gained a key, got %v", typ, stats)

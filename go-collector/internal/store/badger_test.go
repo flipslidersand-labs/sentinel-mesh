@@ -182,10 +182,7 @@ func TestStats_MatchesSavedEvents(t *testing.T) {
 		}
 	}
 
-	counts, err := st.Stats()
-	if err != nil {
-		t.Fatalf("Stats: %v", err)
-	}
+	counts := st.Stats()
 	want := map[string]int{"exec": 2, "tcp": 1, "file": 3}
 	for typ, n := range want {
 		if counts[typ] != n {
@@ -219,10 +216,7 @@ func TestStats_SurvivesRestart(t *testing.T) {
 	}
 	t.Cleanup(func() { st2.Close() }) //nolint:errcheck
 
-	counts, err := st2.Stats()
-	if err != nil {
-		t.Fatalf("Stats: %v", err)
-	}
+	counts := st2.Stats()
 	if counts["exec"] != 1 || counts["tcp"] != 2 {
 		t.Errorf("counts after reopen = %+v, want exec=1 tcp=2", counts)
 	}
