@@ -70,6 +70,61 @@ func (EventType) EnumDescriptor() ([]byte, []int) {
 	return file_sentinel_proto_rawDescGZIP(), []int{0}
 }
 
+// Why an Ack carries ok=false (#488). Always UNSPECIFIED when ok=true.
+// UNSPECIFIED with ok=false is what an older collector sends: agents treat it
+// as not retryable (the pre-#488 behaviour).
+type AckReason int32
+
+const (
+	AckReason_ACK_REASON_UNSPECIFIED  AckReason = 0
+	AckReason_ACK_REASON_INVALID      AckReason = 1 // validation / node_id mismatch: resending cannot succeed
+	AckReason_ACK_REASON_RATE_LIMITED AckReason = 2 // dropped by the per-stream limiter: not resent
+	AckReason_ACK_REASON_RETRYABLE    AckReason = 3 // transient store failure: the agent may resend
+)
+
+// Enum value maps for AckReason.
+var (
+	AckReason_name = map[int32]string{
+		0: "ACK_REASON_UNSPECIFIED",
+		1: "ACK_REASON_INVALID",
+		2: "ACK_REASON_RATE_LIMITED",
+		3: "ACK_REASON_RETRYABLE",
+	}
+	AckReason_value = map[string]int32{
+		"ACK_REASON_UNSPECIFIED":  0,
+		"ACK_REASON_INVALID":      1,
+		"ACK_REASON_RATE_LIMITED": 2,
+		"ACK_REASON_RETRYABLE":    3,
+	}
+)
+
+func (x AckReason) Enum() *AckReason {
+	p := new(AckReason)
+	*p = x
+	return p
+}
+
+func (x AckReason) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (AckReason) Descriptor() protoreflect.EnumDescriptor {
+	return file_sentinel_proto_enumTypes[1].Descriptor()
+}
+
+func (AckReason) Type() protoreflect.EnumType {
+	return &file_sentinel_proto_enumTypes[1]
+}
+
+func (x AckReason) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use AckReason.Descriptor instead.
+func (AckReason) EnumDescriptor() ([]byte, []int) {
+	return file_sentinel_proto_rawDescGZIP(), []int{1}
+}
+
 type ExecEvent struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Pid           uint32                 `protobuf:"varint,1,opt,name=pid,proto3" json:"pid,omitempty"`
@@ -583,6 +638,7 @@ func (x *RegisterResponse) GetMessage() string {
 type EventAck struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Ok            bool                   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
+	Reason        AckReason              `protobuf:"varint,2,opt,name=reason,proto3,enum=sentinel.v1.AckReason" json:"reason,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -622,6 +678,13 @@ func (x *EventAck) GetOk() bool {
 		return x.Ok
 	}
 	return false
+}
+
+func (x *EventAck) GetReason() AckReason {
+	if x != nil {
+		return x.Reason
+	}
+	return AckReason_ACK_REASON_UNSPECIFIED
 }
 
 var File_sentinel_proto protoreflect.FileDescriptor
@@ -668,13 +731,19 @@ const file_sentinel_proto_rawDesc = "" +
 	"\x06region\x18\x05 \x01(\tR\x06region\"<\n" +
 	"\x10RegisterResponse\x12\x0e\n" +
 	"\x02ok\x18\x01 \x01(\bR\x02ok\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage\"\x1a\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"J\n" +
 	"\bEventAck\x12\x0e\n" +
-	"\x02ok\x18\x01 \x01(\bR\x02ok*(\n" +
+	"\x02ok\x18\x01 \x01(\bR\x02ok\x12.\n" +
+	"\x06reason\x18\x02 \x01(\x0e2\x16.sentinel.v1.AckReasonR\x06reason*(\n" +
 	"\tEventType\x12\b\n" +
 	"\x04EXEC\x10\x00\x12\a\n" +
 	"\x03TCP\x10\x01\x12\b\n" +
-	"\x04FILE\x10\x022\xa1\x01\n" +
+	"\x04FILE\x10\x02*v\n" +
+	"\tAckReason\x12\x1a\n" +
+	"\x16ACK_REASON_UNSPECIFIED\x10\x00\x12\x16\n" +
+	"\x12ACK_REASON_INVALID\x10\x01\x12\x1b\n" +
+	"\x17ACK_REASON_RATE_LIMITED\x10\x02\x12\x18\n" +
+	"\x14ACK_REASON_RETRYABLE\x10\x032\xa1\x01\n" +
 	"\x11SentinelCollector\x12G\n" +
 	"\bRegister\x12\x1c.sentinel.v1.RegisterRequest\x1a\x1d.sentinel.v1.RegisterResponse\x12C\n" +
 	"\fStreamEvents\x12\x18.sentinel.v1.KernelEvent\x1a\x15.sentinel.v1.EventAck(\x010\x01B5Z3github.com/flipslidersand/sentinel-mesh/internal/pbb\x06proto3"
@@ -691,32 +760,34 @@ func file_sentinel_proto_rawDescGZIP() []byte {
 	return file_sentinel_proto_rawDescData
 }
 
-var file_sentinel_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_sentinel_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
 var file_sentinel_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_sentinel_proto_goTypes = []any{
 	(EventType)(0),           // 0: sentinel.v1.EventType
-	(*ExecEvent)(nil),        // 1: sentinel.v1.ExecEvent
-	(*TcpEvent)(nil),         // 2: sentinel.v1.TcpEvent
-	(*FileEvent)(nil),        // 3: sentinel.v1.FileEvent
-	(*KernelEvent)(nil),      // 4: sentinel.v1.KernelEvent
-	(*RegisterRequest)(nil),  // 5: sentinel.v1.RegisterRequest
-	(*RegisterResponse)(nil), // 6: sentinel.v1.RegisterResponse
-	(*EventAck)(nil),         // 7: sentinel.v1.EventAck
+	(AckReason)(0),           // 1: sentinel.v1.AckReason
+	(*ExecEvent)(nil),        // 2: sentinel.v1.ExecEvent
+	(*TcpEvent)(nil),         // 3: sentinel.v1.TcpEvent
+	(*FileEvent)(nil),        // 4: sentinel.v1.FileEvent
+	(*KernelEvent)(nil),      // 5: sentinel.v1.KernelEvent
+	(*RegisterRequest)(nil),  // 6: sentinel.v1.RegisterRequest
+	(*RegisterResponse)(nil), // 7: sentinel.v1.RegisterResponse
+	(*EventAck)(nil),         // 8: sentinel.v1.EventAck
 }
 var file_sentinel_proto_depIdxs = []int32{
 	0, // 0: sentinel.v1.KernelEvent.type:type_name -> sentinel.v1.EventType
-	1, // 1: sentinel.v1.KernelEvent.exec:type_name -> sentinel.v1.ExecEvent
-	2, // 2: sentinel.v1.KernelEvent.tcp:type_name -> sentinel.v1.TcpEvent
-	3, // 3: sentinel.v1.KernelEvent.file:type_name -> sentinel.v1.FileEvent
-	5, // 4: sentinel.v1.SentinelCollector.Register:input_type -> sentinel.v1.RegisterRequest
-	4, // 5: sentinel.v1.SentinelCollector.StreamEvents:input_type -> sentinel.v1.KernelEvent
-	6, // 6: sentinel.v1.SentinelCollector.Register:output_type -> sentinel.v1.RegisterResponse
-	7, // 7: sentinel.v1.SentinelCollector.StreamEvents:output_type -> sentinel.v1.EventAck
-	6, // [6:8] is the sub-list for method output_type
-	4, // [4:6] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	2, // 1: sentinel.v1.KernelEvent.exec:type_name -> sentinel.v1.ExecEvent
+	3, // 2: sentinel.v1.KernelEvent.tcp:type_name -> sentinel.v1.TcpEvent
+	4, // 3: sentinel.v1.KernelEvent.file:type_name -> sentinel.v1.FileEvent
+	1, // 4: sentinel.v1.EventAck.reason:type_name -> sentinel.v1.AckReason
+	6, // 5: sentinel.v1.SentinelCollector.Register:input_type -> sentinel.v1.RegisterRequest
+	5, // 6: sentinel.v1.SentinelCollector.StreamEvents:input_type -> sentinel.v1.KernelEvent
+	7, // 7: sentinel.v1.SentinelCollector.Register:output_type -> sentinel.v1.RegisterResponse
+	8, // 8: sentinel.v1.SentinelCollector.StreamEvents:output_type -> sentinel.v1.EventAck
+	7, // [7:9] is the sub-list for method output_type
+	5, // [5:7] is the sub-list for method input_type
+	5, // [5:5] is the sub-list for extension type_name
+	5, // [5:5] is the sub-list for extension extendee
+	0, // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_sentinel_proto_init() }
@@ -734,7 +805,7 @@ func file_sentinel_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_sentinel_proto_rawDesc), len(file_sentinel_proto_rawDesc)),
-			NumEnums:      1,
+			NumEnums:      2,
 			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   1,

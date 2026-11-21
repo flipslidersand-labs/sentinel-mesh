@@ -7,7 +7,9 @@ use tonic::service::Interceptor;
 use tonic::transport::{Certificate, ClientTlsConfig, Endpoint};
 use tonic::{Request, Status};
 
-use crate::pb::{sentinel_collector_client::SentinelCollectorClient, KernelEvent, RegisterRequest};
+use crate::pb::{
+    sentinel_collector_client::SentinelCollectorClient, AckReason, KernelEvent, RegisterRequest,
+};
 
 const INITIAL_BACKOFF: Duration = Duration::from_millis(100);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
@@ -280,6 +282,20 @@ struct DeliveryStats {
 const PENDING_MAX_EVENTS: usize = 2048;
 const PENDING_MAX_BYTES: usize = 2 * 1024 * 1024;
 
+/// An `ok=false` ack with `ACK_REASON_RETRYABLE` (transient collector store
+/// failure, #488) re-queues the event at the back at most this many times;
+/// after that it is dropped with a warning. Other reasons (INVALID,
+/// RATE_LIMITED, and UNSPECIFIED from an older collector) are never re-sent.
+const MAX_RETRIES: u32 = 5;
+/// Delay before the first retry; doubles per attempt, capped at `RETRY_MAX_DELAY`.
+const RETRY_BASE_DELAY: Duration = Duration::from_millis(50);
+const RETRY_MAX_DELAY: Duration = Duration::from_secs(5);
+
+/// Whether an `ok=false` ack asks the agent to send the event again.
+fn is_retryable(reason: i32) -> bool {
+    AckReason::try_from(reason) == Ok(AckReason::Retryable)
+}
+
 /// Events taken from `rx` and not yet acked, oldest first. Lives across
 /// reconnects. The collector acks every received event in order, so each ack
 /// confirms the front of the queue.
@@ -294,6 +310,11 @@ struct Pending {
     full_stalls: u64,
     max_len: usize,
     was_full: bool,
+    /// event_id -> (retry count, earliest next send) for events re-queued by a
+    /// RETRYABLE ack (#488).
+    retries: std::collections::HashMap<String, (u32, Instant)>,
+    /// Events dropped after exhausting `MAX_RETRIES` (cumulative).
+    retry_dropped: u64,
 }
 
 impl Default for Pending {
@@ -313,6 +334,8 @@ impl Pending {
             full_stalls: 0,
             max_len: 0,
             was_full: false,
+            retries: Default::default(),
+            retry_dropped: 0,
         }
     }
 
@@ -338,7 +361,36 @@ impl Pending {
     fn ack(&mut self) -> Option<KernelEvent> {
         let e = self.q.pop_front()?;
         self.bytes = self.bytes.saturating_sub(prost::Message::encoded_len(&e));
+        self.retries.remove(&e.event_id);
         Some(e)
+    }
+
+    /// Handle a RETRYABLE failure ack for the queue front: move it to the back
+    /// (acks stay 1:1 with the sent front of the queue) and schedule its next
+    /// send after a backoff. Returns the event when it ran out of retries and
+    /// was dropped instead.
+    fn retry_front(&mut self, now: Instant) -> Option<KernelEvent> {
+        let e = self.q.pop_front()?;
+        let n = self.retries.get(&e.event_id).map_or(0, |r| r.0) + 1;
+        if n > MAX_RETRIES {
+            self.bytes = self.bytes.saturating_sub(prost::Message::encoded_len(&e));
+            self.retries.remove(&e.event_id);
+            self.retry_dropped += 1;
+            return Some(e);
+        }
+        let delay = (RETRY_BASE_DELAY * 2u32.pow(n - 1)).min(RETRY_MAX_DELAY);
+        self.retries.insert(e.event_id.clone(), (n, now + delay));
+        self.q.push_back(e);
+        None
+    }
+
+    /// When the event at `idx` may be sent, if it is still backing off.
+    fn not_before(&self, idx: usize, now: Instant) -> Option<Instant> {
+        let e = self.q.get(idx)?;
+        self.retries
+            .get(&e.event_id)
+            .map(|r| r.1)
+            .filter(|t| *t > now)
     }
 
     fn summary(&self) -> String {
@@ -459,7 +511,13 @@ async fn run_session(
                 drop(bridge_tx);
                 return Ok(());
             }
-            let can_send = cursor < pending.q.len();
+            let now = Instant::now();
+            let backoff_until = if cursor < pending.q.len() {
+                pending.not_before(cursor, now)
+            } else {
+                None
+            };
+            let can_send = cursor < pending.q.len() && backoff_until.is_none();
             let can_read = !rx_closed && !pending.is_full();
 
             tokio::select! {
@@ -469,14 +527,29 @@ async fn run_session(
                     match ack? {
                         Some(a) => {
                             // Acks are 1:1 and in order with sent events.
-                            if cursor == 0 || pending.ack().is_none() {
+                            if cursor == 0 || pending.q.is_empty() {
                                 anyhow::bail!("collector sent an ack with no event in flight");
                             }
                             cursor -= 1;
-                            // ok=false (validation error, rate limit) is only
-                            // logged and NOT re-sent: the same event would be
-                            // rejected again, looping forever.
-                            if !a.ok {
+                            if a.ok {
+                                pending.ack();
+                            } else if is_retryable(a.reason) {
+                                // Transient collector store failure: send the
+                                // event again later (bounded, with backoff). It
+                                // moves to the back so acks stay 1:1 with the
+                                // sent front of the queue (#488).
+                                if let Some(e) = pending.retry_front(Instant::now()) {
+                                    eprintln!(
+                                        "warn: dropping event {} after {MAX_RETRIES} retries ({} dropped in total)",
+                                        e.event_id, pending.retry_dropped
+                                    );
+                                }
+                            } else {
+                                // Validation error, rate limit, or an older
+                                // collector's reason-less ok=false: the same event
+                                // would be rejected again, so it is only counted,
+                                // NOT re-sent (no infinite loop).
+                                pending.ack();
                                 if let Some(r) = rejects.record(Instant::now()) {
                                     log_rejects(r);
                                 }
@@ -494,6 +567,10 @@ async fn run_session(
                     permit.send(pending.q[cursor].clone());
                     cursor += 1;
                 }
+
+                _ = tokio::time::sleep(
+                    backoff_until.map_or(Duration::ZERO, |t| t.saturating_duration_since(now))
+                ), if backoff_until.is_some() => {}
 
                 maybe_event = rx.recv(), if can_read => {
                     match maybe_event {
@@ -757,6 +834,17 @@ mod tests {
             registered: tokio::sync::mpsc::Sender<()>,
             /// event_id of every event received, in arrival order.
             seen: Arc<std::sync::Mutex<Vec<String>>>,
+            /// Ack for the nth (0-based) receipt of an event_id.
+            reply: Reply,
+        }
+
+        type Reply = Arc<dyn Fn(&str, usize) -> EventAck + Send + Sync>;
+
+        fn ack_ok() -> Reply {
+            Arc::new(|_, _| EventAck {
+                ok: true,
+                reason: AckReason::Unspecified as i32,
+            })
         }
 
         #[tonic::async_trait]
@@ -782,11 +870,17 @@ mod tests {
                 let mut inbound = req.into_inner();
                 let got_event = self.got_event.clone();
                 let seen = self.seen.clone();
+                let reply = self.reply.clone();
                 let s = async_stream::stream! {
                     while let Ok(Some(ev)) = inbound.message().await {
-                        seen.lock().unwrap().push(ev.event_id);
+                        let nth = {
+                            let mut v = seen.lock().unwrap();
+                            let n = v.iter().filter(|x| **x == ev.event_id).count();
+                            v.push(ev.event_id.clone());
+                            n
+                        };
                         let _ = got_event.try_send(());
-                        yield Ok(EventAck { ok: true });
+                        yield Ok(reply(&ev.event_id, nth));
                     }
                 };
                 Ok(Response::new(Box::pin(s)))
@@ -872,6 +966,10 @@ mod tests {
 
         /// Real tonic collector behind a proxy that can go silent.
         async fn harness() -> Harness {
+            harness_with(ack_ok()).await
+        }
+
+        async fn harness_with(reply: Reply) -> Harness {
             let srv_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let srv_addr = srv_listener.local_addr().unwrap();
             let (got_tx, got_event) = tokio::sync::mpsc::channel(1);
@@ -883,6 +981,7 @@ mod tests {
                         got_event: got_tx,
                         registered: reg_tx,
                         seen: seen.clone(),
+                        reply,
                     }))
                     .serve_with_incoming(tokio_stream_from(srv_listener)),
             );
@@ -1177,6 +1276,124 @@ mod tests {
         #[tokio::test]
         async fn no_events_lost_when_acks_are_lost() {
             resend_case(true).await;
+        }
+
+        /// Sends `ids` through an agent against a collector answering with
+        /// `reply`, waits for the agent to drain and exit, returns every
+        /// received event_id in arrival order.
+        async fn run_events(reply: Reply, ids: &[&str]) -> Vec<String> {
+            let h = harness_with(reply).await;
+            let (ev_tx, ev_rx) = tokio::sync::mpsc::channel::<KernelEvent>(16);
+            let agent = tokio::spawn(stream_to_collector_with(
+                h.endpoint.clone(),
+                "n1".into(),
+                String::new(),
+                None,
+                None,
+                fast_tuning(),
+                ev_rx,
+            ));
+            for id in ids {
+                ev_tx
+                    .send(KernelEvent {
+                        event_id: (*id).into(),
+                        ..Default::default()
+                    })
+                    .await
+                    .unwrap();
+            }
+            drop(ev_tx);
+            let res = within(20, "agent did not drain", agent).await.unwrap();
+            assert!(res.is_ok(), "expected clean exit, got {res:?}");
+            let seen = h.seen.lock().unwrap().clone();
+            seen
+        }
+
+        fn nack(reason: AckReason) -> EventAck {
+            EventAck {
+                ok: false,
+                reason: reason as i32,
+            }
+        }
+
+        fn count(seen: &[String], id: &str) -> usize {
+            seen.iter().filter(|x| *x == id).count()
+        }
+
+        /// #488: a RETRYABLE failure is sent again until it succeeds; the other
+        /// events are unaffected.
+        #[tokio::test]
+        async fn retryable_nack_is_resent_until_ok() {
+            let seen = run_events(
+                Arc::new(|id, nth| {
+                    if id == "flaky" && nth < 2 {
+                        nack(AckReason::Retryable)
+                    } else {
+                        EventAck {
+                            ok: true,
+                            reason: 0,
+                        }
+                    }
+                }),
+                &["a", "flaky", "b"],
+            )
+            .await;
+            assert_eq!(count(&seen, "flaky"), 3, "seen: {seen:?}");
+            assert_eq!(count(&seen, "a"), 1);
+            assert_eq!(count(&seen, "b"), 1);
+        }
+
+        /// #488: INVALID, RATE_LIMITED and a reason-less ok=false (older
+        /// collector) are never re-sent.
+        #[tokio::test]
+        async fn non_retryable_nacks_are_not_resent() {
+            for reason in [
+                AckReason::Invalid,
+                AckReason::RateLimited,
+                AckReason::Unspecified,
+            ] {
+                let seen = run_events(Arc::new(move |_, _| nack(reason)), &["x", "y"]).await;
+                assert_eq!(seen, vec!["x", "y"], "{reason:?} must not be re-sent");
+            }
+        }
+
+        /// #488: a collector that keeps answering RETRYABLE does not loop
+        /// forever; the event is dropped after MAX_RETRIES re-sends.
+        #[tokio::test]
+        async fn retryable_nack_stops_after_max_retries() {
+            let seen = run_events(Arc::new(|_, _| nack(AckReason::Retryable)), &["x"]).await;
+            assert_eq!(
+                count(&seen, "x"),
+                1 + MAX_RETRIES as usize,
+                "seen: {seen:?}"
+            );
+        }
+
+        #[test]
+        fn retry_front_requeues_at_back_then_gives_up() {
+            let ev = |id: &str| KernelEvent {
+                event_id: id.into(),
+                ..Default::default()
+            };
+            let mut p = Pending::new(10, usize::MAX);
+            p.push(ev("a"));
+            p.push(ev("b"));
+            let now = Instant::now();
+            assert!(p.retry_front(now).is_none());
+            assert_eq!(p.q[0].event_id, "b");
+            assert_eq!(p.q[1].event_id, "a");
+            assert!(p.not_before(1, now).is_some(), "a must back off");
+            assert!(p.not_before(0, now).is_none());
+            for _ in 1..MAX_RETRIES {
+                assert!(p.retry_front(now).is_none()); // b
+                assert!(p.retry_front(now).is_none()); // a
+            }
+            assert!(p.retry_front(now).is_none()); // b hits its limit
+            assert_eq!(p.q.len(), 2);
+            let dropped = p.retry_front(now).expect("a exhausted its retries");
+            assert_eq!(dropped.event_id, "a");
+            assert_eq!(p.retry_dropped, 1);
+            assert_eq!(p.q.len(), 1);
         }
 
         /// Collector whose `Register` always answers with `reply`.

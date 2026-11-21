@@ -23,7 +23,7 @@ func TestRejectEvent(t *testing.T) {
 	t.Run("logs then sends Ok=false", func(t *testing.T) {
 		stream := &fakeStream{}
 		logged := false
-		if err := rejectEvent(stream, func() { logged = true }); err != nil {
+		if err := rejectEvent(stream, pb.AckReason_ACK_REASON_INVALID, func() { logged = true }); err != nil {
 			t.Fatalf("rejectEvent: %v", err)
 		}
 		if !logged {
@@ -34,7 +34,7 @@ func TestRejectEvent(t *testing.T) {
 		}
 	})
 	t.Run("propagates send error", func(t *testing.T) {
-		if err := rejectEvent(&errSendStream{}, func() {}); err == nil {
+		if err := rejectEvent(&errSendStream{}, pb.AckReason_ACK_REASON_INVALID, func() {}); err == nil {
 			t.Error("want send error")
 		}
 	})
