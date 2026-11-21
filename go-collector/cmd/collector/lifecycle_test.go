@@ -229,3 +229,81 @@ func TestRunHTTPServerTLSUntilDone_ServesTLS(t *testing.T) {
 		t.Errorf("shutdown error: %v", err)
 	}
 }
+
+func TestRunHTTPServerUntilDone_ShutdownTimeoutForceCloses(t *testing.T) {
+	old := httpShutdownTimeout
+	httpShutdownTimeout = 100 * time.Millisecond
+	defer func() { httpShutdownTimeout = old }()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+
+	started := make(chan struct{})
+	ctxCancelled := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/slow", func(_ http.ResponseWriter, r *http.Request) {
+		close(started)
+		select {
+		case <-r.Context().Done():
+			close(ctxCancelled)
+		case <-time.After(10 * time.Second):
+		}
+	})
+	srv := newHTTPServer(addr, mux)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runHTTPServerUntilDone(ctx, srv, "test", zap.NewNop()) }()
+
+	clientErr := make(chan error, 1)
+	go func() {
+		var err error
+		for i := 0; i < 50; i++ {
+			var resp *http.Response
+			resp, err = http.Get("http://" + addr + "/slow")
+			if err == nil {
+				resp.Body.Close()
+				break
+			}
+			select {
+			case <-started:
+				clientErr <- err
+				return
+			default:
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		clientErr <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler never started")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runHTTPServerUntilDone did not return after shutdown timeout")
+	}
+	select {
+	case <-ctxCancelled:
+	case <-time.After(2 * time.Second):
+		t.Error("handler context not cancelled: connection was not force-closed")
+	}
+	select {
+	case err := <-clientErr:
+		if err == nil {
+			t.Error("client got a response, want connection error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("client request still pending after force close")
+	}
+}
