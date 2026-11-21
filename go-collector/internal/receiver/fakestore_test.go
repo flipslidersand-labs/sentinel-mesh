@@ -19,13 +19,31 @@ type fakeStorage struct {
 	events []model.Event
 	alerts []model.Alert
 	tokens map[string]string
+	// seen tracks (node, event_id) pairs like the real store: a repeat is
+	// reported as a duplicate and not appended. Empty event_id never dedups.
+	seen map[string]bool
 }
 
-func (f *fakeStorage) SaveEvent(_ context.Context, e model.Event) error {
+func (f *fakeStorage) SaveEventDedup(_ context.Context, e model.Event) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if e.EventID != "" {
+		k := e.NodeID + "\x00" + e.EventID
+		if f.seen == nil {
+			f.seen = map[string]bool{}
+		}
+		if f.seen[k] {
+			return true, nil
+		}
+		f.seen[k] = true
+	}
 	f.events = append(f.events, e)
-	return nil
+	return false, nil
+}
+
+func (f *fakeStorage) SaveEvent(ctx context.Context, e model.Event) error {
+	_, err := f.SaveEventDedup(ctx, e)
+	return err
 }
 
 func (f *fakeStorage) SaveAlert(_ context.Context, a model.Alert) error {
