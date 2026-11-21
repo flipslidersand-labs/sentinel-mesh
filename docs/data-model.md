@@ -56,7 +56,7 @@ message FileEvent {
   uint32 pid      = 1;
   string comm     = 2;
   string path     = 3;
-  string op       = 4;  // "open" | "unlink" | "rename"
+  string op       = 4;  // "open"(読み取り専用) | "write"(O_WRONLY/O_RDWR/O_TRUNC/O_APPEND) | "create"(O_CREAT)。"unlink" | "rename" は未実装
   int32  ret      = 5;  // システムコール戻り値
 }
 ```
