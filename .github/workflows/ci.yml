@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [master]
 
+permissions:
+  contents: read
+
 jobs:
   go-collector:
     # main 直参照だと qa-workflows 側の変更が無警告で波及するため commit SHA に固定
@@ -27,6 +30,8 @@ jobs:
 
   go-mod-tidy:
     name: Go mod tidy check
+    # 注: 公開リポのため self-hosted runner に切り替えない。fork PR のコードが常駐 runner で
+    #     動いてしまう (repo-compass ADR-010 補足)。GATE_RUNNER は GitHub-hosted のラベルのみ指定する。
     # go-collector は再利用 workflow 呼び出しのため step を足せず、別ジョブで整合を検査する (#330)。
     # 公開リポのため runner はリポ変数 GATE_RUNNER で指定する（ADR-010。既定値なし）。
     runs-on: ${{ vars.GATE_RUNNER }}
@@ -35,8 +40,8 @@ jobs:
       run:
         working-directory: go-collector
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
         with:
           go-version: "1.26"
       - name: go mod tidy が go.mod/go.sum に差分を出さないこと
@@ -57,15 +62,15 @@ jobs:
       run:
         working-directory: rust-agent
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           components: llvm-tools-preview
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: rust-agent
       # build.rs (tonic-build) が proto をコンパイルするため protoc が必要
-      - uses: arduino/setup-protoc@v3
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       # cc の有無は GATE_RUNNER の値で変わる。GitHub 提供の runner は cc ありなので
@@ -75,7 +80,7 @@ jobs:
       - run: command -v cc >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y build-essential)
       - run: cargo check --workspace
       - run: cargo test --workspace
-      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: taiki-e/install-action@5b56535d0239d0a46e7d74f64d83712fad4564d3 # cargo-llvm-cov
       # 現状実測ラインカバレッジ 55.26% (2026-09-13, agent crate のみ。
       # agent-ebpf は workspace member 外のため対象外) に対する初期閾値。
       # 引き上げ追跡: flipslidersand-labs/sentinel-mesh#141 と同様の運用ルールを適用し、
@@ -84,7 +89,7 @@ jobs:
         run: cargo llvm-cov --workspace --lcov --output-path lcov.info --fail-under-lines 50
       - name: PR coverage comment
         if: github.event_name == 'pull_request'
-        uses: romeovs/lcov-reporter-action@v0.4.0
+        uses: romeovs/lcov-reporter-action@87a815f34ec27a5826abba44ce09bbc688da58fd # v0.4.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           lcov-file: rust-agent/lcov.info
@@ -101,16 +106,16 @@ jobs:
     # トラッキング: flipslidersand-labs/sentinel-mesh#216）
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
         with:
           go-version: "1.26"
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: rust-agent
       # build.rs (tonic-build) が proto をコンパイルするため protoc が必要
-      - uses: arduino/setup-protoc@v3
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       # cc の有無は GATE_RUNNER の値で変わる。GitHub 提供の runner は cc ありなので
@@ -137,7 +142,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: scripts/tests/*.sh を実行
         run: |
           set -u

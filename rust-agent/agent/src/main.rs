@@ -36,13 +36,47 @@ struct Args {
     /// Must be a per-agent token issued via `sentinel-collector token issue <node_id>` matching
     /// this agent's --node-id, not the collector's REST API token — the gRPC channel's per-agent
     /// token store doesn't recognize that one and will reject it (#183/#190, per ADR-005).
-    #[arg(long, env = "SENTINEL_API_TOKEN")]
+    #[arg(long, env = "SENTINEL_API_TOKEN", hide_env_values = true)]
     grpc_token: Option<String>,
 
     /// CA certificate (PEM) to verify the collector's TLS cert when --collector uses https://;
     /// omit to use the system trust store (e.g. a publicly-signed cert)
     #[arg(long, env = "SENTINEL_GRPC_CA_CERT")]
     grpc_ca_cert: Option<String>,
+
+    /// Allow sending --grpc-token over plaintext (http://) to a non-loopback collector.
+    /// Insecure: the bearer token is visible to anyone on the network path.
+    #[arg(long, default_value_t = false)]
+    allow_insecure_token: bool,
+}
+
+/// Refuse to send a bearer token in plaintext to a non-loopback collector (#420).
+/// Returns Err when a token is set, the collector is not https://, and the host is not
+/// loopback (127.0.0.0/8, ::1, localhost), unless `allow_insecure` is set.
+fn check_token_transport(collector: &str, has_token: bool, allow_insecure: bool) -> Result<()> {
+    if !has_token || allow_insecure || collector.starts_with("https://") {
+        return Ok(());
+    }
+    let rest = collector.split_once("://").map_or(collector, |(_, r)| r);
+    let authority = rest.split(['/', '?']).next().unwrap_or("");
+    let hostport = authority.rsplit('@').next().unwrap_or("");
+    let host = match hostport.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or(""),
+        None => hostport.split(':').next().unwrap_or(""),
+    };
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false);
+    if loopback {
+        return Ok(());
+    }
+    Err(anyhow::anyhow!(
+        "refusing to send --grpc-token in plaintext to non-loopback collector {collector}: \
+         use an https:// collector (collector --grpc-tls-cert/--grpc-tls-key), or pass \
+         --allow-insecure-token to override"
+    ))
 }
 
 #[tokio::main]
@@ -53,6 +87,12 @@ async fn main() -> Result<()> {
             .map(|h| h.to_string_lossy().into_owned())
             .unwrap_or_else(|_| Uuid::new_v4().to_string())
     });
+
+    check_token_transport(
+        &args.collector,
+        args.grpc_token.is_some(),
+        args.allow_insecure_token,
+    )?;
 
     let region = args.region.unwrap_or_default();
 
@@ -182,5 +222,45 @@ mod tests {
     fn mock_rate_accepts_bounds() {
         assert_eq!(parse_rate("1").unwrap().mock_rate, 1);
         assert_eq!(parse_rate("1000").unwrap().mock_rate, 1000);
+    }
+
+    #[test]
+    fn token_over_plaintext_to_remote_is_rejected() {
+        for c in [
+            "http://192.0.2.10:50051",
+            "http://collector.example:50051",
+            "192.0.2.10:50051",
+            "http://127.0.0.1.evil.example:50051",
+            "http://user@192.0.2.10:50051",
+        ] {
+            let e = check_token_transport(c, true, false)
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains("--allow-insecure-token"), "{c}: {e}");
+        }
+    }
+
+    #[test]
+    fn token_allowed_for_loopback_https_override_or_no_token() {
+        for c in [
+            "http://127.0.0.1:50051",
+            "http://127.1.2.3:50051",
+            "http://[::1]:50051",
+            "http://localhost:50051",
+            "https://192.0.2.10:50051",
+        ] {
+            assert!(check_token_transport(c, true, false).is_ok(), "{c}");
+        }
+        assert!(check_token_transport("http://192.0.2.10:50051", true, true).is_ok());
+        assert!(check_token_transport("http://192.0.2.10:50051", false, false).is_ok());
+    }
+
+    #[test]
+    fn help_does_not_leak_env_token() {
+        std::env::set_var("SENTINEL_API_TOKEN", "s3cr3t-token-value");
+        let h = <Args as clap::CommandFactory>::command()
+            .render_long_help()
+            .to_string();
+        assert!(!h.contains("s3cr3t-token-value"));
     }
 }
