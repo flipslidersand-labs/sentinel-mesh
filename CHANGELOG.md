@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING (rust-agent, #420):** the agent now refuses to start when `--grpc-token`/`$SENTINEL_API_TOKEN` is set but the collector is plaintext (`http://`) and not loopback (127.0.0.0/8, `::1`, `localhost`); it was a warning before. Use an `https://` collector, or pass the new `--allow-insecure-token` to keep the old behavior.
 - **license:** declare `license = "MIT"` in the Rust agent manifests and `web/package.json` to match `LICENSE` (#328).
 - **BREAKING (go-collector, #360):** `SENTINEL_API_TOKEN` must now be at least 32 bytes;
   the collector refuses to start with a shorter value (e.g. use `openssl rand -hex 32`).
@@ -38,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **ci/rust-agent (#420):** pin all GitHub Actions in `ci.yml` to commit SHAs, set top-level `permissions: contents: read`, and hide `SENTINEL_API_TOKEN` from the agent's `--help` output (`hide_env_values`).
 - **go-collector:** REST API now throttles repeated failed bearer-auth attempts per source
   address (5 failures, refilling 5/min) and answers 429 with `Retry-After` (#360).
 
