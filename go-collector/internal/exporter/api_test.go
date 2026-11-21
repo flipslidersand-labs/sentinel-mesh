@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/flipslidersand/sentinel-mesh/internal/api"
 	"github.com/flipslidersand/sentinel-mesh/internal/model"
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
 	"github.com/flipslidersand/sentinel-mesh/internal/store"
@@ -142,7 +143,7 @@ func TestRegions_Summary(t *testing.T) {
 	_ = reg.Register("b1", "h", "ip", "v1", "eu-west")
 	reg.SetInactive("a2")
 
-	var summary []regionSummary
+	var summary []api.RegionSummary
 	if code := doGET(t, st, reg, "/api/regions", &summary); code != 200 {
 		t.Fatalf("regions: code=%d", code)
 	}
@@ -150,7 +151,7 @@ func TestRegions_Summary(t *testing.T) {
 	if len(summary) != 2 {
 		t.Fatalf("regions = %+v, want 2", summary)
 	}
-	byName := map[string]regionSummary{}
+	byName := map[string]api.RegionSummary{}
 	for _, s := range summary {
 		byName[s.Region] = s
 	}

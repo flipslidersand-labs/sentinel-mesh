@@ -24,6 +24,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/flipslidersand/sentinel-mesh/internal/api"
 	"github.com/flipslidersand/sentinel-mesh/internal/model"
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
 )
@@ -87,11 +88,9 @@ func ParseUpstreams(specs []string, allowInsecureHTTP bool) ([]Upstream, error) 
 
 // RegionStatus is the per-region roll-up including reachability.
 type RegionStatus struct {
-	Region      string `json:"region"`
-	NodeCount   int    `json:"node_count"`
-	ActiveCount int    `json:"active_count"`
-	Reachable   bool   `json:"reachable"`
-	Error       string `json:"error,omitempty"`
+	api.RegionSummary
+	Reachable bool   `json:"reachable"`
+	Error     string `json:"error,omitempty"`
 }
 
 type regionState struct {
@@ -188,15 +187,15 @@ func (a *Aggregator) PollOnce(ctx context.Context) {
 func (a *Aggregator) pollUpstream(ctx context.Context, u Upstream) {
 	st := &regionState{reachable: true}
 
-	if err := a.fetchJSON(ctx, u.URL+"/api/nodes", &st.nodes); err != nil {
+	if err := a.fetchJSON(ctx, u.URL+api.PathNodes, &st.nodes); err != nil {
 		a.markUnreachable(u, "nodes", err)
 		return
 	}
-	if err := a.fetchJSON(ctx, fmt.Sprintf("%s/api/events?limit=%d", u.URL, a.eventLimit), &st.events); err != nil {
+	if err := a.fetchJSON(ctx, fmt.Sprintf("%s%s?limit=%d", u.URL, api.PathEvents, a.eventLimit), &st.events); err != nil {
 		a.markUnreachable(u, "events", err)
 		return
 	}
-	if err := a.fetchJSON(ctx, fmt.Sprintf("%s/api/alerts?limit=%d", u.URL, a.eventLimit), &st.alerts); err != nil {
+	if err := a.fetchJSON(ctx, fmt.Sprintf("%s%s?limit=%d", u.URL, api.PathAlerts, a.eventLimit), &st.alerts); err != nil {
 		a.markUnreachable(u, "alerts", err)
 		return
 	}
@@ -331,12 +330,13 @@ func (a *Aggregator) Regions() []RegionStatus {
 	defer a.mu.RUnlock()
 	out := make([]RegionStatus, 0, len(a.state))
 	for region, s := range a.state {
-		rs := RegionStatus{Region: region, Reachable: s.reachable, Error: s.lastErr}
-		for _, n := range s.nodes {
-			rs.NodeCount++
-			if n.Status == "active" {
-				rs.ActiveCount++
-			}
+		rs := RegionStatus{
+			RegionSummary: api.RegionSummary{
+				Region:      region,
+				NodeCount:   len(s.nodes),
+				ActiveCount: registry.CountActive(s.nodes),
+			},
+			Reachable: s.reachable, Error: s.lastErr,
 		}
 		out = append(out, rs)
 	}
