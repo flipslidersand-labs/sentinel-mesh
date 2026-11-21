@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/flipslidersand/sentinel-mesh/internal/store"
+	"github.com/flipslidersand/sentinel-mesh/internal/model"
 )
 
 func TestSlackSendErrorOmitsWebhookURL(t *testing.T) {
@@ -18,7 +18,7 @@ func TestSlackSendErrorOmitsWebhookURL(t *testing.T) {
 
 	const secret = "/services/DUMMY/SECRET/path"
 	n := NewSlackNotifier(base+secret, nil)
-	err := n.Send(context.Background(), store.Alert{Timestamp: time.Unix(0, 0)})
+	err := n.Send(context.Background(), model.Alert{Timestamp: time.Unix(0, 0)})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -30,7 +30,7 @@ func TestSlackSendErrorOmitsWebhookURL(t *testing.T) {
 }
 
 func TestFormatSlackTextEscapes(t *testing.T) {
-	got := formatSlackText(store.Alert{
+	got := formatSlackText(model.Alert{
 		Severity:  "high",
 		Message:   "a & b <!channel>",
 		NodeID:    "n`1",
@@ -52,7 +52,7 @@ func TestFormatSlackTextEscapes(t *testing.T) {
 
 func TestSlackSendBuildErrorOmitsWebhookURL(t *testing.T) {
 	n := NewSlackNotifier("https://hooks.invalid/services/DUMMY/SECRET/path\n", nil)
-	err := n.Send(context.Background(), store.Alert{Timestamp: time.Unix(0, 0)})
+	err := n.Send(context.Background(), model.Alert{Timestamp: time.Unix(0, 0)})
 	if err == nil {
 		t.Fatal("expected error")
 	}

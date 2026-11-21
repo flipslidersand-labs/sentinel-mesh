@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/flipslidersand/sentinel-mesh/internal/model"
 	"github.com/flipslidersand/sentinel-mesh/internal/store"
 )
 
@@ -21,8 +22,8 @@ func newTempStore(t *testing.T) *store.Store {
 }
 
 // makeEvent creates an event with a unique EventID using the given index.
-func makeEvent(nodeID, eventType string, idx int) store.Event {
-	return store.Event{
+func makeEvent(nodeID, eventType string, idx int) model.Event {
+	return model.Event{
 		EventID:   fmt.Sprintf("%s-%s-%d", nodeID, eventType, idx),
 		NodeID:    nodeID,
 		Timestamp: time.Now(),
@@ -113,7 +114,7 @@ func TestListEvents_NodeFilter_Unknown(t *testing.T) {
 func TestSaveEvent_AgentTimestampCannotPinOrdering(t *testing.T) {
 	st := newTempStore(t)
 
-	honest := store.Event{
+	honest := model.Event{
 		EventID:   "honest-1",
 		NodeID:    "node-a",
 		Timestamp: time.Now(),
@@ -124,7 +125,7 @@ func TestSaveEvent_AgentTimestampCannotPinOrdering(t *testing.T) {
 		t.Fatalf("SaveEvent(honest): %v", err)
 	}
 
-	malicious := store.Event{
+	malicious := model.Event{
 		EventID:   "malicious-1",
 		NodeID:    "node-b",
 		Timestamp: time.Now().Add(365 * 24 * time.Hour), // far-future claim
@@ -228,8 +229,8 @@ func TestStats_SurvivesRestart(t *testing.T) {
 }
 
 // makeAlert creates an alert with a unique AlertID using the given index.
-func makeAlert(nodeID string, idx int) store.Alert {
-	return store.Alert{
+func makeAlert(nodeID string, idx int) model.Alert {
+	return model.Alert{
 		AlertID:   fmt.Sprintf("%s-alert-%d", nodeID, idx),
 		RuleID:    "rule-1",
 		NodeID:    nodeID,

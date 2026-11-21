@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/flipslidersand/sentinel-mesh/internal/store"
+	"github.com/flipslidersand/sentinel-mesh/internal/model"
 )
 
 // seed fills the detector's history for key with n timestamps evenly spread over
@@ -99,7 +99,7 @@ func TestRecord_CooldownThenRefire(t *testing.T) {
 
 func TestRecord_CooldownIndependentPerKey(t *testing.T) {
 	d, _ := newClocked([]WindowConfig{{Duration: time.Minute, Threshold: 1}})
-	for _, ev := range []store.Event{
+	for _, ev := range []model.Event{
 		makeEvent("n1", "exec"), makeEvent("n2", "exec"), makeEvent("n1", "tcp"),
 	} {
 		d.Record(ev)

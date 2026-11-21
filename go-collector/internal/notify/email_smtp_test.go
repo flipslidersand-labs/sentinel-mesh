@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/flipslidersand/sentinel-mesh/internal/store"
+	"github.com/flipslidersand/sentinel-mesh/internal/model"
 )
 
 // startSilentServer accepts connections and never replies. If greet is true
@@ -223,7 +223,7 @@ func TestEmailNotifier_Send_EndToEndWithAuth(t *testing.T) {
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := n.Send(ctx, store.Alert{Severity: "critical", Message: "e2e-msg"}); err != nil {
+	if err := n.Send(ctx, model.Alert{Severity: "critical", Message: "e2e-msg"}); err != nil {
 		t.Fatalf("send: %v", err)
 	}
 	s.mu.Lock()

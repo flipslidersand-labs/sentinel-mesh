@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/flipslidersand/sentinel-mesh/internal/store"
+	"github.com/flipslidersand/sentinel-mesh/internal/model"
 )
 
 // SlackNotifier posts alerts to a Slack incoming webhook.
@@ -42,7 +42,7 @@ type slackPayload struct {
 var slackEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "`", "")
 
 // formatSlackText renders a human-readable alert line for Slack.
-func formatSlackText(a store.Alert) string {
+func formatSlackText(a model.Alert) string {
 	e := slackEscaper.Replace
 	return fmt.Sprintf(
 		":rotating_light: *[%s]* %s\n> node: `%s`  rule: `%s`  event: `%s`  at %s",
@@ -62,7 +62,7 @@ func stripURLError(err error) error {
 }
 
 // Send implements Notifier.
-func (s *SlackNotifier) Send(ctx context.Context, a store.Alert) error {
+func (s *SlackNotifier) Send(ctx context.Context, a model.Alert) error {
 	body, err := json.Marshal(slackPayload{Text: formatSlackText(a)})
 	if err != nil {
 		return fmt.Errorf("marshal slack payload: %w", err)

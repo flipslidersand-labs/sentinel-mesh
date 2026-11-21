@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/flipslidersand/sentinel-mesh/internal/store"
+	"github.com/flipslidersand/sentinel-mesh/internal/model"
 )
 
-func sampleAlert() store.Alert {
-	return store.Alert{
+func sampleAlert() model.Alert {
+	return model.Alert{
 		AlertID:   "a1",
 		RuleID:    "suspicious-exec",
 		NodeID:    "yuki",

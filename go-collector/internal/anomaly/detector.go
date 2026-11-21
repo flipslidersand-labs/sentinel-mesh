@@ -14,7 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/flipslidersand/sentinel-mesh/internal/store"
+	"github.com/flipslidersand/sentinel-mesh/internal/model"
 )
 
 // WindowConfig defines a time window and the event-count threshold for anomaly detection.
@@ -76,7 +76,7 @@ func New(windows []WindowConfig) *Detector {
 
 // Record registers an event and returns any anomaly alerts triggered by the event.
 // It is safe to call Record concurrently.
-func (d *Detector) Record(event store.Event) []store.Alert {
+func (d *Detector) Record(event model.Event) []model.Alert {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -86,7 +86,7 @@ func (d *Detector) Record(event store.Event) []store.Alert {
 	d.timestamps[key] = append(d.timestamps[key], now)
 	d.prune(key, now)
 
-	var alerts []store.Alert
+	var alerts []model.Alert
 	for i, w := range d.windows {
 		count := d.countWithin(key, now, w.Duration)
 		if count > w.Threshold {
@@ -95,7 +95,7 @@ func (d *Detector) Record(event store.Event) []store.Alert {
 				continue // cooldown: already alerted for this window recently
 			}
 			d.lastAlert[ak] = now
-			alerts = append(alerts, store.Alert{
+			alerts = append(alerts, model.Alert{
 				AlertID:   uuid.New().String(),
 				RuleID:    fmt.Sprintf("anomaly_%s", event.Type),
 				NodeID:    event.NodeID,

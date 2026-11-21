@@ -40,9 +40,6 @@ const vlogGCDiscardRatio = 0.5
 // records to exercise the cap.
 var maxNodeFilterScan = 10000
 
-// Event is the normalized form stored in BadgerDB (alias of model.Event).
-type Event = model.Event
-
 type Store struct {
 	db        *badger.DB
 	retention time.Duration
@@ -143,7 +140,7 @@ func (s *Store) loadCounters() error {
 		defer it.Close()
 
 		for it.Seek([]byte("event:")); it.ValidForPrefix([]byte("event:")); it.Next() {
-			var e Event
+			var e model.Event
 			var decodeErr error
 			if err := it.Item().Value(func(v []byte) error {
 				decodeErr = json.Unmarshal(v, &e)
@@ -224,7 +221,7 @@ func timeKey(t time.Time) string {
 // runWithContext). Callers that report failure to a peer (e.g. an Ack with
 // ok=false) must treat it as "unknown, possibly saved"; a retry can store the
 // same event twice. Stats() counts the event once the write actually succeeds.
-func (s *Store) SaveEvent(ctx context.Context, e Event) error {
+func (s *Store) SaveEvent(ctx context.Context, e model.Event) error {
 	val, err := json.Marshal(e)
 	if err != nil {
 		return err
@@ -260,10 +257,10 @@ func (s *Store) SaveEvent(ctx context.Context, e Event) error {
 // If node is non-empty, only events with matching NodeID are returned, and
 // the scan for matches stops after maxNodeFilterScan records even if fewer
 // than limit matches were found (#153).
-func (s *Store) ListEvents(ctx context.Context, node string, limit int) ([]Event, error) {
+func (s *Store) ListEvents(ctx context.Context, node string, limit int) ([]model.Event, error) {
 	// Non-nil so callers that JSON-marshal the result (the /api/events
 	// handler) return "[]" rather than "null" when there are no matches.
-	events := make([]Event, 0)
+	events := make([]model.Event, 0)
 	err := s.run(ctx, func() error {
 		return s.db.View(func(tx *badger.Txn) error {
 			opts := badger.DefaultIteratorOptions
@@ -286,7 +283,7 @@ func (s *Store) ListEvents(ctx context.Context, node string, limit int) ([]Event
 					return err
 				}
 				scanned++
-				var e Event
+				var e model.Event
 				var decodeErr error
 				if err := it.Item().Value(func(v []byte) error {
 					decodeErr = json.Unmarshal(v, &e)
@@ -331,11 +328,8 @@ func (s *Store) Stats() (map[string]int, error) {
 	return out, nil
 }
 
-// Alert represents a triggered alert (alias of model.Alert).
-type Alert = model.Alert
-
 // SaveAlert persists an alert to the store.
-func (s *Store) SaveAlert(ctx context.Context, a Alert) error {
+func (s *Store) SaveAlert(ctx context.Context, a model.Alert) error {
 	val, err := json.Marshal(a)
 	if err != nil {
 		return err
@@ -352,10 +346,10 @@ func (s *Store) SaveAlert(ctx context.Context, a Alert) error {
 // If node is non-empty, only alerts with matching NodeID are returned, and
 // the scan for matches stops after maxNodeFilterScan records even if fewer
 // than limit matches were found (#153).
-func (s *Store) ListAlerts(ctx context.Context, node string, limit int) ([]Alert, error) {
+func (s *Store) ListAlerts(ctx context.Context, node string, limit int) ([]model.Alert, error) {
 	// Non-nil so callers that JSON-marshal the result (the /api/alerts
 	// handler) return "[]" rather than "null" when there are no matches.
-	alerts := make([]Alert, 0)
+	alerts := make([]model.Alert, 0)
 	err := s.run(ctx, func() error {
 		return s.db.View(func(tx *badger.Txn) error {
 			opts := badger.DefaultIteratorOptions
@@ -378,7 +372,7 @@ func (s *Store) ListAlerts(ctx context.Context, node string, limit int) ([]Alert
 					return err
 				}
 				scanned++
-				var a Alert
+				var a model.Alert
 				var decodeErr error
 				if err := it.Item().Value(func(v []byte) error {
 					decodeErr = json.Unmarshal(v, &a)

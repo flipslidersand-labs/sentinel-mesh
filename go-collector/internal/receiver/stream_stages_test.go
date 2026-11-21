@@ -10,9 +10,9 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/flipslidersand/sentinel-mesh/internal/anomaly"
+	"github.com/flipslidersand/sentinel-mesh/internal/model"
 	"github.com/flipslidersand/sentinel-mesh/internal/notify"
 	"github.com/flipslidersand/sentinel-mesh/internal/pb"
-	"github.com/flipslidersand/sentinel-mesh/internal/store"
 )
 
 type errSendStream struct{ fakeStream }
@@ -41,7 +41,7 @@ func TestRejectEvent(t *testing.T) {
 }
 
 func TestPersistEvent(t *testing.T) {
-	ev := store.Event{EventID: "e", NodeID: "n", Timestamp: time.Now().UTC(), Type: "exec"}
+	ev := model.Event{EventID: "e", NodeID: "n", Timestamp: time.Now().UTC(), Type: "exec"}
 	t.Run("ok", func(t *testing.T) {
 		st := newStageTestStore(t)
 		s := &server{st: st, log: zap.NewNop()}
@@ -63,7 +63,7 @@ func TestPersistEvent(t *testing.T) {
 }
 
 func TestEvaluateAndNotify(t *testing.T) {
-	ev := store.Event{EventID: "e", NodeID: "n", Timestamp: time.Now().UTC(), Type: "exec"}
+	ev := model.Event{EventID: "e", NodeID: "n", Timestamp: time.Now().UTC(), Type: "exec"}
 	newDet := func() *anomaly.Detector {
 		return anomaly.New([]anomaly.WindowConfig{{Duration: time.Minute, Threshold: 1}})
 	}

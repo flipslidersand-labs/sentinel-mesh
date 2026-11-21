@@ -6,19 +6,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/flipslidersand/sentinel-mesh/internal/store"
+	"github.com/flipslidersand/sentinel-mesh/internal/model"
 )
 
 // fakeNotifier records the alerts it receives.
 type fakeNotifier struct {
 	mu   sync.Mutex
-	got  []store.Alert
+	got  []model.Alert
 	fail bool
 }
 
 func (f *fakeNotifier) Name() string { return "fake" }
 
-func (f *fakeNotifier) Send(_ context.Context, a store.Alert) error {
+func (f *fakeNotifier) Send(_ context.Context, a model.Alert) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.got = append(f.got, a)
@@ -34,8 +34,8 @@ func (f *fakeNotifier) count() int {
 	return len(f.got)
 }
 
-func alert(rule, node, sev string) store.Alert {
-	return store.Alert{
+func alert(rule, node, sev string) model.Alert {
+	return model.Alert{
 		AlertID:   "a-" + rule,
 		RuleID:    rule,
 		NodeID:    node,
@@ -138,7 +138,7 @@ type blockingNotifier struct {
 
 func (b *blockingNotifier) Name() string { return "blocking" }
 
-func (b *blockingNotifier) Send(_ context.Context, _ store.Alert) error {
+func (b *blockingNotifier) Send(_ context.Context, _ model.Alert) error {
 	b.mu.Lock()
 	b.started++
 	b.mu.Unlock()
