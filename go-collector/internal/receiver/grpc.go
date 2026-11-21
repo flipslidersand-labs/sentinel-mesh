@@ -170,13 +170,22 @@ const defaultLivenessInterval = registry.DefaultHeartbeatTimeout / 3
 // returned stop function is called (which also waits for the goroutine to
 // exit) or ctx is done. Heartbeat is a no-op for unknown nodes, so this never
 // registers anything by itself.
-func (s *server) startLiveness(ctx context.Context, nodeID string) (stop func()) {
+//
+// If valid is non-nil it is consulted on every tick before the heartbeat
+// (#482). When it reports false the goroutine closes the returned revoked
+// channel and exits without heartbeating, so the node ages out normally.
+// revoked is nil (never ready) when valid is nil.
+func (s *server) startLiveness(ctx context.Context, nodeID string, valid func(context.Context) bool) (stop func(), revoked <-chan struct{}) {
 	interval := s.livenessInterval
 	if interval <= 0 {
 		interval = defaultLivenessInterval
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
+	var rev chan struct{}
+	if valid != nil {
+		rev = make(chan struct{})
+	}
 	go func() {
 		defer close(done)
 		t := time.NewTicker(interval)
@@ -186,6 +195,10 @@ func (s *server) startLiveness(ctx context.Context, nodeID string) (stop func())
 			case <-ctx.Done():
 				return
 			case <-t.C:
+				if valid != nil && !valid(ctx) {
+					close(rev)
+					return
+				}
 				s.reg.Heartbeat(nodeID)
 			}
 		}
@@ -193,8 +206,85 @@ func (s *server) startLiveness(ctx context.Context, nodeID string) (stop func())
 	return func() {
 		cancel()
 		<-done
+	}, rev
+}
+
+// tokenStillValid returns a check that re-resolves the stream's bearer token
+// through the same TokenResolver used at connect time. It reports false only
+// when the token definitely no longer maps to nodeID (revoked). A lookup error
+// is treated as fail-open: the store being briefly busy must not disconnect
+// every authenticated stream at once; the next tick retries. Returns nil when
+// there is nothing to re-check (auth disabled or no token in metadata).
+func (s *server) tokenStillValid(ctx context.Context, nodeID string) func(context.Context) bool {
+	if nodeID == "" || s.st == nil {
+		return nil
+	}
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return nil
+	}
+	values := md.Get("authorization")
+	if len(values) == 0 {
+		return nil
+	}
+	token, ok := strings.CutPrefix(values[0], "Bearer ")
+	if !ok {
+		return nil
+	}
+	return func(ctx context.Context) bool {
+		got, found, err := s.st.LookupNodeID(ctx, token)
+		if err != nil {
+			if ctx.Err() == nil {
+				s.log.Warn("StreamEvents token re-check failed, keeping stream", zap.Error(err))
+			}
+			return true
+		}
+		return found && got == nodeID
 	}
 }
+
+// recvOrRevoked is stream.Recv that also returns once revoked is closed.
+// Recv itself cannot be interrupted from here, so it runs in a goroutine that
+// ends when the handler returns and the stream context is cancelled.
+func recvOrRevoked(stream pb.SentinelCollector_StreamEventsServer, revoked <-chan struct{}) (*pb.KernelEvent, error) {
+	if revoked == nil {
+		return stream.Recv()
+	}
+	// A closed revoked channel must win over a Recv that is ready at the same
+	// time (select picks randomly), so check it before and after.
+	if isClosed(revoked) {
+		return nil, errTokenRevoked
+	}
+	type result struct {
+		ev  *pb.KernelEvent
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		ev, err := stream.Recv()
+		ch <- result{ev, err}
+	}()
+	select {
+	case r := <-ch:
+		if isClosed(revoked) {
+			return nil, errTokenRevoked
+		}
+		return r.ev, r.err
+	case <-revoked:
+		return nil, errTokenRevoked
+	}
+}
+
+func isClosed(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}
+
+var errTokenRevoked = status.Error(codes.Unauthenticated, "token revoked")
 
 // limitServerOptions returns the resource-limit server options. A single
 // agent could otherwise open unbounded concurrent StreamEvents connections
@@ -428,13 +518,15 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 	// so the ticker starts after the first accepted event, using the same
 	// node_id HeartbeatOrRegister registered.
 	var stopLiveness func()
+	var revoked <-chan struct{}
 	defer func() {
 		if stopLiveness != nil {
 			stopLiveness()
 		}
 	}()
 	if authedNodeID != "" {
-		stopLiveness = s.startLiveness(stream.Context(), authedNodeID)
+		stopLiveness, revoked = s.startLiveness(stream.Context(), authedNodeID,
+			s.tokenStillValid(stream.Context(), authedNodeID))
 	}
 
 	for {
@@ -449,7 +541,7 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 		default:
 		}
 
-		event, err := stream.Recv()
+		event, err := recvOrRevoked(stream, revoked)
 		if err == io.EOF {
 			return nil
 		}
@@ -509,7 +601,8 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 
 		s.reg.HeartbeatOrRegister(event.NodeId, peerIP(stream.Context()), s.defaultRegion)
 		if stopLiveness == nil {
-			stopLiveness = s.startLiveness(stream.Context(), event.NodeId)
+			// No trusted identity here, so there is no token to re-check.
+			stopLiveness, _ = s.startLiveness(stream.Context(), event.NodeId, nil)
 		}
 
 		storedEvent := model.Event{
