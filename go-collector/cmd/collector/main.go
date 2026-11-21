@@ -34,12 +34,12 @@ const (
 	httpReadTimeout       = 15 * time.Second
 	httpWriteTimeout      = 30 * time.Second
 	httpIdleTimeout       = 60 * time.Second
-
-	// httpShutdownTimeout bounds how long a graceful REST API shutdown
-	// waits for in-flight requests to finish before forcibly closing
-	// remaining connections (#117).
-	httpShutdownTimeout = 10 * time.Second
 )
+
+// httpShutdownTimeout bounds how long a graceful REST API shutdown
+// waits for in-flight requests to finish before forcibly closing
+// remaining connections (#117). A variable so tests can shorten it.
+var httpShutdownTimeout = 10 * time.Second
 
 // runHTTPServerUntilDone starts srv in the background and blocks until ctx
 // is cancelled, at which point it gracefully shuts srv down (bounded by
@@ -76,7 +76,12 @@ func runHTTPServerTLSUntilDone(ctx context.Context, srv *http.Server, name, cert
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), httpShutdownTimeout)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
-			logger.Error(name+" graceful shutdown failed", zap.Error(err))
+			logger.Error(name+" graceful shutdown failed; forcing close", zap.Error(err))
+			// Handlers may still be running; force-close remaining
+			// connections so callers can safely close shared resources.
+			if cerr := srv.Close(); cerr != nil {
+				logger.Error(name+" forced close failed", zap.Error(cerr))
+			}
 		}
 		<-errCh
 	}
