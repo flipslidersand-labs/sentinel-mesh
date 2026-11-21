@@ -40,7 +40,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Cap on how long an RPC may wait for the collector's *response headers*
 /// once connected (`Register` end to end, and `StreamEvents` until its
-/// headers arrive). tonic 0.11 applies `Endpoint::timeout` only to the
+/// headers arrive). tonic applies `Endpoint::timeout` only to the
 /// future that resolves with the response head (transport/service/
 /// grpc_timeout.rs), not to the event stream body afterwards — a stalled
 /// stream is caught by the HTTP/2 keepalive below instead (#236).
@@ -302,6 +302,19 @@ struct DeliveryStats {
     established_at: Option<Instant>,
 }
 
+/// TLS config for https endpoints: always trust the platform roots (tonic
+/// 0.11's `tls-roots` did this implicitly; 0.14 needs an explicit call),
+/// plus the extra CA from `ca_cert_path` when given.
+fn build_tls_config(ca_cert_path: &Option<String>) -> Result<ClientTlsConfig> {
+    let mut tls = ClientTlsConfig::new().with_native_roots();
+    if let Some(path) = ca_cert_path {
+        let pem = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("read CA cert {path}: {e}"))?;
+        tls = tls.ca_certificate(Certificate::from_pem(pem));
+    }
+    Ok(tls)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_session(
     endpoint: &str,
@@ -323,13 +336,7 @@ async fn run_session(
         // connect and `StreamEvents` and keeps detection uniform.
         .keep_alive_while_idle(true);
     if endpoint.starts_with("https://") {
-        let mut tls = ClientTlsConfig::new();
-        if let Some(path) = ca_cert_path {
-            let pem = std::fs::read_to_string(path)
-                .map_err(|e| anyhow::anyhow!("read CA cert {path}: {e}"))?;
-            tls = tls.ca_certificate(Certificate::from_pem(pem));
-        }
-        builder = builder.tls_config(tls)?;
+        builder = builder.tls_config(build_tls_config(ca_cert_path)?)?;
     }
     let channel = builder
         .connect()
@@ -508,6 +515,35 @@ fn log_rejects((since_last, total): (u64, u64)) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tls_config_enables_native_roots_without_ca_path() {
+        let tls = build_tls_config(&None).unwrap();
+        assert!(format!("{tls:?}").contains("with_native_roots: true"));
+    }
+
+    #[test]
+    fn tls_config_keeps_native_roots_with_extra_ca() {
+        let dir = std::env::temp_dir().join(format!("tlscfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ca = dir.join("ca.pem");
+        std::fs::write(
+            &ca,
+            "-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----\n",
+        )
+        .unwrap();
+        let tls = build_tls_config(&Some(ca.to_string_lossy().into_owned())).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let dbg = format!("{tls:?}");
+        assert!(dbg.contains("with_native_roots: true"));
+        assert!(dbg.contains("certs: [Certificate"));
+    }
+
+    #[test]
+    fn tls_config_missing_ca_file_is_error() {
+        let e = build_tls_config(&Some("/nonexistent/ca.pem".into())).unwrap_err();
+        assert!(e.to_string().contains("read CA cert"));
+    }
 
     #[test]
     fn pending_rejects_are_flushed_on_exit() {
