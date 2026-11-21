@@ -29,14 +29,35 @@ func parseLimit(c *gin.Context, key string, def int) (limit int, ok bool) {
 	return httpserver.ParseLimit(c, key, def)
 }
 
-// regionNodeSet returns the set of node IDs registered in the given region.
-func regionNodeSet(reg NodeLister, region string) map[string]struct{} {
-	nodes := reg.ListByRegion(region)
-	set := make(map[string]struct{}, len(nodes))
-	for _, n := range nodes {
-		set[n.NodeID] = struct{}{}
+// nodeFilter builds the store-level node predicate from the optional "node"
+// and "region" query parameters; nil means no filtering. The region is
+// resolved to a node set once, so the store can apply it while scanning and
+// still return up to limit matches (#324). The store's scan cap
+// (maxNodeFilterScan) still applies: a region whose events are older than
+// that many records may yield fewer than limit results.
+func nodeFilter(c *gin.Context, reg NodeLister) func(string) bool {
+	node, region := c.Query("node"), c.Query("region")
+	var set map[string]struct{}
+	if region != "" {
+		nodes := reg.ListByRegion(region)
+		set = make(map[string]struct{}, len(nodes))
+		for _, n := range nodes {
+			set[n.NodeID] = struct{}{}
+		}
 	}
-	return set
+	if node == "" && set == nil {
+		return nil
+	}
+	return func(id string) bool {
+		if node != "" && id != node {
+			return false
+		}
+		if set != nil {
+			_, ok := set[id]
+			return ok
+		}
+		return true
+	}
 }
 
 // regionSummary is the per-region roll-up returned by GET /api/regions.
@@ -48,12 +69,16 @@ type regionSummary struct {
 
 // EventLister lists stored events. *store.Store satisfies it.
 type EventLister interface {
-	ListEvents(ctx context.Context, node string, limit int) ([]model.Event, error)
+	// ListEventsWhere returns up to limit newest-first events whose node ID
+	// passes keep (nil keeps all). The store keeps scanning until limit
+	// matches are found or its scan cap is hit (#324).
+	ListEventsWhere(ctx context.Context, keep func(nodeID string) bool, limit int) ([]model.Event, error)
 }
 
 // AlertLister lists stored alerts. *store.Store satisfies it.
 type AlertLister interface {
-	ListAlerts(ctx context.Context, node string, limit int) ([]model.Alert, error)
+	// ListAlertsWhere is the alert counterpart of ListEventsWhere.
+	ListAlertsWhere(ctx context.Context, keep func(nodeID string) bool, limit int) ([]model.Alert, error)
 }
 
 // StatsProvider returns event counts. *store.Store satisfies it.
@@ -115,22 +140,10 @@ func Router(cfg RouterConfig) *gin.Engine {
 			if !ok {
 				return
 			}
-			events, err := cfg.Events.ListEvents(c.Request.Context(), c.Query("node"), limit)
+			events, err := cfg.Events.ListEventsWhere(c.Request.Context(), nodeFilter(c, reg), limit)
 			if err != nil {
 				internalError(c, err)
 				return
-			}
-			// Optional region filter: keep only events from nodes in the region.
-			// Applied post-fetch (region→node mapping lives in the registry).
-			if region := c.Query("region"); region != "" {
-				set := regionNodeSet(reg, region)
-				filtered := make([]model.Event, 0, len(events))
-				for _, e := range events {
-					if _, ok := set[e.NodeID]; ok {
-						filtered = append(filtered, e)
-					}
-				}
-				events = filtered
 			}
 			c.JSON(http.StatusOK, events)
 		})
@@ -177,21 +190,10 @@ func Router(cfg RouterConfig) *gin.Engine {
 			if !ok {
 				return
 			}
-			alerts, err := cfg.Alerts.ListAlerts(c.Request.Context(), c.Query("node"), limit)
+			alerts, err := cfg.Alerts.ListAlertsWhere(c.Request.Context(), nodeFilter(c, reg), limit)
 			if err != nil {
 				internalError(c, err)
 				return
-			}
-			// Optional region filter (applied post-fetch, same as /api/events).
-			if region := c.Query("region"); region != "" {
-				set := regionNodeSet(reg, region)
-				filtered := make([]model.Alert, 0, len(alerts))
-				for _, a := range alerts {
-					if _, ok := set[a.NodeID]; ok {
-						filtered = append(filtered, a)
-					}
-				}
-				alerts = filtered
 			}
 			c.JSON(http.StatusOK, alerts)
 		})

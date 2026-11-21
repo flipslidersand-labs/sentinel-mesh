@@ -388,3 +388,51 @@ func TestSaveEvent_CancelledMidWriteStillCountedInStats(t *testing.T) {
 		t.Fatalf("stored=%d stats[exec]=%d; want both 1", len(stored), stats["exec"])
 	}
 }
+
+// #324: a predicate filter keeps scanning past non-matching records until
+// limit is reached, but still stops at maxNodeFilterScan.
+func TestListWhere_ScansUntilLimitAndHonoursCap(t *testing.T) {
+	st, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { st.Close() }) //nolint:errcheck
+	ctx := context.Background()
+
+	// 2 oldest "want" events, then 6 newer "other" events.
+	for i := 0; i < 8; i++ {
+		node := "other"
+		if i < 2 {
+			node = "want"
+		}
+		e := model.Event{EventID: strconv.Itoa(i), NodeID: node, Timestamp: time.Now(), Type: "exec", Payload: json.RawMessage(`{}`)}
+		if err := st.SaveEvent(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+		a := model.Alert{AlertID: strconv.Itoa(i), NodeID: node, Timestamp: time.Now()}
+		if err := st.SaveAlert(ctx, a); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	keep := func(id string) bool { return id == "want" }
+
+	evs, err := st.ListEventsWhere(ctx, keep, 2)
+	if err != nil || len(evs) != 2 {
+		t.Fatalf("ListEventsWhere = %d, %v; want 2", len(evs), err)
+	}
+	als, err := st.ListAlertsWhere(ctx, keep, 2)
+	if err != nil || len(als) != 2 {
+		t.Fatalf("ListAlertsWhere = %d, %v; want 2", len(als), err)
+	}
+
+	// Cap smaller than the distance to the matches: scan stops, fewer results.
+	orig := maxNodeFilterScan
+	maxNodeFilterScan = 4
+	t.Cleanup(func() { maxNodeFilterScan = orig })
+	evs, _ = st.ListEventsWhere(ctx, keep, 2)
+	als, _ = st.ListAlertsWhere(ctx, keep, 2)
+	if len(evs) != 0 || len(als) != 0 {
+		t.Errorf("past the scan cap: want 0/0, got %d/%d", len(evs), len(als))
+	}
+}

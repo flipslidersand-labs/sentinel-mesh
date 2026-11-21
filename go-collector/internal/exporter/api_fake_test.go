@@ -14,12 +14,24 @@ import (
 
 type fakeData struct{}
 
-func (fakeData) ListEvents(_ context.Context, node string, _ int) ([]model.Event, error) {
-	return []model.Event{{NodeID: node}}, nil
+func (fakeData) ListEventsWhere(_ context.Context, keep func(string) bool, _ int) ([]model.Event, error) {
+	out := []model.Event{}
+	for _, n := range []string{"n1", "n2"} {
+		if keep == nil || keep(n) {
+			out = append(out, model.Event{NodeID: n})
+		}
+	}
+	return out, nil
 }
 
-func (fakeData) ListAlerts(_ context.Context, node string, _ int) ([]model.Alert, error) {
-	return []model.Alert{{NodeID: node}}, nil
+func (fakeData) ListAlertsWhere(_ context.Context, keep func(string) bool, _ int) ([]model.Alert, error) {
+	out := []model.Alert{}
+	for _, n := range []string{"n1", "n2"} {
+		if keep == nil || keep(n) {
+			out = append(out, model.Alert{NodeID: n})
+		}
+	}
+	return out, nil
 }
 
 func (fakeData) Stats() (map[string]int, error) { return map[string]int{"total": 7}, nil }
