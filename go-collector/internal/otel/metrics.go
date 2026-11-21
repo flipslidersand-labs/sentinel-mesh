@@ -3,25 +3,39 @@ package otel
 import (
 	"context"
 
-	"go.opentelemetry.io/otel/attribute"
-	promexp "go.opentelemetry.io/otel/exporters/prometheus"
-	"go.opentelemetry.io/otel/metric"
-	metricsdk "go.opentelemetry.io/otel/sdk/metric"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-// MetricsProvider holds OTel metrics state.
-type MetricsProvider struct {
-	// Counters for events and alerts
-	eventCounter metric.Int64Counter
-	alertCounter metric.Int64Counter
-	// storeWriteFailureCounter counts SaveEvent/SaveAlert failures (#103) so
+// Collectors are registered once on the Prometheus default registry at package
+// init, so NewMetricsProvider can be called repeatedly without duplicate
+// registration errors.
+var (
+	eventsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "sentinel_events_total",
+		Help: "Total number of events received",
+	}, []string{"type", "node"})
+	alertsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "sentinel_alerts_total",
+		Help: "Total number of alerts triggered",
+	}, []string{"rule", "severity", "node"})
+	// storeWriteFailuresTotal counts SaveEvent/SaveAlert failures (#103) so
 	// persistent storage outages (disk full, corruption, ...) are visible in
 	// monitoring instead of being silently swallowed.
-	storeWriteFailureCounter metric.Int64Counter
-	// authFailureCounter counts rejected authentication attempts (#223) by a
+	storeWriteFailuresTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "sentinel_store_write_failures_total",
+		Help: "Total number of failed event/alert store writes",
+	}, []string{"kind"})
+	// authFailuresTotal counts rejected authentication attempts (#223) by a
 	// fixed, low-cardinality reason. Never labelled by peer IP or token.
-	authFailureCounter metric.Int64Counter
-}
+	authFailuresTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "sentinel_auth_failures_total",
+		Help: "Total number of rejected gRPC authentication attempts",
+	}, []string{"reason"})
+)
+
+// MetricsProvider records collector metrics on the Prometheus default registry.
+type MetricsProvider struct{}
 
 // Fixed reason label values for RecordAuthFailure.
 const (
@@ -30,98 +44,30 @@ const (
 	AuthFailRateLimited        = "rate_limited"        // ResourceExhausted: per-source failure budget spent
 )
 
-// NewMetricsProvider initializes Prometheus-backed OTel metrics.
+// NewMetricsProvider returns a provider backed by the package-level Prometheus
+// counters. The ctx parameter and error result are kept for API compatibility.
 func NewMetricsProvider(ctx context.Context) (*MetricsProvider, error) {
-	exporter, err := promexp.New(
-		promexp.WithNamespace("sentinel"),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	provider := metricsdk.NewMeterProvider(
-		metricsdk.WithReader(exporter),
-	)
-
-	meter := provider.Meter("sentinel-collector")
-
-	eventCounter, err := meter.Int64Counter(
-		"events_total",
-		metric.WithDescription("Total number of events received"),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	alertCounter, err := meter.Int64Counter(
-		"alerts_total",
-		metric.WithDescription("Total number of alerts triggered"),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	storeWriteFailureCounter, err := meter.Int64Counter(
-		"store_write_failures_total",
-		metric.WithDescription("Total number of failed event/alert store writes"),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	authFailureCounter, err := meter.Int64Counter(
-		"auth_failures_total",
-		metric.WithDescription("Total number of rejected gRPC authentication attempts"),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	return &MetricsProvider{
-		authFailureCounter:       authFailureCounter,
-		eventCounter:             eventCounter,
-		alertCounter:             alertCounter,
-		storeWriteFailureCounter: storeWriteFailureCounter,
-	}, nil
+	return &MetricsProvider{}, nil
 }
 
 // RecordEvent increments the event counter for a given event type and node.
 func (mp *MetricsProvider) RecordEvent(eventType, nodeID string) {
-	mp.eventCounter.Add(context.Background(), 1,
-		metric.WithAttributes(
-			attribute.String("type", eventType),
-			attribute.String("node", nodeID),
-		),
-	)
+	eventsTotal.WithLabelValues(eventType, nodeID).Inc()
 }
 
 // RecordAlert increments the alert counter for a given rule and node.
 func (mp *MetricsProvider) RecordAlert(ruleID, severity, nodeID string) {
-	mp.alertCounter.Add(context.Background(), 1,
-		metric.WithAttributes(
-			attribute.String("rule", ruleID),
-			attribute.String("severity", severity),
-			attribute.String("node", nodeID),
-		),
-	)
+	alertsTotal.WithLabelValues(ruleID, severity, nodeID).Inc()
 }
 
 // RecordStoreWriteFailure increments the store write failure counter for a
 // given write kind ("event" or "alert").
 func (mp *MetricsProvider) RecordStoreWriteFailure(kind string) {
-	mp.storeWriteFailureCounter.Add(context.Background(), 1,
-		metric.WithAttributes(
-			attribute.String("kind", kind),
-		),
-	)
+	storeWriteFailuresTotal.WithLabelValues(kind).Inc()
 }
 
 // RecordAuthFailure increments the auth failure counter for a fixed reason
 // (one of the AuthFail* constants).
 func (mp *MetricsProvider) RecordAuthFailure(reason string) {
-	mp.authFailureCounter.Add(context.Background(), 1,
-		metric.WithAttributes(
-			attribute.String("reason", reason),
-		),
-	)
+	authFailuresTotal.WithLabelValues(reason).Inc()
 }
