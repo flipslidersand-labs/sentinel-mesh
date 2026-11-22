@@ -560,7 +560,7 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 		// storage path.
 		if !limiter.allow() {
 			throttled++
-			if err := rejectEvent(stream, func() {
+			if err := rejectEvent(stream, pb.AckReason_ACK_REASON_RATE_LIMITED, func() {
 				if throttled == 1 || throttled%1000 == 0 {
 					s.log.Warn("StreamEvents rate limit exceeded, dropping event",
 						zap.String("node_id", safeLogNodeID(authedNodeID, event.NodeId)),
@@ -578,7 +578,7 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 		// control-character or oversized identifier (#154). The rejected
 		// value itself is never logged, since it is by definition unvalidated.
 		if err := validateKernelEvent(event); err != nil {
-			if sendErr := rejectEvent(stream, func() {
+			if sendErr := rejectEvent(stream, pb.AckReason_ACK_REASON_INVALID, func() {
 				s.log.Warn("StreamEvents rejected invalid event", zap.Error(err))
 			}); sendErr != nil {
 				return sendErr
@@ -592,7 +592,7 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 		// a client-supplied field (#178). An agent authenticated as one
 		// node_id must not be able to write/heartbeat as another.
 		if authedNodeID != "" && event.NodeId != authedNodeID {
-			if sendErr := rejectEvent(stream, func() {
+			if sendErr := rejectEvent(stream, pb.AckReason_ACK_REASON_INVALID, func() {
 				s.log.Warn("StreamEvents event node_id does not match authenticated identity",
 					zap.String("authed_node_id", authedNodeID))
 			}); sendErr != nil {
@@ -624,20 +624,25 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 			saveOk = false
 		}
 
-		if err := stream.Send(&pb.EventAck{Ok: saveOk}); err != nil {
+		ack := &pb.EventAck{Ok: saveOk}
+		if !saveOk {
+			// Store failure (incl. timeout/busy): transient, the agent may resend (#488).
+			ack.Reason = pb.AckReason_ACK_REASON_RETRYABLE
+		}
+		if err := stream.Send(ack); err != nil {
 			return err
 		}
 	}
 }
 
 // rejectEvent runs logFn (the caller's rejection log) and then sends a
-// failure Ack (Ok=false). A non-nil return is the Send error; the caller must
+// failure Ack (Ok=false, with reason). A non-nil return is the Send error; the caller must
 // end the stream with it, otherwise continue with the next event.
-func rejectEvent(stream pb.SentinelCollector_StreamEventsServer, logFn func()) error {
+func rejectEvent(stream pb.SentinelCollector_StreamEventsServer, reason pb.AckReason, logFn func()) error {
 	if logFn != nil {
 		logFn()
 	}
-	return stream.Send(&pb.EventAck{Ok: false})
+	return stream.Send(&pb.EventAck{Ok: false, Reason: reason})
 }
 
 // persistEvent saves the event (bounded by storeOpTimeout) and records the

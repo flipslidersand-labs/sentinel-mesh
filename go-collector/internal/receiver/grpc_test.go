@@ -260,6 +260,9 @@ func TestStreamEvents_RejectsInvalidEventWithoutPersisting(t *testing.T) {
 	if len(stream.acks) != 1 || stream.acks[0].Ok {
 		t.Fatalf("expected a single Ack.Ok=false, got %+v", stream.acks)
 	}
+	if got := stream.acks[0].Reason; got != pb.AckReason_ACK_REASON_INVALID {
+		t.Fatalf("Ack.Reason = %v, want INVALID", got)
+	}
 	if len(reg.List()) != 0 {
 		t.Fatal("invalid node_id must not reach the registry (no heartbeat)")
 	}
@@ -348,6 +351,9 @@ func TestStreamEvents_RejectsNodeIDNotMatchingAuthenticatedIdentity(t *testing.T
 
 	if len(stream.acks) != 1 || stream.acks[0].Ok {
 		t.Fatalf("expected a single Ack.Ok=false, got %+v", stream.acks)
+	}
+	if got := stream.acks[0].Reason; got != pb.AckReason_ACK_REASON_INVALID {
+		t.Fatalf("Ack.Reason = %v, want INVALID", got)
 	}
 	if len(reg.List()) != 0 {
 		t.Fatal("mismatched node_id must not reach the registry (no heartbeat)")
@@ -467,6 +473,9 @@ func TestStreamEvents_InvalidEventsConsumeRateLimit(t *testing.T) {
 	last := stream.acks[len(stream.acks)-1]
 	if last.Ok {
 		t.Fatal("expected the trailing valid event to be throttled (Ok=false) because the preceding invalid flood already spent the rate-limit budget")
+	}
+	if last.Reason != pb.AckReason_ACK_REASON_RATE_LIMITED {
+		t.Fatalf("throttled Ack.Reason = %v, want RATE_LIMITED", last.Reason)
 	}
 	got, err := st.ListEvents(context.Background(), "node-1", 10)
 	if err != nil {
@@ -616,6 +625,9 @@ func TestStreamEvents_AckReflectsSaveFailure(t *testing.T) {
 	}
 	if stream.acks[0].Ok {
 		t.Fatal("expected Ack.Ok=false when the store write fails, got true")
+	}
+	if got := stream.acks[0].Reason; got != pb.AckReason_ACK_REASON_RETRYABLE {
+		t.Fatalf("Ack.Reason = %v, want RETRYABLE", got)
 	}
 }
 
