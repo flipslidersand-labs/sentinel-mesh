@@ -268,7 +268,6 @@ async fn mock_source_counted(tx: Sender<KernelEvent>, rate: u64, dropped: Arc<At
 #[cfg(feature = "ebpf")]
 pub async fn ebpf_source(tx: Sender<KernelEvent>) {
     use aya::{maps::RingBuf, programs::TracePoint, Ebpf};
-    use std::net::Ipv4Addr;
 
     let bytes = include_bytes_aligned!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -462,9 +461,9 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
                         payload: Some(Payload::Tcp(TcpEvent {
                             pid: raw.pid,
                             comm: bytes_to_str(&raw.comm),
-                            src_ip: Ipv4Addr::from(u32::from_be(raw.src_ip)).to_string(),
+                            src_ip: tcp_addr_to_string(raw.family, &raw.src_addr),
                             src_port: raw.src_port as u32,
-                            dst_ip: Ipv4Addr::from(u32::from_be(raw.dst_ip)).to_string(),
+                            dst_ip: tcp_addr_to_string(raw.family, &raw.dst_addr),
                             dst_port: raw.dst_port as u32,
                             direction: "outbound".into(),
                         })),
@@ -537,12 +536,25 @@ struct EbpfFileEvent {
 #[repr(C)]
 struct EbpfTcpEvent {
     event_type: u8,
+    family: u8,
     pid: u32,
     comm: [u8; 16],
-    src_ip: u32,
-    dst_ip: u32,
+    src_addr: [u8; 16],
+    dst_addr: [u8; 16],
     src_port: u16,
     dst_port: u16,
+}
+
+/// Formats an address from the eBPF TcpEvent: AF_INET (2) uses the first 4
+/// bytes, AF_INET6 (10) all 16 (both in network byte order) (#429).
+#[cfg(any(feature = "ebpf", test))]
+fn tcp_addr_to_string(family: u8, addr: &[u8; 16]) -> String {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+    if family == 10 {
+        Ipv6Addr::from(*addr).to_string()
+    } else {
+        Ipv4Addr::new(addr[0], addr[1], addr[2], addr[3]).to_string()
+    }
 }
 
 fn now_nanos() -> i64 {
@@ -652,6 +664,37 @@ fn read_proc_exec_info(proc_root: &Path, pid: u32) -> (u32, String) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tcp_addr_to_string_formats_v4_and_v6() {
+        use super::tcp_addr_to_string;
+        let mut a = [0u8; 16];
+        a[..4].copy_from_slice(&[192, 0, 2, 1]);
+        assert_eq!(tcp_addr_to_string(2, &a), "192.0.2.1");
+        let v6: [u8; 16] = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        assert_eq!(tcp_addr_to_string(10, &v6), "2001:db8::1");
+    }
+
+    #[test]
+    fn tcp_addr_to_string_v4_mapped_is_emitted_as_ipv4() {
+        use super::tcp_addr_to_string;
+        // The eBPF side reports family=AF_INET with the IPv4 in the first 4 bytes
+        // for a v4-mapped connect on an AF_INET6 socket.
+        let mut a = [0u8; 16];
+        a[..4].copy_from_slice(&[192, 0, 2, 33]);
+        assert_eq!(tcp_addr_to_string(2, &a), "192.0.2.33");
+    }
+
+    #[test]
+    fn tcp_addr_to_string_unknown_family_falls_back_to_ipv4() {
+        use super::tcp_addr_to_string;
+        // Any family other than AF_INET6 (10) is read as IPv4 from the first 4 bytes
+        // (the eBPF side never emits other families).
+        let mut a = [0u8; 16];
+        a[..4].copy_from_slice(&[192, 0, 2, 7]);
+        assert_eq!(tcp_addr_to_string(99, &a), "192.0.2.7");
+        assert_eq!(tcp_addr_to_string(0, &[0u8; 16]), "0.0.0.0");
+    }
+
     use super::*;
     use crate::pb::{kernel_event::Payload, ExecEvent, FileEvent, KernelEvent, TcpEvent};
 

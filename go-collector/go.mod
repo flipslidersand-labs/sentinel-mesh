@@ -1,6 +1,6 @@
 module github.com/flipslidersand/sentinel-mesh
 
-go 1.26.10
+go 1.26.11
 
 require (
 	github.com/dgraph-io/badger/v4 v4.9.6
