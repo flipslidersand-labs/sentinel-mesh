@@ -83,6 +83,10 @@ func Router(a *Aggregator, staticDir string, corsOrigins []string, apiToken stri
 			c.JSON(http.StatusOK, out)
 		})
 
+		rest.GET("/api/stats", func(c *gin.Context) {
+			c.JSON(http.StatusOK, a.Stats())
+		})
+
 		rest.GET(api.PathRegions, func(c *gin.Context) {
 			c.JSON(http.StatusOK, a.Regions())
 		})
