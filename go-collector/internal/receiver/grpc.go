@@ -151,6 +151,10 @@ type Storage interface {
 // restarts (#512).
 type NodeRegions interface {
 	SaveNodeRegion(ctx context.Context, nodeID, region string) error
+	// TouchNodeRegion keeps the existing record of an active node from expiring
+	// (#530). It is called on every event; the store writes only when half of
+	// the TTL is used, and never creates a missing record.
+	TouchNodeRegion(ctx context.Context, nodeID, region string) error
 	NodeRegion(ctx context.Context, nodeID string) (region string, ok bool, err error)
 }
 
@@ -758,7 +762,7 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 // (the next event retries) and the event is saved without a region, so a guessed
 // default is never written permanently.
 func (s *server) touchNode(ctx context.Context, nodeID string) (region string, regionOK bool) {
-	fallback, found := s.defaultRegion, false
+	fallback := s.defaultRegion
 	if _, known := s.reg.Region(nodeID); !known {
 		lookupCtx, cancel := context.WithTimeout(ctx, storeOpTimeout)
 		stored, ok, err := s.st.NodeRegion(lookupCtx, nodeID)
@@ -768,18 +772,20 @@ func (s *server) touchNode(ctx context.Context, nodeID string) (region string, r
 			return "", false
 		}
 		if ok {
-			fallback, found = stored, true
+			fallback = stored
 		}
 	}
 	region = s.reg.HeartbeatOrRegister(nodeID, peerIP(ctx), fallback)
-	if found {
-		// Refresh the record's TTL now that the node is active again.
-		saveCtx, cancel := context.WithTimeout(ctx, storeOpTimeout)
-		if err := s.st.SaveNodeRegion(saveCtx, nodeID, region); err != nil {
-			s.log.Warn("refresh node region failed", zap.Error(err))
-		}
-		cancel()
+	// Keep the durable record from expiring while the node stays connected
+	// (#530). The store writes only when less than half of the TTL is left (and
+	// on the first touch after a collector restart), so this is cheap per
+	// event. It runs outside the registry lock; a failure (including a busy or
+	// closed store) is logged only and never fails the event.
+	touchCtx, cancel := context.WithTimeout(ctx, storeOpTimeout)
+	if err := s.st.TouchNodeRegion(touchCtx, nodeID, region); err != nil {
+		s.log.Warn("refresh node region failed", zap.String("node_id", safeLogNodeID(nodeID, nodeID)), zap.Error(err))
 	}
+	cancel()
 	return region, true
 }
 

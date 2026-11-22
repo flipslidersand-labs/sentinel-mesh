@@ -123,6 +123,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **go-collector (#530):** a node that stays connected longer than the retention window no longer loses its persisted region (and falls back to the default after a collector restart): events now refresh the `node:<id>` record once less than half of its TTL is left (at most one write per half retention per node; a missing record is never created) (Refs #512, #468).
 - **go-collector:** a store that is busy (`ErrBusy`) or closed (`ErrClosed`) now makes the REST events/alerts endpoints answer 503 and the gRPC token lookup return `Unavailable` (previously 500 / `Internal`), so clients retry; other store errors are unchanged (#533).
 - **go-collector (#531):** `Alert` now carries the node `region` (`omitempty`, stamped when the alert is saved), so `/api/alerts?region=` keeps matching alerts of nodes that were evicted or restarted; alerts stored without a region still fall back to the registry. An unregistered `region` on `/api/alerts` no longer short-circuits to `[]`: the store is scanned, because evicted nodes' alerts can match.
 - **go-collector:** `store.Store` operations started after `Close` now fail fast with `ErrClosed` instead of racing the close-time wait (a `sync.WaitGroup` reuse panic under concurrent `Close`), and `Close` is safe to call more than once (it used to panic on the second call) (#422). REST/gRPC now map `ErrClosed` and `ErrBusy` to 503 / `Unavailable` (#533).

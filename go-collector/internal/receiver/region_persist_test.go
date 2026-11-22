@@ -10,6 +10,7 @@ import (
 
 	"github.com/flipslidersand/sentinel-mesh/internal/pb"
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
+	"github.com/flipslidersand/sentinel-mesh/internal/store"
 )
 
 func regionTestEvent() *pb.KernelEvent {
@@ -83,5 +84,39 @@ func TestRegister_PersistsNormalisedRegion(t *testing.T) {
 	}
 	if got := fs.regions["node-1"]; got != registry.DefaultRegion {
 		t.Fatalf("persisted region = %q, want %q", got, registry.DefaultRegion)
+	}
+}
+
+// #530: every event of a connected node asks the store to keep the region
+// record fresh (the store throttles the actual writes), with the registry's
+// region, whether or not the node was just re-created.
+func TestStreamEvents_EventsTouchNodeRegion(t *testing.T) {
+	fs := &fakeStorage{}
+	reg := registry.New()
+	s := &server{st: fs, reg: reg, defaultRegion: "default", log: zap.NewNop()}
+	if resp, err := s.Register(context.Background(), &pb.RegisterRequest{NodeId: "node-1", Hostname: "h", Version: "v", Region: "eu-west"}); err != nil || !resp.Ok {
+		t.Fatalf("Register = %+v, %v", resp, err)
+	}
+	e2 := regionTestEvent()
+	e2.EventId = "e2"
+	if err := s.StreamEvents(&fakeStream{events: []*pb.KernelEvent{regionTestEvent(), e2}}); err != nil {
+		t.Fatal(err)
+	}
+	if fs.touches["node-1"] != 2 || fs.regions["node-1"] != "eu-west" {
+		t.Fatalf("touches=%v regions=%v, want 2 touches keeping eu-west", fs.touches, fs.regions)
+	}
+}
+
+// A failing refresh (store busy or closed, #532/#535) is logged only: the event
+// is still stored and acked.
+func TestStreamEvents_TouchNodeRegionFailureDoesNotFailEvent(t *testing.T) {
+	fs := &fakeStorage{touchErr: store.ErrBusy}
+	s := &server{st: fs, reg: registry.New(), defaultRegion: "default", log: zap.NewNop()}
+	stream := &fakeStream{events: []*pb.KernelEvent{regionTestEvent()}}
+	if err := s.StreamEvents(stream); err != nil {
+		t.Fatal(err)
+	}
+	if len(stream.acks) != 1 || !stream.acks[0].Ok || len(fs.events) != 1 {
+		t.Fatalf("acks=%+v events=%+v, want the event saved and acked", stream.acks, fs.events)
 	}
 }
