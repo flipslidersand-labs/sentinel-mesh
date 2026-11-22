@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
+	"github.com/flipslidersand/sentinel-mesh/internal/authlimit"
 	"github.com/flipslidersand/sentinel-mesh/internal/pb"
 	"github.com/flipslidersand/sentinel-mesh/internal/store"
 )
@@ -49,7 +50,7 @@ func (s *spyCollector) StreamEvents(stream grpc.BidiStreamingServer[pb.KernelEve
 func newInterceptorClient(t *testing.T, st *store.Store, authEnabled bool) (pb.SentinelCollectorClient, *spyCollector) {
 	t.Helper()
 	lis := bufconn.Listen(1 << 20)
-	lim := newAuthFailLimiter() // fresh per test: failures here never hit another test's budget
+	lim := authlimit.New() // fresh per test: failures here never hit another test's budget
 	srv := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(unaryAuthInterceptor(st, authEnabled, lim)),
 		grpc.ChainStreamInterceptor(streamAuthInterceptor(st, authEnabled, lim)),
@@ -124,7 +125,7 @@ func TestAuthInterceptors_RejectBadCredentialsWithoutCallingHandler(t *testing.T
 	// Right length but never issued. Over bufconn peerIP is the constant
 	// "bufconn", so all cases share one limiter key. Only the "wrong length"
 	// and "unknown token" cases count as failures (the others return before
-	// authFailure): 2 cases x (Register+StreamEvents) = 4 < authFailBurst (5).
+	// authFailure): 2 cases x (Register+StreamEvents) = 4 < authlimit.Burst (5).
 	// Adding a counted case here would trip ResourceExhausted.
 	unknown := strings.Repeat("0", store.TokenLength)
 	cases := map[string]func(context.Context) context.Context{

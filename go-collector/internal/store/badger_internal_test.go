@@ -23,7 +23,7 @@ func TestSaveEvent_SetsTTL(t *testing.T) {
 	t.Cleanup(func() { st.Close() }) //nolint:errcheck
 
 	e := model.Event{EventID: "e1", NodeID: "n1", Timestamp: time.Now(), Type: "exec", Payload: json.RawMessage(`{}`)}
-	if err := st.SaveEvent(context.Background(), e); err != nil {
+	if _, err := st.SaveEventDedup(context.Background(), e); err != nil {
 		t.Fatalf("SaveEvent: %v", err)
 	}
 
@@ -106,12 +106,12 @@ func TestListEvents_NodeFilterScanCap(t *testing.T) {
 			Type:      "exec",
 			Payload:   json.RawMessage(`{}`),
 		}
-		if err := st.SaveEvent(ctx, e); err != nil {
+		if _, err := st.SaveEventDedup(ctx, e); err != nil {
 			t.Fatalf("SaveEvent: %v", err)
 		}
 	}
 
-	got, err := st.ListEvents(ctx, "node-x", 100)
+	got, err := st.ListEventsWhere(ctx, func(id string) bool { return id == "node-x" }, 100)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
@@ -121,10 +121,10 @@ func TestListEvents_NodeFilterScanCap(t *testing.T) {
 
 	// A match that falls within the cap is still found.
 	e := model.Event{EventID: "match-1", NodeID: "node-x", Timestamp: time.Now(), Type: "exec", Payload: json.RawMessage(`{}`)}
-	if err := st.SaveEvent(ctx, e); err != nil {
+	if _, err := st.SaveEventDedup(ctx, e); err != nil {
 		t.Fatalf("SaveEvent: %v", err)
 	}
-	got, err = st.ListEvents(ctx, "node-x", 100)
+	got, err = st.ListEventsWhere(ctx, func(id string) bool { return id == "node-x" }, 100)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
@@ -273,7 +273,7 @@ func TestListAlerts_NewestFirstWithinOneSecond(t *testing.T) {
 			t.Fatalf("SaveAlert: %v", err)
 		}
 	}
-	got, err := st.ListAlerts(context.Background(), "", 1)
+	got, err := st.ListAlertsWhere(context.Background(), nil, 1)
 	if err != nil {
 		t.Fatalf("ListAlerts: %v", err)
 	}
@@ -295,7 +295,7 @@ func TestList_CancelledContextReturnsNilWithoutRacing(t *testing.T) {
 	bg := context.Background()
 	for i := 0; i < 200; i++ {
 		id := strconv.Itoa(i)
-		if err := st.SaveEvent(bg, model.Event{EventID: id, NodeID: "n"}); err != nil {
+		if _, err := st.SaveEventDedup(bg, model.Event{EventID: id, NodeID: "n"}); err != nil {
 			t.Fatalf("SaveEvent: %v", err)
 		}
 		if err := st.SaveAlert(bg, model.Alert{AlertID: id, NodeID: "n", Timestamp: time.Now()}); err != nil {
@@ -306,14 +306,14 @@ func TestList_CancelledContextReturnsNilWithoutRacing(t *testing.T) {
 	ctx, cancel := context.WithCancel(bg)
 	cancel()
 	for i := 0; i < 50; i++ {
-		evs, err := st.ListEvents(ctx, "", 1000)
+		evs, err := st.ListEventsWhere(ctx, nil, 1000)
 		if err == nil {
 			continue // fn won the select; a complete result is fine
 		}
 		if evs != nil {
 			t.Fatalf("ListEvents: want nil slice on ctx error, got len %d", len(evs))
 		}
-		als, err := st.ListAlerts(ctx, "", 1000)
+		als, err := st.ListAlertsWhere(ctx, nil, 1000)
 		if err != nil && als != nil {
 			t.Fatalf("ListAlerts: want nil slice on ctx error, got len %d", len(als))
 		}
@@ -331,15 +331,15 @@ func TestClose_WaitsForAbandonedViewGoroutines(t *testing.T) {
 	bg := context.Background()
 	for i := 0; i < 50; i++ {
 		id := strconv.Itoa(i)
-		if err := st.SaveEvent(bg, model.Event{EventID: id, NodeID: "n"}); err != nil {
+		if _, err := st.SaveEventDedup(bg, model.Event{EventID: id, NodeID: "n"}); err != nil {
 			t.Fatalf("SaveEvent: %v", err)
 		}
 	}
 	ctx, cancel := context.WithCancel(bg)
 	cancel()
 	for i := 0; i < 200; i++ {
-		st.ListEvents(ctx, "", 100) //nolint:errcheck
-		st.ListAlerts(ctx, "", 100) //nolint:errcheck
+		st.ListEventsWhere(ctx, nil, 100) //nolint:errcheck
+		st.ListAlertsWhere(ctx, nil, 100) //nolint:errcheck
 	}
 	if err := st.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -366,7 +366,7 @@ func TestSaveEvent_CancelledMidWriteStillCountedInStats(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	e := model.Event{EventID: "e1", NodeID: "n1", Timestamp: time.Now(), Type: "exec", Payload: json.RawMessage(`{}`)}
-	go func() { errCh <- st.SaveEvent(ctx, e) }()
+	go func() { _, err := st.SaveEventDedup(ctx, e); errCh <- err }()
 
 	<-started
 	cancel()
@@ -376,7 +376,7 @@ func TestSaveEvent_CancelledMidWriteStillCountedInStats(t *testing.T) {
 	close(release)
 	st.inflight.Wait() // background write finished
 
-	stored, err := st.ListEvents(context.Background(), "", 10)
+	stored, err := st.ListEventsWhere(context.Background(), nil, 10)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
@@ -403,7 +403,7 @@ func TestListWhere_ScansUntilLimitAndHonoursCap(t *testing.T) {
 			node = "want"
 		}
 		e := model.Event{EventID: strconv.Itoa(i), NodeID: node, Timestamp: time.Now(), Type: "exec", Payload: json.RawMessage(`{}`)}
-		if err := st.SaveEvent(ctx, e); err != nil {
+		if _, err := st.SaveEventDedup(ctx, e); err != nil {
 			t.Fatal(err)
 		}
 		a := model.Alert{AlertID: strconv.Itoa(i), NodeID: node, Timestamp: time.Now()}

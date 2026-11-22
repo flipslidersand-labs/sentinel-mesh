@@ -69,10 +69,10 @@ func TestContract_PollOnceAgainstRealExporterRouter(t *testing.T) {
 	if rs[0].NodeCount != 2 || rs[0].ActiveCount != 1 {
 		t.Errorf("counts = %d/%d, want 2/1", rs[0].NodeCount, rs[0].ActiveCount)
 	}
-	if got := a.Events(); len(got) != 1 || got[0].EventID != "e1" {
+	if got := a.EventsIn(""); len(got) != 1 || got[0].EventID != "e1" {
 		t.Errorf("events = %+v", got)
 	}
-	if got := a.Alerts(); len(got) != 1 || got[0].AlertID != "a1" {
+	if got := a.AlertsIn(""); len(got) != 1 || got[0].AlertID != "a1" {
 		t.Errorf("alerts = %+v", got)
 	}
 }

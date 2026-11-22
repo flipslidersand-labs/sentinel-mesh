@@ -119,11 +119,3 @@ func (l *Limiter) Len() int {
 	defer l.mu.Unlock()
 	return l.order.Len()
 }
-
-// Tracked reports whether key (see Key) is currently tracked.
-func (l *Limiter) Tracked(key string) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	_, ok := l.entries[key]
-	return ok
-}

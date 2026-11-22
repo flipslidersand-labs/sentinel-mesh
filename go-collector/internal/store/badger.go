@@ -30,7 +30,7 @@ var vlogGCInterval = 5 * time.Minute
 // rewritten if this fraction of it is estimated to be discardable.
 const vlogGCDiscardRatio = 0.5
 
-// maxNodeFilterScan bounds how many keys ListEvents/ListAlerts will read
+// maxNodeFilterScan bounds how many keys ListEventsWhere/ListAlertsWhere will read
 // while looking for matches to a node filter. Without this cap, a node
 // filter that matches few (or zero) records forces a full scan of the
 // retention window on every request — a client-controlled "limit=1" query
@@ -59,7 +59,7 @@ type Store struct {
 	readSem chan struct{}
 
 	// countersMu/counters back Stats(): an in-memory per-type count,
-	// incremented in SaveEvent (after a successful write) and seeded once at startup by loadCounters,
+	// incremented in SaveEventDedup (after a successful write) and seeded once at startup by loadCounters,
 	// so Stats() no longer has to scan every event on every call (#77).
 	// Counts may run slightly high relative to what's still on disk once
 	// TTL expires old events; loadCounters corrects this on next restart.
@@ -79,7 +79,7 @@ type Store struct {
 	// putTokenFn is a test seam for injecting token write failures; nil in production.
 	putTokenFn func(ctx context.Context, rec AgentToken) error
 
-	// beforeUpdateFn is a test seam run inside SaveEvent's background write
+	// beforeUpdateFn is a test seam run inside SaveEventDedup's background write
 	// just before db.Update; nil in production.
 	beforeUpdateFn func()
 	// beforeViewFn is a test seam run inside scanNewestFirst's background read
@@ -272,27 +272,21 @@ func eventIDKey(nodeID, eventID string) []byte {
 // event_id collide in Badger's conflict detection.
 const maxConflictRetries = 3
 
-// SaveEvent persists e. A non-nil error does NOT guarantee the event was not
-// stored: if ctx is cancelled or times out while the write is in flight, the
-// error is ctx.Err() but the write may still complete in the background (see
-// runWithContext). Callers that report failure to a peer (e.g. an Ack with
-// ok=false) must treat it as "unknown, possibly saved". Retrying is safe: an
-// event whose (node_id, event_id) was already saved within the retention
-// window is skipped and reported as success (#452). Events with an empty
-// event_id cannot be deduplicated. Stats() counts the event once the write
-// actually succeeds.
-func (s *Store) SaveEvent(ctx context.Context, e model.Event) error {
-	_, err := s.SaveEventDedup(ctx, e)
-	return err
-}
-
-// SaveEventDedup is SaveEvent that also reports whether e was skipped as a
-// duplicate of an already stored (node_id, event_id) (#457). duplicate is
-// meaningful only when err is nil.
+// SaveEventDedup persists e and reports whether it was skipped as a
+// duplicate of an already stored (node_id, event_id) (#457); duplicate is
+// meaningful only when err is nil. A non-nil error does NOT guarantee the
+// event was not stored: if ctx is cancelled or times out while the write is
+// in flight, the error is ctx.Err() but the write may still complete in the
+// background (see runWithContext). Callers that report failure to a peer
+// (e.g. an Ack with ok=false) must treat it as "unknown, possibly saved".
+// Retrying is safe: an event whose (node_id, event_id) was already saved
+// within the retention window is skipped and reported as success (#452).
+// Events with an empty event_id cannot be deduplicated. Stats() counts the
+// event once the write actually succeeds.
 func (s *Store) SaveEventDedup(ctx context.Context, e model.Event) (duplicate bool, err error) {
 	// Key by the collector's own receive time, not e.Timestamp — that field
 	// is agent-supplied and untrusted. Keying by it let a malicious agent
-	// pin its events to the front of ListEvents forever with a far-future
+	// pin its events to the front of ListEventsWhere forever with a far-future
 	// timestamp, or overwrite unrelated events via a timestamp+EventID
 	// collision (#78). e.Timestamp is still stored in the record itself for
 	// display; it's just no longer trusted for ordering/storage identity.
@@ -367,27 +361,12 @@ func (s *Store) SaveEventDedup(ctx context.Context, e model.Event) (duplicate bo
 	return dup, nil
 }
 
-// ListEvents returns up to limit events, newest first.
-// If node is non-empty, only events with matching NodeID are returned, and
-// the scan for matches stops after maxNodeFilterScan records even if fewer
-// than limit matches were found (#153).
-func (s *Store) ListEvents(ctx context.Context, node string, limit int) ([]model.Event, error) {
-	return s.ListEventsWhere(ctx, nodeMatcher(node), limit)
-}
-
-// ListEventsWhere is ListEvents with an arbitrary node predicate (nil keeps
-// everything). The scan continues until limit matches are found, bounded by
-// maxNodeFilterScan records when keep is non-nil (#324).
+// ListEventsWhere returns up to limit events, newest first, whose node ID
+// passes keep (nil keeps everything). The scan continues until limit matches
+// are found, bounded by maxNodeFilterScan records when keep is non-nil, so
+// fewer than limit may be returned even if more matches exist (#153, #324).
 func (s *Store) ListEventsWhere(ctx context.Context, keep func(nodeID string) bool, limit int) ([]model.Event, error) {
 	return scanNewestFirst(ctx, s, "event:", "event", func(e model.Event) string { return e.NodeID }, keep, limit)
-}
-
-// nodeMatcher returns a predicate for a single node ID; nil when node is empty.
-func nodeMatcher(node string) func(string) bool {
-	if node == "" {
-		return nil
-	}
-	return func(id string) bool { return id == node }
 }
 
 // scanNewestFirst walks the keys under prefix newest first, decoding each as T
@@ -536,16 +515,8 @@ func (s *Store) SaveAlertDedup(ctx context.Context, a model.Alert) (duplicate bo
 	return dup, nil
 }
 
-// ListAlerts returns up to limit alerts, newest first.
-// If node is non-empty, only alerts with matching NodeID are returned, and
-// the scan for matches stops after maxNodeFilterScan records even if fewer
-// than limit matches were found (#153).
-func (s *Store) ListAlerts(ctx context.Context, node string, limit int) ([]model.Alert, error) {
-	return s.ListAlertsWhere(ctx, nodeMatcher(node), limit)
-}
-
-// ListAlertsWhere is ListAlerts with an arbitrary node predicate; see
-// ListEventsWhere (#324).
+// ListAlertsWhere is the alert counterpart of ListEventsWhere: newest first,
+// node predicate keep (nil keeps everything), same scan bound (#153, #324).
 func (s *Store) ListAlertsWhere(ctx context.Context, keep func(nodeID string) bool, limit int) ([]model.Alert, error) {
 	return scanNewestFirst(ctx, s, "alert:", "alert", func(a model.Alert) string { return a.NodeID }, keep, limit)
 }

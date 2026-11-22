@@ -36,7 +36,7 @@ func TestRegionFilter_LimitCountsMatches(t *testing.T) {
 	save := func(i int, node string) {
 		id := strconv.Itoa(i)
 		ts := time.Now()
-		if err := st.SaveEvent(ctx, model.Event{EventID: id, NodeID: node, Timestamp: ts, Type: "exec", Payload: json.RawMessage(`{}`)}); err != nil {
+		if _, err := st.SaveEventDedup(ctx, model.Event{EventID: id, NodeID: node, Timestamp: ts, Type: "exec", Payload: json.RawMessage(`{}`)}); err != nil {
 			t.Fatal(err)
 		}
 		if err := st.SaveAlert(ctx, model.Alert{AlertID: id, NodeID: node, Timestamp: ts.Add(time.Duration(i) * time.Millisecond)}); err != nil {
