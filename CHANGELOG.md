@@ -120,6 +120,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **agent:** eBPF `ExecEvent.cwd` is now filled from `/proc/<pid>/cwd` (empty if the process already exited or is unreadable) (#422).
 - **web:** Alerts severity filter now uses the same mapping as the badge (critical includes high/error), a missing `rule_id` no longer crashes the rule filter, and Events rows fall back to a composite React key when `event_id` is absent (#422).
 - **go-collector:** an empty `node_id` is now rejected by Register, StreamEvents and `token issue` (an empty `event_id` is still accepted, as the store skips dedup for it) (#468).
 - **go-collector:** `Store.Close` waits at most 10s for the GC goroutine and in-flight work, then logs a warning and closes the DB instead of hanging (#468).
