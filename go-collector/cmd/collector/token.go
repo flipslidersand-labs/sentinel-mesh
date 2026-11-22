@@ -125,10 +125,6 @@ Prompts for confirmation unless --yes is given.`,
 					return nil
 				}
 			}
-			dataDir, err := tokenDataDir(cmd)
-			if err != nil {
-				return err
-			}
 			st, err := openTokenStore(dataDir)
 			if err != nil {
 				return err

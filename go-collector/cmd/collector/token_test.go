@@ -155,8 +155,8 @@ func TestTokenSubcommands_UnknownFlagLookupErrors(t *testing.T) {
 			cmd.SetErr(&bytes.Buffer{})
 			cmd.SetArgs(args)
 			err := cmd.Execute()
-			if err == nil || !strings.Contains(err.Error(), flagDataDir) {
-				t.Fatalf("expected flag lookup error mentioning %q, got %v", flagDataDir, err)
+			if err == nil || !strings.Contains(err.Error(), "flag accessed but not defined: "+flagDataDir) {
+				t.Fatalf("expected flag lookup error for %q, got %v", flagDataDir, err)
 			}
 		})
 	}
@@ -169,7 +169,7 @@ func TestTokenRevoke_MissingYesFlagErrors(t *testing.T) {
 	cmd.SetErr(&bytes.Buffer{})
 	cmd.SetArgs([]string{"node-a"})
 	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), flagYes) {
-		t.Fatalf("expected error mentioning %q, got %v", flagYes, err)
+	if err == nil || !strings.Contains(err.Error(), "flag accessed but not defined: "+flagYes) {
+		t.Fatalf("expected flag lookup error for %q, got %v", flagYes, err)
 	}
 }
