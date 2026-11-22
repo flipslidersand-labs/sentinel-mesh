@@ -40,7 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **rust-agent (#255):** the self-made `include_bytes_aligned!` macro in `events.rs` is replaced by `aya::include_bytes_aligned!` (aya 0.13). No behavior change (the eBPF object is still embedded at compile time; `clippy --features ebpf` with the placeholder object passes).
+- **rust-agent (#255):** the self-made `include_bytes_aligned!` macro in `events.rs` is replaced by `aya::include_bytes_aligned!` (aya 0.13). The only difference is the embedded object's alignment (4096 → 32, which is what aya requires for ELF parsing); the eBPF object is still embedded at compile time ( `clippy --features ebpf` with the placeholder object passes).
 - **go-collector (#500):** the pending-anomaly map (cap 1024) now evicts the oldest entry first instead of an arbitrary one; added tests for eviction, failed re-save and concurrent resend.
 - **go-collector (#469):** removed test-only/unused code (`Store.SaveEvent`/`ListEvents`/`ListAlerts`, `runHTTPServerUntilDone`, `sendMailContext`, `Aggregator.Events`/`Alerts`, `authlimit.Limiter.Tracked`, the `receiver` authfail alias file); tests use the `*Dedup`/`*Where`/`*In` APIs. No behavior change.
 - **go-collector:** `serve` now builds and starts the server in `run(ctx, cfg, logger)`; the logger and the signal-aware ctx are created in `RunE`, so `run` returns when ctx is cancelled. The `--grpc-addr` flag name is now a shared constant (no behavior change) (#265).
