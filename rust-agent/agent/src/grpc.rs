@@ -7,6 +7,7 @@ use tonic::service::Interceptor;
 use tonic::transport::{Certificate, ClientTlsConfig, Endpoint};
 use tonic::{Request, Status};
 
+use crate::events::ThrottledCounter;
 use crate::pb::{
     sentinel_collector_client::SentinelCollectorClient, AckReason, KernelEvent, RegisterRequest,
 };
@@ -601,52 +602,9 @@ fn flush_rejects_on_exit(rejects: &mut RejectTracker, now: Instant) {
 /// the collector's per-node rate limit does not flood the journal (#378).
 const REJECT_REPORT_INTERVAL: Duration = Duration::from_secs(10);
 
-/// Counts `ok=false` acks. Same scheme as `events::DropTracker`: the first
-/// rejection is reported immediately, later ones are batched and reported at
-/// most once per `interval`.
-struct RejectTracker {
-    total: u64,
-    unreported: u64,
-    last_report: Option<Instant>,
-    interval: Duration,
-}
-
-impl RejectTracker {
-    fn new(interval: Duration) -> Self {
-        Self {
-            total: 0,
-            unreported: 0,
-            last_report: None,
-            interval,
-        }
-    }
-
-    /// Record one rejected ack; returns `(since_last, total)` when it is time to log.
-    fn record(&mut self, now: Instant) -> Option<(u64, u64)> {
-        self.total += 1;
-        self.unreported += 1;
-        let due = match self.last_report {
-            None => true,
-            Some(t) => now.saturating_duration_since(t) >= self.interval,
-        };
-        if due {
-            self.flush(now)
-        } else {
-            None
-        }
-    }
-
-    /// Report rejections not yet logged (e.g. when the stream ends).
-    fn flush(&mut self, now: Instant) -> Option<(u64, u64)> {
-        if self.unreported == 0 {
-            return None;
-        }
-        let r = (self.unreported, self.total);
-        self.unreported = 0;
-        self.last_report = Some(now);
-        Some(r)
-    }
-}
+/// Counts `ok=false` acks: the first rejection is reported immediately, later
+/// ones are batched and reported at most once per interval.
+type RejectTracker = ThrottledCounter;
 
 fn log_rejects((since_last, total): (u64, u64)) {
     eprintln!("warn: collector rejected {since_last} event(s) since last report ({total} total)");
