@@ -108,6 +108,7 @@ type regionState struct {
 	nodes     []registry.AgentNode
 	events    []model.Event
 	alerts    []model.Alert
+	stats     map[string]int
 }
 
 // Aggregator polls upstream collectors and caches a merged view.
@@ -207,6 +208,13 @@ func (a *Aggregator) pollUpstream(ctx context.Context, u Upstream) {
 		return
 	}
 
+	// Best-effort: an upstream without /api/stats (older version) must not be
+	// marked unreachable for it; it just contributes nothing to the totals.
+	if err := a.fetchJSON(ctx, u.URL+"/api/stats", &st.stats); err != nil {
+		a.log.Debug("upstream stats unavailable", zap.String("region", u.Region), zap.String("error", classifyErr(err)))
+		st.stats = nil
+	}
+
 	a.mu.Lock()
 	a.state[u.Region] = st
 	a.mu.Unlock()
@@ -282,6 +290,29 @@ func (a *Aggregator) Nodes() []registry.AgentNode {
 	for _, s := range a.state {
 		if s.reachable {
 			out = append(out, s.nodes...)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].NodeID != out[j].NodeID {
+			return out[i].NodeID < out[j].NodeID
+		}
+		return out[i].Region < out[j].Region
+	})
+	return out
+}
+
+// Stats returns event counts per type summed over reachable regions, the same
+// shape as a normal collector's /api/stats.
+func (a *Aggregator) Stats() map[string]int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	out := make(map[string]int)
+	for _, s := range a.state {
+		if !s.reachable {
+			continue
+		}
+		for t, n := range s.stats {
+			out[t] += n
 		}
 	}
 	return out
