@@ -615,6 +615,9 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 		// storage path.
 		if !limiter.allow() {
 			throttled++
+			if s.metrics != nil {
+				s.metrics.RecordEventThrottled()
+			}
 			if err := rejectEvent(stream, pb.AckReason_ACK_REASON_RATE_LIMITED, func() {
 				if throttled == 1 || throttled%1000 == 0 {
 					s.log.Warn("StreamEvents rate limit exceeded, dropping event",
