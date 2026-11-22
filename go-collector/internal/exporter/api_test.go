@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -323,22 +324,19 @@ func TestRouter_CORS_AllowsConfiguredOrigin(t *testing.T) {
 }
 
 // TestInternalErrors_DoNotLeakDetails: a failing store must yield a 500 with a
-// fixed message, never the underlying (Badger) error text.
+// fixed message, never the underlying (Badger) error text. (A closed or busy
+// store is a 503 instead; see store_err_status_test.go.)
 func TestInternalErrors_DoNotLeakDetails(t *testing.T) {
 	for _, path := range []string{"/api/events", "/api/alerts"} {
 		t.Run(path, func(t *testing.T) {
-			st, err := store.New(t.TempDir())
-			if err != nil {
-				t.Fatalf("store.New: %v", err)
-			}
-			_ = st.Close() // closed store -> store calls fail
+			st := errData{err: errors.New("badger: read failure in the data dir")}
 
 			var buf bytes.Buffer
 			prev := slog.Default()
 			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 			t.Cleanup(func() { slog.SetDefault(prev) })
 
-			r := Router(testCfg(st, registry.New(), t.TempDir(), nil, ""))
+			r := Router(RouterConfig{Events: st, Alerts: st, Stats: st, Nodes: registry.New(), StaticDir: t.TempDir()})
 			w := httptest.NewRecorder()
 			r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path+"?node=secretq", nil))
 			if w.Code != http.StatusInternalServerError {

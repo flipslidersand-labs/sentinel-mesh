@@ -123,6 +123,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **go-collector:** a store that is busy (`ErrBusy`) or closed (`ErrClosed`) now makes the REST events/alerts endpoints answer 503 and the gRPC token lookup return `Unavailable` (previously 500 / `Internal`), so clients retry; other store errors are unchanged (#533).
 - **go-collector:** `store.Store` operations started after `Close` now fail fast with `ErrClosed` instead of racing the close-time wait (a `sync.WaitGroup` reuse panic under concurrent `Close`), and `Close` is safe to call more than once (it used to panic on the second call) (#422). The REST/gRPC layers do not yet map `ErrClosed` (nor `ErrBusy`) to a specific status.
 - **go-collector:** the node's region is now persisted (`node:<id>` in Badger, retention TTL) and stamped on stored events (`region`, omitted when empty), so a node re-created after eviction or a restart keeps its region and `/api/events?region=` still returns the events of evicted nodes; events stored before this change still match through the registry (#512, #468).
 - **go-collector:** FILE/EXEC payload text (comm, cmdline, cwd, path) may now contain printable non-ASCII characters instead of the whole event being rejected, which let a single non-ASCII character in a file name evade detection; control characters, NUL, bidi/format characters and invalid UTF-8 are still rejected, and node_id/event_id/op stay ASCII-only (#251, #154).
