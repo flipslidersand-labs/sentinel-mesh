@@ -76,10 +76,13 @@ func (s *Store) TouchNodeRegion(ctx context.Context, nodeID, region string) erro
 	}
 	claim := nodeRegionMark{at: now}
 	s.nodeRegionAt[nodeID] = claim // concurrent touches see this one as fresh
-	s.pruneNodeRegionAtLocked(now)
+	if now.Sub(s.nodeRegionPruned) >= s.retention/2 {
+		s.nodeRegionPruned = now
+		s.pruneNodeRegionAtLocked(now)
+	}
 	s.nodeRegionMu.Unlock()
 
-	err := s.refreshNodeRegion(ctx, nodeID, region, now, !known || prev.absent)
+	err := s.refreshNodeRegion(ctx, nodeID, region, now, !known || prev.absent || now.Sub(prev.at) >= s.retention)
 	if err != nil {
 		s.nodeRegionMu.Lock()
 		if s.nodeRegionAt[nodeID] == claim { // still our claim

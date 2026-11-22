@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	badger "github.com/dgraph-io/badger/v4"
 )
 
 // fakeClock is a manually advanced clock for the in-memory write bookkeeping.
@@ -172,6 +174,31 @@ func TestTouchNodeRegion_ConcurrentTouchesWriteOnce(t *testing.T) {
 	wg.Wait()
 	if got := st.nodeRegionWrites.Load() - base; got != 1 {
 		t.Fatalf("writes = %d, want 1", got)
+	}
+}
+
+// A gap of a whole retention or more means the record has expired; touching
+// must not resurrect it, whether or not the node's mark was pruned meanwhile.
+func TestTouchNodeRegion_ExpiredRecordNotRecreated(t *testing.T) {
+	ctx := context.Background()
+	st, clk := newTouchStore(t, 100*time.Hour)
+	if err := st.SaveNodeRegion(ctx, "node-a", "eu-west"); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the expiry by removing the record (the fake clock cannot age Badger TTLs).
+	if err := st.db.Update(func(tx *badger.Txn) error { return tx.Delete([]byte(nodeRegionPrefix + "node-a")) }); err != nil {
+		t.Fatal(err)
+	}
+	base := st.nodeRegionWrites.Load()
+	clk.Advance(101 * time.Hour) // node-a's own mark is still in the map
+	if err := st.TouchNodeRegion(ctx, "node-a", "default"); err != nil {
+		t.Fatal(err)
+	}
+	if got := st.nodeRegionWrites.Load() - base; got != 0 {
+		t.Fatalf("writes = %d, want 0", got)
+	}
+	if _, ok, _ := st.NodeRegion(ctx, "node-a"); ok {
+		t.Fatal("expired record was re-created")
 	}
 }
 

@@ -55,6 +55,7 @@ type Store struct {
 	// writes (tests).
 	nodeRegionMu     sync.Mutex
 	nodeRegionAt     map[string]nodeRegionMark
+	nodeRegionPruned time.Time // last prune of nodeRegionAt
 	nodeRegionWrites atomic.Int64
 
 	// inflight counts runWithContext goroutines still touching db, so Close
