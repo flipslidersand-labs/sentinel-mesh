@@ -140,7 +140,7 @@ type busyStream struct {
 }
 
 func (b *busyStream) Recv() (*pb.KernelEvent, error) {
-	return &pb.KernelEvent{NodeId: "node-1", Type: pb.EventType_EXEC, Timestamp: time.Now().UnixNano()}, nil
+	return &pb.KernelEvent{NodeId: "node-1", Type: pb.EventType_EXEC, Payload: &pb.KernelEvent_Exec{Exec: &pb.ExecEvent{Comm: "sh"}}, Timestamp: time.Now().UnixNano()}, nil
 }
 func (b *busyStream) Context() context.Context { return b.ctx }
 

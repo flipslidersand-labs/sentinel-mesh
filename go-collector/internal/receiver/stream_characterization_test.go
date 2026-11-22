@@ -41,8 +41,8 @@ func TestStreamEvents_ValidEventWithAlertAcksOkAndPersistsAll(t *testing.T) {
 		log:      zap.NewNop(),
 	}
 	stream := &fakeStream{events: []*pb.KernelEvent{
-		{NodeId: "node-1", EventId: "e1", Type: pb.EventType_EXEC, Timestamp: time.Now().UnixNano()},
-		{NodeId: "node-1", EventId: "e2", Type: pb.EventType_EXEC, Timestamp: time.Now().UnixNano()},
+		{NodeId: "node-1", EventId: "e1", Type: pb.EventType_EXEC, Payload: &pb.KernelEvent_Exec{Exec: &pb.ExecEvent{Comm: "sh"}}, Timestamp: time.Now().UnixNano()},
+		{NodeId: "node-1", EventId: "e2", Type: pb.EventType_EXEC, Payload: &pb.KernelEvent_Exec{Exec: &pb.ExecEvent{Comm: "sh"}}, Timestamp: time.Now().UnixNano()},
 	}}
 	if err := s.StreamEvents(stream); err != nil {
 		t.Fatalf("StreamEvents: %v", err)
@@ -68,8 +68,8 @@ func TestStreamEvents_RejectThenContinue(t *testing.T) {
 	stream := &fakeStream{
 		ctx: context.WithValue(context.Background(), authedNodeIDKey{}, "node-1"),
 		events: []*pb.KernelEvent{
-			{NodeId: "other", EventId: "bad", Type: pb.EventType_EXEC, Timestamp: time.Now().UnixNano()},
-			{NodeId: "node-1", EventId: "good", Type: pb.EventType_EXEC, Timestamp: time.Now().UnixNano()},
+			{NodeId: "other", EventId: "bad", Type: pb.EventType_EXEC, Payload: &pb.KernelEvent_Exec{Exec: &pb.ExecEvent{Comm: "sh"}}, Timestamp: time.Now().UnixNano()},
+			{NodeId: "node-1", EventId: "good", Type: pb.EventType_EXEC, Payload: &pb.KernelEvent_Exec{Exec: &pb.ExecEvent{Comm: "sh"}}, Timestamp: time.Now().UnixNano()},
 		}}
 	if err := s.StreamEvents(stream); err != nil {
 		t.Fatalf("StreamEvents: %v", err)

@@ -120,6 +120,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **go-collector:** `StreamEvents` now rejects events whose oneof payload is missing or does not match the event type, instead of storing `payload:null` and counting it (#468).
+
 - **go-collector:** events dropped by the per-node rate limit are now counted in the unlabelled `sentinel_events_throttled_total` metric instead of only a 1-in-1000 warn log (#420). No alert on it yet.
 - **agent:** eBPF `ExecEvent.cwd` is now filled from `/proc/<pid>/cwd` (empty if the process already exited or is unreadable) (#422).
 - **web:** Alerts severity filter now uses the same mapping as the badge (critical includes high/error), a missing `rule_id` no longer crashes the rule filter, and Events rows fall back to a composite React key when `event_id` is absent (#422).

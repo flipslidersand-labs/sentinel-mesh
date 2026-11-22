@@ -455,6 +455,9 @@ func validateKernelEvent(e *pb.KernelEvent) error {
 	if !ok {
 		return fmt.Errorf("unknown event type %d", int32(e.Type))
 	}
+	if info.Payload(e) == nil {
+		return fmt.Errorf("event type %s requires a matching payload", info.Name)
+	}
 	if info.Strings != nil {
 		for _, f := range info.Strings(e) {
 			fields = append(fields, namedField{f.Name, f.Value})

@@ -49,7 +49,7 @@ func drainNodeBudget(t *testing.T, s *server, nodeID string) {
 }
 
 func validEvent(nodeID string) *pb.KernelEvent {
-	return &pb.KernelEvent{NodeId: nodeID, EventId: "evt-valid", Type: pb.EventType_EXEC, Timestamp: time.Now().UnixNano()}
+	return &pb.KernelEvent{NodeId: nodeID, EventId: "evt-valid", Type: pb.EventType_EXEC, Payload: &pb.KernelEvent_Exec{Exec: &pb.ExecEvent{Comm: "sh"}}, Timestamp: time.Now().UnixNano()}
 }
 
 // #254: the rate limit must be shared by every stream of the same
