@@ -79,6 +79,14 @@ jobs:
       # cc が無いときだけ build-essential をインストールする。
       - run: command -v cc >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y build-essential)
       - run: cargo check --workspace
+      # ebpf feature の lint。events.rs が include_bytes_aligned! で eBPF オブジェクトを
+      # コンパイル時に埋め込むが、clippy は実行しないので空のプレースホルダで足りる
+      # (nightly / bpf-linker 不要)。パスは events.rs の concat! と一致させること。
+      - name: Clippy (ebpf feature, placeholder eBPF object)
+        run: |
+          mkdir -p target/bpfel-unknown-none/debug
+          : > target/bpfel-unknown-none/debug/sentinel-agent-ebpf
+          cargo clippy -p sentinel-agent --features ebpf --all-targets -- -D warnings
       - run: cargo test --workspace
       - uses: taiki-e/install-action@5b56535d0239d0a46e7d74f64d83712fad4564d3 # cargo-llvm-cov
       # 現状実測ラインカバレッジ 55.26% (2026-09-13, agent crate のみ。
