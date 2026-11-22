@@ -82,7 +82,7 @@ export function Events() {
           </thead>
           <tbody>
             {filtered.map((e, i) => (
-              <tr key={e.event_id || `${e.node_id}-${e.timestamp}-${i}`}>
+              <tr key={`${e.node_id}-${e.event_id}-${i}`}>
                 <td className="mono">
                   {new Date(e.timestamp).toLocaleTimeString()}
                 </td>

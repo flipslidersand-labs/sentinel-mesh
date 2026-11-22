@@ -212,6 +212,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **go-collector (#457):** a re-sent duplicate event (same `node_id`/`event_id`) no longer re-runs alert evaluation, anomaly detection or event metrics; the Ack stays `ok=true`. Adds `store.SaveEventDedup`; `SaveEvent` keeps its signature.
 - **go-collector (#324):** the REST `region` filter is now applied inside the store scan, so `limit` counts matching records, and an unregistered region returns `[]` without scanning the store. If matches lie beyond the scan cap (`maxNodeFilterScan`), fewer than `limit` results are returned. The aggregator's upstream fetch is a separate path and is unchanged.
 - **go-collector (#494):** `token issue/revoke/list` now return flag lookup errors (via `flagReader`) instead of silently using an empty `--data-dir` or `--yes` value.
+- **web:** the Events table no longer produces duplicate React keys when events share an `event_id` (across nodes or before server-side dedup); rows are keyed by `node_id`, `event_id` and row index (#422, partial).
 
 ### Security
 
