@@ -282,14 +282,21 @@ func classifyErr(err error) string {
 	}
 }
 
-// Nodes returns merged nodes across all reachable regions.
+// Nodes returns merged nodes across all reachable regions. Each node's Region
+// is overwritten with the --upstreams key it was fetched from (the region's
+// source of truth, as in Regions/EventsIn), not the value the upstream
+// reported, so /api/nodes?region= agrees with /api/regions (#468).
 func (a *Aggregator) Nodes() []registry.AgentNode {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	out := make([]registry.AgentNode, 0)
-	for _, s := range a.state {
-		if s.reachable {
-			out = append(out, s.nodes...)
+	for region, s := range a.state {
+		if !s.reachable {
+			continue
+		}
+		for _, n := range s.nodes {
+			n.Region = region
+			out = append(out, n)
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool {

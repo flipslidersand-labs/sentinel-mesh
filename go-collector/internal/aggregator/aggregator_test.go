@@ -231,6 +231,56 @@ func TestAggregator_RouterServesMergedData(t *testing.T) {
 	}
 }
 
+// TestAggregator_NodesRegionFollowsUpstreamKey: the --upstreams key is the
+// source of truth for region. An upstream that reports "default" for its nodes
+// but is configured as "tokyo" must show up under tokyo in /api/nodes (filter
+// and the returned region field), consistent with /api/regions (#468).
+func TestAggregator_NodesRegionFollowsUpstreamKey(t *testing.T) {
+	up := fakeCollector(t,
+		[]registry.AgentNode{{NodeID: "a1", Region: "default", Status: "active"}},
+		nil, nil,
+	)
+	agg := New([]Upstream{{Region: "tokyo", URL: up.URL}}, 0, "", nil)
+	agg.PollOnce(context.Background())
+	r := Router(agg, t.TempDir(), nil, "")
+
+	get := func(path string, out any) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s code = %d", path, w.Code)
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), out); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var regions []RegionStatus
+	get("/api/regions", &regions)
+	if len(regions) != 1 || regions[0].Region != "tokyo" || regions[0].NodeCount != 1 {
+		t.Fatalf("regions = %+v, want tokyo with 1 node", regions)
+	}
+
+	var tokyo []registry.AgentNode
+	get("/api/nodes?region=tokyo", &tokyo)
+	if len(tokyo) != 1 || tokyo[0].NodeID != "a1" || tokyo[0].Region != "tokyo" {
+		t.Errorf("nodes?region=tokyo = %+v, want a1 with region tokyo", tokyo)
+	}
+
+	var def []registry.AgentNode
+	get("/api/nodes?region=default", &def)
+	if len(def) != 0 {
+		t.Errorf("nodes?region=default = %+v, want empty", def)
+	}
+
+	var all []registry.AgentNode
+	get("/api/nodes", &all)
+	if len(all) != 1 || all[0].Region != "tokyo" {
+		t.Errorf("nodes = %+v, want one node with region tokyo", all)
+	}
+}
+
 // eventually polls cond until it returns true or timeout elapses.
 func eventually(t *testing.T, timeout time.Duration, cond func() bool, msg string) {
 	t.Helper()
