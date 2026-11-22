@@ -39,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **go-collector:** `serve` now builds and starts the server in `run(ctx, cfg, logger)`; the logger and the signal-aware ctx are created in `RunE`, so `run` returns when ctx is cancelled. The `--grpc-addr` flag name is now a shared constant (no behavior change) (#265).
 - **go-collector:** `validateKernelEvent` now reads per-type fields from the `eventtype` table instead of a type switch; behaviour unchanged (#353).
 - **refactor (#421):** removed the unreachable heartbeat-timeout fallback in `registry.StartHeartbeatChecker` (caller validates), and bundled the per-connection parameters of the rust-agent gRPC session functions into one struct (no behavior change).
 - **rust-agent (#477):** eBPF loader (`--features ebpf`) no longer uses deprecated APIs: `aya::Bpf` -> `aya::Ebpf`, `AsyncFd::new` -> `unsafe AsyncFd::register` (workspace tokio minimum raised to 1.54). Ring buffer ownership is unchanged. Not verified on a real eBPF run; compile/clippy/test only.
@@ -195,6 +196,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **deploy-agent (#420):** `scripts/deploy-agent.sh` now refuses `--grpc-token` without `--tls` when the collector is not loopback (`localhost`, `127.0.0.0/8`), before anything is uploaded, matching the agent's own startup check.
 - **go-collector (#252):** bump `go` in `go.mod` from 1.26.10 to 1.26.11 to pick up the standard-library `net/http` fix for GO-2026-6859; `govulncheck` now reports 0 affected vulnerabilities.
 - **rust-agent (#470):** the plaintext-token loopback check now also ends the collector authority at `#`, so `http://<remote>#@127.0.0.1:50051` is rejected instead of sending the token in plaintext to the remote host.
 - **ci/rust-agent (#420):** pin all GitHub Actions in `ci.yml` to commit SHAs, set top-level `permissions: contents: read`, and hide `SENTINEL_API_TOKEN` from the agent's `--help` output (`hide_env_values`).

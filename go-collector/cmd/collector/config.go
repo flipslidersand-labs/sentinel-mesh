@@ -13,6 +13,10 @@ import (
 // and the aggregate-mode "ignored flag" warning.
 const defaultGRPCAddr = ":50051"
 
+// grpcAddrFlag is the --grpc-addr flag name, shared by its definition,
+// the config loader and the aggregate-mode warning.
+const grpcAddrFlag = "grpc-addr"
+
 // normalOnlyFlags are the flags (besides --grpc-addr, which has a
 // default-value check) that are ignored in --aggregate mode. The warning in
 // warnIgnoredNormalModeFlags iterates this list.
@@ -86,7 +90,7 @@ func loadServeConfig(cmd *cobra.Command) (*serveConfig, error) {
 	r := &flagReader{cmd: cmd}
 	c := &serveConfig{
 		aggregate:         r.boolean("aggregate"),
-		grpcAddr:          r.str("grpc-addr"),
+		grpcAddr:          r.str(grpcAddrFlag),
 		httpAddr:          r.str("http-addr"),
 		dataDir:           r.str("data-dir"),
 		heartbeatTimeout:  r.dur("heartbeat-timeout"),
