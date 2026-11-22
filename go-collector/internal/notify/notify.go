@@ -196,9 +196,6 @@ func (d *Dispatcher) Dispatch(a model.Alert) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), d.timeout)
-	defer cancel()
-
 	// The claim stays recorded during Send (d.mu is not held) so concurrent
 	// Dispatch calls for the same key stay suppressed and no extra duplicate
 	// window opens; it is released only after every notifier has failed.
@@ -209,7 +206,11 @@ func (d *Dispatcher) Dispatch(a model.Alert) {
 		}
 	}()
 	for _, n := range d.notifiers {
-		if err := n.Send(ctx, a); err != nil {
+		// Each notifier gets its own timeout so a slow one cannot starve the rest.
+		ctx, cancel := context.WithTimeout(context.Background(), d.timeout)
+		err := n.Send(ctx, a)
+		cancel()
+		if err != nil {
 			d.log.Error("alert notification failed",
 				zap.String("channel", n.Name()),
 				zap.String("rule_id", a.RuleID),

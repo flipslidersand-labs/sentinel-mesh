@@ -120,6 +120,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **go-collector/notify:** each notifier now gets its own send timeout instead of sharing one, so a slow notifier no longer causes the others to time out (#251).
 - `scripts/install-collector.sh`: add `--http-tls-cert`/`--http-tls-key` for the REST API, and fail with exit 1 when only one of a TLS cert/key pair is given (gRPC or REST) instead of silently starting in plaintext (#254).
 - **go-collector:** `StreamEvents` now rejects events whose oneof payload is missing or does not match the event type, instead of storing `payload:null` and counting it (#468).
 
