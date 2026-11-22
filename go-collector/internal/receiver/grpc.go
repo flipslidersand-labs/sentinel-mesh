@@ -242,7 +242,8 @@ const defaultLivenessInterval = registry.DefaultHeartbeatTimeout / 3
 // startLiveness refreshes nodeID's registry entry every interval until the
 // returned stop function is called (which also waits for the goroutine to
 // exit) or ctx is done. Heartbeat is a no-op for unknown nodes, so this never
-// registers anything by itself.
+// registers anything by itself. It also keeps the node's persisted region
+// record from expiring while the node is connected but sends no events (#537).
 //
 // If valid is non-nil it is consulted on every tick before the heartbeat
 // (#482). When it reports false the goroutine closes the returned revoked
@@ -273,6 +274,7 @@ func (s *server) startLiveness(ctx context.Context, nodeID string, valid func(co
 					return
 				}
 				s.reg.Heartbeat(nodeID)
+				s.refreshNodeRegion(ctx, nodeID)
 			}
 		}
 	}()
@@ -776,17 +778,34 @@ func (s *server) touchNode(ctx context.Context, nodeID string) (region string, r
 		}
 	}
 	region = s.reg.HeartbeatOrRegister(nodeID, peerIP(ctx), fallback)
-	// Keep the durable record from expiring while the node stays connected
-	// (#530). The store writes only when less than half of the TTL is left (and
-	// on the first touch after a collector restart), so this is cheap per
-	// event. It runs outside the registry lock; a failure (including a busy or
-	// closed store) is logged only and never fails the event.
+	s.touchStoredRegion(ctx, nodeID, region)
+	return region, true
+}
+
+// refreshNodeRegion keeps the durable region record of a connected node from
+// expiring when it sends no events (#537). The region comes from the registry
+// (read under its lock, released before any I/O); a node the registry does not
+// know has no confirmed region, so nothing is touched and no default is guessed.
+func (s *server) refreshNodeRegion(ctx context.Context, nodeID string) {
+	if s.st == nil {
+		return
+	}
+	if region, ok := s.reg.Region(nodeID); ok {
+		s.touchStoredRegion(ctx, nodeID, region)
+	}
+}
+
+// touchStoredRegion keeps the durable record from expiring while the node stays
+// connected (#530). The store writes only when less than half of the TTL is left
+// (and on the first touch after a collector restart), so this is cheap per call.
+// It runs outside the registry lock; a failure (including a busy or closed
+// store) is logged only and never fails the event or stops liveness.
+func (s *server) touchStoredRegion(ctx context.Context, nodeID, region string) {
 	touchCtx, cancel := context.WithTimeout(ctx, storeOpTimeout)
-	if err := s.st.TouchNodeRegion(touchCtx, nodeID, region); err != nil {
+	defer cancel()
+	if err := s.st.TouchNodeRegion(touchCtx, nodeID, region); err != nil && ctx.Err() == nil {
 		s.log.Warn("refresh node region failed", zap.String("node_id", safeLogNodeID(nodeID, nodeID)), zap.Error(err))
 	}
-	cancel()
-	return region, true
 }
 
 // rejectEvent runs logFn (the caller's rejection log) and then sends a
