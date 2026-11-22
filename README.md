@@ -299,8 +299,8 @@ With auth enabled, a stream that is already established with a revoked token is 
 
 | Metric | Meaning |
 | ------ | ------- |
-| `sentinel_events_throttled_total` | Events dropped by the per-node rate limit (2000 events/s per authenticated `node_id`). Unlabelled on purpose (`node_id` would be high cardinality). The agent receives an `ACK_REASON_RATE_LIMITED` ack, but the collector logs only 1 in 1000 drops, so this counter is the reliable signal. |
-| `sentinel_auth_failures_total` | Rejected gRPC authentication attempts, by `reason`. |
+| `sentinel_events_throttled_total` | Events dropped by the rate limit (2000 events/s per authenticated `node_id`; with auth disabled the bucket is per stream instead). Unlabelled on purpose (`node_id` would be high cardinality). The agent receives an `ACK_REASON_RATE_LIMITED` ack, but the collector logs only the first drop and then every 1000th drop per stream, so this counter is the reliable signal. |
+| `sentinel_auth_failures_total` | Rejected gRPC authentication attempts, by `reason` (`missing_credentials`, `invalid_token`, `rate_limited`; the last is the per-source auth-failure budget, unrelated to the event rate limit above). The series appears only after the first failure. |
 
 Sustained throttling means an agent (or a host being attacked) is producing events faster than the collector accepts them, so events are being lost. An example rule:
 
