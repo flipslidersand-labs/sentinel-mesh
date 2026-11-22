@@ -46,35 +46,20 @@ static MOCK_COMMS: &[&str] = &["bash", "python3", "curl", "systemd", "sshd", "ng
 /// flood the log (#282).
 const DROP_REPORT_INTERVAL: Duration = Duration::from_secs(10);
 
-/// Counts events dropped because the channel was full. The first drop is
-/// reported immediately; later ones are batched and reported at most once per
-/// `interval`. `total` is cumulative across reconnects (the tracker lives as
-/// long as the source task).
-struct DropTracker {
-    /// Mirror of `total`, readable from outside the task (tests, metrics).
-    counter: Arc<AtomicU64>,
+/// Throttled cumulative counter: the first event is reported immediately;
+/// later ones are batched and reported at most once per `interval`. Reports
+/// are `(since_last, total)`. Shared by `DropTracker` and the gRPC reject
+/// tracker.
+pub(crate) struct ThrottledCounter {
     total: u64,
-    unreported: u64,
+    pub(crate) unreported: u64,
     last_report: Option<Instant>,
     interval: Duration,
 }
 
-/// What to log: drops since the previous report, and the cumulative total.
-#[derive(Debug, PartialEq, Eq)]
-struct DropReport {
-    since_last: u64,
-    total: u64,
-}
-
-impl DropTracker {
-    #[cfg(test)]
-    fn new(interval: Duration) -> Self {
-        Self::with_counter(interval, Arc::new(AtomicU64::new(0)))
-    }
-
-    fn with_counter(interval: Duration, counter: Arc<AtomicU64>) -> Self {
+impl ThrottledCounter {
+    pub(crate) fn new(interval: Duration) -> Self {
         Self {
-            counter,
             total: 0,
             unreported: 0,
             last_report: None,
@@ -82,22 +67,15 @@ impl DropTracker {
         }
     }
 
-    /// Record one dropped event; returns a report when it is time to log.
-    fn record(&mut self, now: Instant) -> Option<DropReport> {
+    /// Record one event; returns `(since_last, total)` when it is time to log.
+    pub(crate) fn record(&mut self, now: Instant) -> Option<(u64, u64)> {
         self.total += 1;
-        self.counter.fetch_add(1, Ordering::Relaxed);
         self.unreported += 1;
         self.report_if_due(now)
     }
 
-    /// Call after a successful send: if drops are still unreported and the
-    /// interval has elapsed, report them so they never stay unlogged after
-    /// the channel recovers.
-    fn on_success(&mut self, now: Instant) -> Option<DropReport> {
-        self.report_if_due(now)
-    }
-
-    fn report_if_due(&mut self, now: Instant) -> Option<DropReport> {
+    /// Report if events are unreported and the interval has elapsed.
+    fn report_if_due(&mut self, now: Instant) -> Option<(u64, u64)> {
         if self.unreported == 0 {
             return None;
         }
@@ -112,18 +90,66 @@ impl DropTracker {
         }
     }
 
-    /// Report any drops not yet logged (e.g. when the source stops).
-    fn flush(&mut self, now: Instant) -> Option<DropReport> {
+    /// Report anything not yet logged (e.g. when the source stops).
+    pub(crate) fn flush(&mut self, now: Instant) -> Option<(u64, u64)> {
         if self.unreported == 0 {
             return None;
         }
-        let r = DropReport {
-            since_last: self.unreported,
-            total: self.total,
-        };
+        let r = (self.unreported, self.total);
         self.unreported = 0;
         self.last_report = Some(now);
         Some(r)
+    }
+}
+
+/// Counts events dropped because the channel was full. `total` is cumulative
+/// across reconnects (the tracker lives as long as the source task).
+struct DropTracker {
+    /// Mirror of `total`, readable from outside the task (tests, metrics).
+    counter: Arc<AtomicU64>,
+    core: ThrottledCounter,
+}
+
+/// What to log: drops since the previous report, and the cumulative total.
+#[derive(Debug, PartialEq, Eq)]
+struct DropReport {
+    since_last: u64,
+    total: u64,
+}
+
+fn to_drop_report(r: Option<(u64, u64)>) -> Option<DropReport> {
+    r.map(|(since_last, total)| DropReport { since_last, total })
+}
+
+impl DropTracker {
+    #[cfg(test)]
+    fn new(interval: Duration) -> Self {
+        Self::with_counter(interval, Arc::new(AtomicU64::new(0)))
+    }
+
+    fn with_counter(interval: Duration, counter: Arc<AtomicU64>) -> Self {
+        Self {
+            counter,
+            core: ThrottledCounter::new(interval),
+        }
+    }
+
+    /// Record one dropped event; returns a report when it is time to log.
+    fn record(&mut self, now: Instant) -> Option<DropReport> {
+        self.counter.fetch_add(1, Ordering::Relaxed);
+        to_drop_report(self.core.record(now))
+    }
+
+    /// Call after a successful send: if drops are still unreported and the
+    /// interval has elapsed, report them so they never stay unlogged after
+    /// the channel recovers.
+    fn on_success(&mut self, now: Instant) -> Option<DropReport> {
+        to_drop_report(self.core.report_if_due(now))
+    }
+
+    /// Report any drops not yet logged (e.g. when the source stops).
+    fn flush(&mut self, now: Instant) -> Option<DropReport> {
+        to_drop_report(self.core.flush(now))
     }
 }
 
@@ -827,7 +853,7 @@ mod tests {
         // Within the interval: counted but not reported.
         assert_eq!(d.record(t0 + Duration::from_secs(1)), None);
         assert_eq!(d.record(t0 + Duration::from_secs(9)), None);
-        assert_eq!(d.total, 3);
+        assert_eq!(d.core.total, 3);
         // Boundary: exactly at the interval reports the batch with the total.
         assert_eq!(
             d.record(t0 + Duration::from_secs(10)),
@@ -907,11 +933,11 @@ mod tests {
         for _ in 0..5 {
             assert!(try_forward(&tx, plain_event(), &mut d)); // Full: dropped
         }
-        assert_eq!(d.total, 5);
+        assert_eq!(d.core.total, 5);
         // Draining then sending works again; count is cumulative.
         rx.recv().await.unwrap();
         assert!(try_forward(&tx, plain_event(), &mut d));
-        assert_eq!(d.total, 5);
+        assert_eq!(d.core.total, 5);
     }
 
     #[tokio::test]
@@ -921,11 +947,11 @@ mod tests {
         assert!(try_forward(&tx, plain_event(), &mut d));
         assert!(try_forward(&tx, plain_event(), &mut d)); // Full, reported
         assert!(try_forward(&tx, plain_event(), &mut d)); // Full, pending
-        assert_eq!(d.unreported, 1);
+        assert_eq!(d.core.unreported, 1);
         drop(rx);
         assert!(!try_forward(&tx, plain_event(), &mut d));
-        assert_eq!(d.unreported, 0);
-        assert_eq!(d.total, 2); // Closed is not counted as a drop
+        assert_eq!(d.core.unreported, 0);
+        assert_eq!(d.core.total, 2); // Closed is not counted as a drop
     }
 
     #[test]
