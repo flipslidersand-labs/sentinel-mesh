@@ -61,7 +61,15 @@ type Info struct {
 	// Payload builds the payload from the event's oneof body; nil when the
 	// body is absent.
 	Payload func(e *pb.KernelEvent) any
+	// Strings returns the free-form string fields to validate (charset and
+	// length), in validation order; nil when the body is absent.
+	Strings func(e *pb.KernelEvent) []Field
+	// IPs returns the IP-address fields to validate after Strings; may be nil.
+	IPs func(e *pb.KernelEvent) []Field
 }
+
+// Field is a named string value checked by receiver validation.
+type Field struct{ Name, Value string }
 
 var table = map[pb.EventType]Info{
 	pb.EventType_EXEC: {Exec, ExecPayload{}, func(e *pb.KernelEvent) any {
@@ -69,10 +77,25 @@ var table = map[pb.EventType]Info{
 			return ExecPayload{x.Pid, x.Ppid, x.Comm, x.Cmdline, x.Cwd, x.Uid}
 		}
 		return nil
-	}},
+	}, func(e *pb.KernelEvent) []Field {
+		if x := e.GetExec(); x != nil {
+			return []Field{{"comm", x.Comm}, {"cmdline", x.Cmdline}, {"cwd", x.Cwd}}
+		}
+		return nil
+	}, nil},
 	pb.EventType_TCP: {TCP, TCPPayload{}, func(e *pb.KernelEvent) any {
 		if t := e.GetTcp(); t != nil {
 			return TCPPayload{t.Pid, t.Comm, t.SrcIp, t.SrcPort, t.DstIp, t.DstPort, t.Direction}
+		}
+		return nil
+	}, func(e *pb.KernelEvent) []Field {
+		if t := e.GetTcp(); t != nil {
+			return []Field{{"comm", t.Comm}, {"direction", t.Direction}}
+		}
+		return nil
+	}, func(e *pb.KernelEvent) []Field {
+		if t := e.GetTcp(); t != nil {
+			return []Field{{"src_ip", t.SrcIp}, {"dst_ip", t.DstIp}}
 		}
 		return nil
 	}},
@@ -81,7 +104,12 @@ var table = map[pb.EventType]Info{
 			return FilePayload{f.Pid, f.Comm, f.Path, f.Op, f.Ret}
 		}
 		return nil
-	}},
+	}, func(e *pb.KernelEvent) []Field {
+		if f := e.GetFile(); f != nil {
+			return []Field{{"comm", f.Comm}, {"path", f.Path}, {"op", f.Op}}
+		}
+		return nil
+	}, nil},
 }
 
 // Lookup returns the table entry for a pb event type.
@@ -96,6 +124,15 @@ func Name(t pb.EventType) string {
 		return i.Name
 	}
 	return fmt.Sprintf("unknown(%d)", t)
+}
+
+// Names returns the stored names of every known event type (unordered).
+func Names() []string {
+	names := make([]string, 0, len(table))
+	for _, i := range table {
+		names = append(names, i.Name)
+	}
+	return names
 }
 
 // IsValid reports whether name is a known event type name (not "*").

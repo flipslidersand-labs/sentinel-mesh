@@ -11,6 +11,7 @@ import (
 
 	badger "github.com/dgraph-io/badger/v4"
 
+	"github.com/flipslidersand/sentinel-mesh/internal/eventtype"
 	"github.com/flipslidersand/sentinel-mesh/internal/model"
 )
 
@@ -98,7 +99,7 @@ func New(dir string) (*Store, error) {
 	s := &Store{
 		db:        db,
 		retention: DefaultRetention,
-		counters:  map[string]int{"exec": 0, "tcp": 0, "file": 0},
+		counters:  zeroCounters(),
 		sem:       make(chan struct{}, maxInflight),
 		readSem:   make(chan struct{}, maxReadInflight),
 		gcStop:    make(chan struct{}),
@@ -554,4 +555,13 @@ func (s *Store) Close() error {
 	<-s.gcDone
 	s.inflight.Wait()
 	return s.db.Close()
+}
+
+// zeroCounters returns a per-event-type counter map with every known type at 0.
+func zeroCounters() map[string]int {
+	m := map[string]int{}
+	for _, n := range eventtype.Names() {
+		m[n] = 0
+	}
+	return m
 }
