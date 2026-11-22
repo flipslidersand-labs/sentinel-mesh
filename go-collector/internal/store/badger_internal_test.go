@@ -433,3 +433,24 @@ func TestListWhere_ScansUntilLimitAndHonoursCap(t *testing.T) {
 		t.Errorf("past the scan cap: want 0/0, got %d/%d", len(evs), len(als))
 	}
 }
+
+// TestClose_BoundedWhenInflightStuck pins #468: a stuck background goroutine
+// must not make Close hang forever; it gives up after closeWaitTimeout.
+func TestClose_BoundedWhenInflightStuck(t *testing.T) {
+	old := closeWaitTimeout
+	closeWaitTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { closeWaitTimeout = old })
+
+	st, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	st.inflight.Add(1) // never Done: simulates a stuck goroutine
+	done := make(chan struct{})
+	go func() { st.Close(); close(done) }() //nolint:errcheck
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not return despite stuck inflight work")
+	}
+}
