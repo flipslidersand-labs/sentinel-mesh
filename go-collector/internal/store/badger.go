@@ -524,10 +524,25 @@ func (s *Store) ListAlertsWhere(ctx context.Context, keep func(nodeID string) bo
 	return scanNewestFirst(ctx, s, "alert:", "alert", func(a model.Alert) string { return a.NodeID }, keep, limit)
 }
 
+// closeWaitTimeout bounds how long Close waits for the GC goroutine and
+// in-flight reads/writes before closing the DB anyway (#468). A var so tests
+// can shrink it.
+var closeWaitTimeout = 10 * time.Second
+
 func (s *Store) Close() error {
 	close(s.gcStop)
-	<-s.gcDone
-	s.inflight.Wait()
+	drained := make(chan struct{})
+	go func() {
+		<-s.gcDone
+		s.inflight.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-time.After(closeWaitTimeout):
+		slog.Warn("store close: background work still running after timeout; closing DB anyway",
+			"timeout", closeWaitTimeout)
+	}
 	return s.db.Close()
 }
 

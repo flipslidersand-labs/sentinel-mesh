@@ -918,3 +918,27 @@ func TestSafeLogNodeID(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+// Empty node_id is rejected (#468). Empty event_id stays accepted: the store
+// deliberately skips dedup for it (older agents), so only node_id is required.
+func TestValidateKernelEvent_EmptyNodeIDRejectedEmptyEventIDAllowed(t *testing.T) {
+	mk := func(node, evt string) *pb.KernelEvent {
+		return &pb.KernelEvent{NodeId: node, EventId: evt, Type: pb.EventType_EXEC,
+			Payload: &pb.KernelEvent_Exec{Exec: &pb.ExecEvent{Comm: "sh", Cmdline: "sh", Cwd: "/"}}}
+	}
+	if err := validateKernelEvent(mk("", "evt-1")); err == nil {
+		t.Fatal("expected empty node_id to be rejected")
+	}
+	if err := validateKernelEvent(mk("node-1", "")); err != nil {
+		t.Fatalf("empty event_id must stay accepted: %v", err)
+	}
+}
+
+func TestValidateRegisterRequest_RejectsEmptyNodeID(t *testing.T) {
+	if err := validateRegisterRequest(&pb.RegisterRequest{NodeId: "", Hostname: "h", Version: "v1"}); err == nil {
+		t.Fatal("expected empty node_id to be rejected")
+	}
+	if err := ValidateNodeID(""); err == nil {
+		t.Fatal("expected ValidateNodeID to reject empty")
+	}
+}

@@ -387,6 +387,12 @@ type namedField struct{ name, value string }
 // common validation core for both Register and StreamEvents (#106, #154).
 func validateFields(fields []namedField) error {
 	for _, f := range fields {
+		// node_id is the identity key for the registry, dedup and tokens, so
+		// it is required (#468). Other fields, including event_id (the store
+		// skips dedup for an empty one, for older agents), may be empty.
+		if f.name == "node_id" && f.value == "" {
+			return fmt.Errorf("node_id must not be empty")
+		}
 		if len(f.value) > maxRegisterFieldLength {
 			return fmt.Errorf("%s exceeds max length of %d bytes", f.name, maxRegisterFieldLength)
 		}
