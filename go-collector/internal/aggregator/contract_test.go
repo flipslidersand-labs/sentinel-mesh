@@ -29,11 +29,11 @@ func (d contractData) ListEventsMatching(ctx context.Context, keep func(model.Ev
 func (contractData) ListAlerts(_ context.Context, _ string, _ int) ([]model.Alert, error) {
 	return []model.Alert{{AlertID: "a1", NodeID: "n1"}}, nil
 }
-func (d contractData) ListAlertsWhere(ctx context.Context, keep func(string) bool, limit int) ([]model.Alert, error) {
+func (d contractData) ListAlertsMatching(ctx context.Context, keep func(model.Alert) bool, limit int) ([]model.Alert, error) {
 	all, _ := d.ListAlerts(ctx, "", limit)
 	out := make([]model.Alert, 0, len(all))
 	for _, a := range all {
-		if keep == nil || keep(a.NodeID) {
+		if keep == nil || keep(a) {
 			out = append(out, a)
 		}
 	}

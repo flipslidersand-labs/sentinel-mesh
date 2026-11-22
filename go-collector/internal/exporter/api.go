@@ -37,48 +37,14 @@ func parseLimit(c *gin.Context, key string, def int) (limit int, ok bool) {
 	return httpserver.ParseLimit(c, key, def)
 }
 
-// nodeFilter builds the store-level node predicate (used for alerts, which carry
-// no region) from the optional "node"
-// and "region" query parameters; nil means no filtering. The region is
-// resolved to a node set once, so the store can apply it while scanning and
-// still return up to limit matches (#324). The store's scan cap
-// (maxNodeFilterScan) still applies: a region whose events are older than
-// that many records may yield fewer than limit results.
-func nodeFilter(c *gin.Context, reg NodeLister) (keep func(string) bool, none bool) {
-	node, region := c.Query("node"), c.Query("region")
-	var set map[string]struct{}
-	if region != "" {
-		nodes := reg.ListByRegion(region)
-		set = make(map[string]struct{}, len(nodes))
-		for _, n := range nodes {
-			set[n.NodeID] = struct{}{}
-		}
-	}
-	if region != "" && len(set) == 0 {
-		// Unregistered/empty region: nothing can match, skip the store scan.
-		return nil, true
-	}
-	if node == "" && set == nil {
-		return nil, false
-	}
-	return func(id string) bool {
-		if node != "" && id != node {
-			return false
-		}
-		if set != nil {
-			_, ok := set[id]
-			return ok
-		}
-		return true
-	}, false
-}
-
-// eventFilter builds the event predicate from the "node" and "region" query
-// parameters; nil means no filtering. An event carrying its own Region is
-// matched on that, so events of nodes that left the registry (eviction,
-// restart) stay reachable. Events stored before Region existed fall back to
-// the registry's current node set (#512).
-func eventFilter(c *gin.Context, reg NodeLister) func(model.Event) bool {
+// recordFilter builds a record predicate from the "node" and "region" query
+// parameters; nil means no filtering. A record carrying its own region is
+// matched on that, so records of nodes that left the registry (eviction,
+// restart) stay reachable. Records stored before the region field existed fall
+// back to the registry's current node set (#512, #531). The store scan cap
+// (maxNodeFilterScan) applies: a region whose records are older than that many
+// entries may yield fewer than limit results (#324).
+func recordFilter[T any](c *gin.Context, reg NodeLister, nodeOf, regionOf func(T) string) func(T) bool {
 	node, region := c.Query("node"), c.Query("region")
 	if node == "" && region == "" {
 		return nil
@@ -91,19 +57,29 @@ func eventFilter(c *gin.Context, reg NodeLister) func(model.Event) bool {
 			set[n.NodeID] = struct{}{}
 		}
 	}
-	return func(e model.Event) bool {
-		if node != "" && e.NodeID != node {
+	return func(r T) bool {
+		if node != "" && nodeOf(r) != node {
 			return false
 		}
 		if region == "" {
 			return true
 		}
-		if e.Region != "" {
-			return e.Region == region
+		if rr := regionOf(r); rr != "" {
+			return rr == region
 		}
-		_, ok := set[e.NodeID]
+		_, ok := set[nodeOf(r)]
 		return ok
 	}
+}
+
+// eventFilter is recordFilter for events.
+func eventFilter(c *gin.Context, reg NodeLister) func(model.Event) bool {
+	return recordFilter(c, reg, func(e model.Event) string { return e.NodeID }, func(e model.Event) string { return e.Region })
+}
+
+// alertFilter is recordFilter for alerts.
+func alertFilter(c *gin.Context, reg NodeLister) func(model.Alert) bool {
+	return recordFilter(c, reg, func(a model.Alert) string { return a.NodeID }, func(a model.Alert) string { return a.Region })
 }
 
 // EventLister lists stored events. *store.Store satisfies it.
@@ -116,8 +92,8 @@ type EventLister interface {
 
 // AlertLister lists stored alerts. *store.Store satisfies it.
 type AlertLister interface {
-	// ListAlertsWhere is the alert counterpart of the event listing.
-	ListAlertsWhere(ctx context.Context, keep func(nodeID string) bool, limit int) ([]model.Alert, error)
+	// ListAlertsMatching is the alert counterpart of ListEventsMatching.
+	ListAlertsMatching(ctx context.Context, keep func(model.Alert) bool, limit int) ([]model.Alert, error)
 }
 
 // StatsProvider returns event counts. *store.Store satisfies it.
@@ -218,12 +194,7 @@ func Router(cfg RouterConfig) *gin.Engine {
 			if !ok {
 				return
 			}
-			keep, none := nodeFilter(c, reg)
-			if none {
-				c.JSON(http.StatusOK, []model.Alert{})
-				return
-			}
-			alerts, err := cfg.Alerts.ListAlertsWhere(c.Request.Context(), keep, limit)
+			alerts, err := cfg.Alerts.ListAlertsMatching(c.Request.Context(), alertFilter(c, reg), limit)
 			if err != nil {
 				internalError(c, err)
 				return

@@ -24,11 +24,11 @@ func (fakeData) ListEventsMatching(_ context.Context, keep func(model.Event) boo
 	return out, nil
 }
 
-func (fakeData) ListAlertsWhere(_ context.Context, keep func(string) bool, _ int) ([]model.Alert, error) {
+func (fakeData) ListAlertsMatching(_ context.Context, keep func(model.Alert) bool, _ int) ([]model.Alert, error) {
 	out := []model.Alert{}
 	for _, n := range []string{"n1", "n2"} {
-		if keep == nil || keep(n) {
-			out = append(out, model.Alert{NodeID: n})
+		if a := (model.Alert{NodeID: n}); keep == nil || keep(a) {
+			out = append(out, a)
 		}
 	}
 	return out, nil
