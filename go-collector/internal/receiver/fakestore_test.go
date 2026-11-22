@@ -81,7 +81,7 @@ func TestStreamEvents_WithFakeStorage(t *testing.T) {
 	fs := &fakeStorage{}
 	s := &server{st: fs, reg: registry.New(), log: zap.NewNop()}
 	stream := &fakeStream{events: []*pb.KernelEvent{
-		{NodeId: "node-1", Type: pb.EventType_EXEC, Timestamp: time.Now().UnixNano()},
+		{NodeId: "node-1", Type: pb.EventType_EXEC, Payload: &pb.KernelEvent_Exec{Exec: &pb.ExecEvent{Comm: "sh"}}, Timestamp: time.Now().UnixNano()},
 	}}
 	if err := s.StreamEvents(stream); err != nil {
 		t.Fatalf("StreamEvents: %v", err)

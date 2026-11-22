@@ -613,7 +613,7 @@ func TestStreamEvents_AckReflectsSaveFailure(t *testing.T) {
 	}
 
 	stream := &fakeStream{events: []*pb.KernelEvent{
-		{NodeId: "node-1", Type: pb.EventType_EXEC, Timestamp: time.Now().UnixNano()},
+		{NodeId: "node-1", Type: pb.EventType_EXEC, Payload: &pb.KernelEvent_Exec{Exec: &pb.ExecEvent{Comm: "sh"}}, Timestamp: time.Now().UnixNano()},
 	}}
 
 	if err := s.StreamEvents(stream); err != nil {
@@ -660,8 +660,8 @@ func TestStreamEvents_DetectorRunsWithoutEngine(t *testing.T) {
 	// Two events within the window exceed Threshold:1, triggering an alert
 	// on the second one.
 	stream := &fakeStream{events: []*pb.KernelEvent{
-		{NodeId: "node-1", Type: pb.EventType_EXEC, Timestamp: time.Now().UnixNano()},
-		{NodeId: "node-1", Type: pb.EventType_EXEC, Timestamp: time.Now().UnixNano()},
+		{NodeId: "node-1", Type: pb.EventType_EXEC, Payload: &pb.KernelEvent_Exec{Exec: &pb.ExecEvent{Comm: "sh"}}, Timestamp: time.Now().UnixNano()},
+		{NodeId: "node-1", Type: pb.EventType_EXEC, Payload: &pb.KernelEvent_Exec{Exec: &pb.ExecEvent{Comm: "sh"}}, Timestamp: time.Now().UnixNano()},
 	}}
 
 	if err := s.StreamEvents(stream); err != nil {
@@ -717,7 +717,7 @@ func TestStreamEvents_ReturnsWhenStreamContextDone(t *testing.T) {
 		// If the context check were missing, StreamEvents would instead
 		// consume this event and return nil via io.EOF on the next Recv.
 		events: []*pb.KernelEvent{
-			{NodeId: "node-1", Type: pb.EventType_EXEC, Timestamp: time.Now().UnixNano()},
+			{NodeId: "node-1", Type: pb.EventType_EXEC, Payload: &pb.KernelEvent_Exec{Exec: &pb.ExecEvent{Comm: "sh"}}, Timestamp: time.Now().UnixNano()},
 		},
 	}
 
@@ -940,5 +940,47 @@ func TestValidateRegisterRequest_RejectsEmptyNodeID(t *testing.T) {
 	}
 	if err := ValidateNodeID(""); err == nil {
 		t.Fatal("expected ValidateNodeID to reject empty")
+	}
+}
+
+// TestStreamEvents_RejectsMissingOrMismatchedPayload covers #468: a known
+// type whose oneof body is absent, or belongs to another type, must be acked
+// Ok=false and never reach the registry or the store.
+func TestStreamEvents_RejectsMissingOrMismatchedPayload(t *testing.T) {
+	tcp := &pb.KernelEvent_Tcp{Tcp: &pb.TcpEvent{Comm: "sh", SrcIp: "10.0.0.1", DstIp: "10.0.0.2", Direction: "out"}}
+	cases := map[string]*pb.KernelEvent{
+		"exec without body":  {NodeId: "node-1", EventId: "evt-1", Type: pb.EventType_EXEC},
+		"tcp without body":   {NodeId: "node-1", EventId: "evt-1", Type: pb.EventType_TCP},
+		"file without body":  {NodeId: "node-1", EventId: "evt-1", Type: pb.EventType_FILE},
+		"exec with tcp body": {NodeId: "node-1", EventId: "evt-1", Type: pb.EventType_EXEC, Payload: tcp},
+	}
+	for name, ev := range cases {
+		t.Run(name, func(t *testing.T) {
+			st, err := store.New(filepath.Join(t.TempDir(), "badger"))
+			if err != nil {
+				t.Fatalf("store.New: %v", err)
+			}
+			t.Cleanup(func() { _ = st.Close() })
+			reg := registry.New()
+			s := &server{st: st, reg: reg, log: zap.NewNop()}
+			ev.Timestamp = time.Now().UnixNano()
+			stream := &fakeStream{events: []*pb.KernelEvent{ev}}
+			if err := s.StreamEvents(stream); err != nil {
+				t.Fatalf("StreamEvents: %v", err)
+			}
+			if len(stream.acks) != 1 || stream.acks[0].Ok || stream.acks[0].Reason != pb.AckReason_ACK_REASON_INVALID {
+				t.Fatalf("expected a single INVALID nack, got %+v", stream.acks)
+			}
+			if len(reg.List()) != 0 {
+				t.Fatal("must not reach the registry")
+			}
+			got, err := st.ListEventsWhere(context.Background(), func(string) bool { return true }, 10)
+			if err != nil {
+				t.Fatalf("ListEvents: %v", err)
+			}
+			if len(got) != 0 {
+				t.Fatalf("must not be persisted, got %d", len(got))
+			}
+		})
 	}
 }
