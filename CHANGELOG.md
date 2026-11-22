@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **go-collector:** `--upstreams` now rejects a duplicate region name at startup instead of silently ignoring one of the entries (#254).
+- **web:** the Nodes page keeps showing the last fetched table and shows the error as a banner when a later poll fails; only a first-load error replaces the table (#254).
 
 ### Added
 
