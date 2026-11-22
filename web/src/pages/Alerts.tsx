@@ -15,11 +15,16 @@ function sevText(severity: unknown): string {
   return typeof severity === "string" ? severity : "";
 }
 
-function severityClass(severity: unknown): string {
+// Single mapping used by both the badge class and the severity filter.
+function severityLevel(severity: unknown): (typeof SEVERITIES)[number] {
   const s = sevText(severity).toLowerCase();
-  if (s === "critical" || s === "high" || s === "error") return "sev-critical";
-  if (s === "warning" || s === "warn" || s === "medium") return "sev-warning";
-  return "sev-info";
+  if (s === "critical" || s === "high" || s === "error") return "critical";
+  if (s === "warning" || s === "warn" || s === "medium") return "warning";
+  return "info";
+}
+
+function severityClass(severity: unknown): string {
+  return `sev-${severityLevel(severity)}`;
 }
 
 export function Alerts() {
@@ -41,8 +46,8 @@ export function Alerts() {
     () =>
       asArray<Alert>(data).filter(
         (a) =>
-          (!severity || sevText(a.severity).toLowerCase() === severity) &&
-          (!ruleQuery || a.rule_id.toLowerCase().includes(ruleQuery)) &&
+          (!severity || severityLevel(a.severity) === severity) &&
+          (!ruleQuery || (a.rule_id ?? "").toLowerCase().includes(ruleQuery)) &&
           withinRange(a.timestamp, rangeMs),
       ),
     [data, severity, ruleQuery, rangeMs],
