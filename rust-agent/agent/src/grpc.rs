@@ -915,8 +915,10 @@ mod tests {
 
         /// Freeze flags of every connection the proxy has accepted so far.
         /// `freeze()` silences only those, so a reconnect gets a working link.
+        type FreezePair = (Arc<AtomicBool>, Arc<AtomicBool>);
+
         #[derive(Clone, Default)]
-        struct Conns(Arc<std::sync::Mutex<Vec<(Arc<AtomicBool>, Arc<AtomicBool>)>>>);
+        struct Conns(Arc<std::sync::Mutex<Vec<FreezePair>>>);
 
         impl Conns {
             /// Both directions go silent.
