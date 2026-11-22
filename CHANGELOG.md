@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **go-collector:** `--upstreams` now rejects a duplicate region name at startup instead of silently ignoring one of the entries (#254).
+
 ### Added
 
 - **Agent / eBPF:** IPv6 TCP connections and IPv4 connections made through dual-stack

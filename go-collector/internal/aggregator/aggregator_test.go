@@ -502,3 +502,24 @@ func TestAggregator_RouterEventsAlertsQuery(t *testing.T) {
 		}
 	}
 }
+
+// TestParseUpstreams_DuplicateRegion verifies a region given twice is an
+// error naming the region (never the URL), rather than a silent overwrite.
+func TestParseUpstreams_DuplicateRegion(t *testing.T) {
+	_, err := ParseUpstreams([]string{"us-east=http://192.0.2.1:8081", "eu-west=http://192.0.2.2:8081", "us-east=http://192.0.2.3:8081"}, true)
+	if err == nil {
+		t.Fatal("expected error for duplicate region")
+	}
+	if !strings.Contains(err.Error(), "us-east") {
+		t.Errorf("error should name the duplicate region: %v", err)
+	}
+	if strings.Contains(err.Error(), "192.0.2.") {
+		t.Errorf("error must not include URLs: %v", err)
+	}
+	// Region names are compared case-sensitively (state map keys), so these
+	// are distinct and accepted.
+	ups, err := ParseUpstreams([]string{"us-east=http://192.0.2.1:8081", "US-East=http://192.0.2.2:8081"}, true)
+	if err != nil || len(ups) != 2 {
+		t.Fatalf("distinct-case regions: ups=%+v err=%v", ups, err)
+	}
+}
