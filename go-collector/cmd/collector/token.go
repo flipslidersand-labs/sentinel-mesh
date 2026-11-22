@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/flipslidersand/sentinel-mesh/internal/receiver"
 	"github.com/flipslidersand/sentinel-mesh/internal/store"
 )
 
@@ -73,6 +74,9 @@ Fails if node_id already has an active (non-revoked) token; run
 			nodeID := strings.TrimSpace(args[0])
 			if nodeID == "" {
 				return fmt.Errorf("node_id must not be empty")
+			}
+			if err := receiver.ValidateNodeID(nodeID); err != nil {
+				return err
 			}
 			dataDir, err := tokenDataDir(cmd)
 			if err != nil {

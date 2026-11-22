@@ -397,6 +397,13 @@ func validateFields(fields []namedField) error {
 	return nil
 }
 
+// ValidateNodeID applies the node_id rules Register and StreamEvents enforce
+// (length cap, printable ASCII), so callers such as "token issue" can reject
+// IDs that Register would always refuse.
+func ValidateNodeID(nodeID string) error {
+	return validateFields([]namedField{{"node_id", nodeID}})
+}
+
 // validateIP enforces a length cap and requires value (when non-empty) to
 // parse as a real IP address.
 func validateIP(name, value string) error {

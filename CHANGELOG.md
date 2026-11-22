@@ -124,6 +124,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Collector:** `token issue <node_id>` now rejects node_ids that Register would always refuse (non-printable-ASCII or over 256 bytes) instead of issuing an unusable token (#254).
 - **Collector (#491):** an anomaly alert whose save failed is now saved when the agent resends the same event, without double-counting it in the detector. The pending alert is kept in memory only (lost on restart).
 - **rust-agent (#241):** events taken from the queue but not yet acked are now kept (up to 2048 events or 2 MiB) and re-sent first after a reconnect (at-least-once), instead of being discarded. Re-sent events can reach the collector twice; it dedups by `event_id` within its retention window. The queue does not survive process exit. Events acked `ok=false` are not re-sent unless the collector marks them retryable (#488).
 - **proto/collector/rust-agent (#488):** `EventAck` gains `reason` (`AckReason`: `INVALID`, `RATE_LIMITED`, `RETRYABLE`). The collector sets `RETRYABLE` when saving an event or alert fails, `INVALID` for validation / node_id mismatch, `RATE_LIMITED` for throttling. The agent re-sends only `RETRYABLE` events, at the back of the queue with exponential backoff, up to 5 times, then drops them with a warning. A reason-less `ok=false` (older collector) is still not re-sent. Wire-compatible in both directions (new field 2).
