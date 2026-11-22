@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **go-collector:** `token revoke --force <record key>` deletes a token record that cannot be decoded (and so cannot be revoked by node_id), using the key shown in the `token list` warning. `token list` still exits 0 when it skips such records (#276).
 - **Agent / eBPF:** IPv6 TCP connections and IPv4 connections made through dual-stack
   AF_INET6 sockets (v4-mapped) are now emitted as TCP events; `TcpEvent` carries a family
   and 16-byte addresses (#429). Not yet verified on a real host (no CAP_BPF test): the

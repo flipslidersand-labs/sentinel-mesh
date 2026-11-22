@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	badger "github.com/dgraph-io/badger/v4"
@@ -18,6 +19,12 @@ import (
 // non-revoked token — callers must RevokeToken first to reissue, so an
 // active token is never silently replaced.
 var ErrTokenExists = errors.New("store: node_id already has an active token")
+
+// ErrTokenRecordNotFound is returned by RevokeRawRecord when no record exists
+// under the given key.
+var ErrTokenRecordNotFound = errors.New("store: agent token record not found")
+
+const agentTokenPrefix = "agenttoken:"
 
 // AgentToken is the persisted record for a per-agent credential (#183/#189,
 // per ADR-005). Only the SHA-256 hash of the token is stored — the plaintext
@@ -30,7 +37,7 @@ type AgentToken struct {
 }
 
 func agentTokenKey(nodeID string) []byte {
-	return []byte(fmt.Sprintf("agenttoken:%s", nodeID))
+	return []byte(agentTokenPrefix + nodeID)
 }
 
 // TokenLength is the length of every issued token: hex of 32 random bytes.
@@ -131,6 +138,47 @@ func (s *Store) RevokeToken(ctx context.Context, nodeID string) error {
 	return nil
 }
 
+// RevokeRawRecord deletes the token record stored under key (as printed in the
+// `token list` warning, "agenttoken:<node_id>") without decoding it, so a
+// record that RevokeToken cannot decode can still be removed (#276). Keys
+// outside the agenttoken: namespace are refused. A missing key returns
+// ErrTokenRecordNotFound. Fail closed: the node's index entries are dropped
+// before the delete, and not restored if it fails.
+func (s *Store) RevokeRawRecord(ctx context.Context, key string) error {
+	nodeID, ok := strings.CutPrefix(key, agentTokenPrefix)
+	if !ok || nodeID == "" {
+		return fmt.Errorf("store: %q is not an agent token record key (want %s<node_id>)", key, agentTokenPrefix)
+	}
+	s.tokenWriteMu.Lock()
+	defer s.tokenWriteMu.Unlock()
+
+	// Existence check first so a typo is an error, not a silent no-op.
+	err := s.runRead(ctx, func() error {
+		return s.db.View(func(tx *badger.Txn) error {
+			_, err := tx.Get([]byte(key))
+			if errors.Is(err, badger.ErrKeyNotFound) {
+				return ErrTokenRecordNotFound
+			}
+			return err
+		})
+	})
+	if err != nil {
+		return err
+	}
+	s.tokensMu.Lock()
+	for hash, id := range s.tokenIndex {
+		if id == nodeID {
+			delete(s.tokenIndex, hash)
+		}
+	}
+	s.tokensMu.Unlock()
+	return s.run(context.WithoutCancel(ctx), func() error {
+		return s.db.Update(func(tx *badger.Txn) error {
+			return tx.Delete([]byte(key))
+		})
+	})
+}
+
 // ListTokens returns all agent token records (revoked and active), for the
 // `token list` CLI (#191). Tokens are returned by node_id, ascending.
 //
@@ -148,7 +196,7 @@ func (s *Store) ListTokens(ctx context.Context) ([]AgentToken, error) {
 		var broken []string
 		err := s.db.View(func(tx *badger.Txn) error {
 			opts := badger.DefaultIteratorOptions
-			prefix := []byte("agenttoken:")
+			prefix := []byte(agentTokenPrefix)
 			it := tx.NewIterator(opts)
 			defer it.Close()
 			for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
@@ -220,7 +268,7 @@ func (s *Store) LookupNodeID(ctx context.Context, token string) (nodeID string, 
 // kept in tokenIndexErr rather than failing New, so `token list` can still
 // open the store to inspect it, while auth fails closed. A record that fails
 // to decode cannot be repaired with RevokeToken (it must decode the record
-// first and fails the same way); repair needs a separate path (#276).
+// first and fails the same way); remove it with RevokeRawRecord (#276).
 //
 // A record that is not valid JSON is skipped (its token stays invalid, as it
 // is absent from the index) so one damaged record can't lock out every other
@@ -231,7 +279,7 @@ func (s *Store) loadTokenIndex() {
 	var brokenKeys []string
 	err := s.runRead(context.Background(), func() error {
 		return s.db.View(func(tx *badger.Txn) error {
-			prefix := []byte("agenttoken:")
+			prefix := []byte(agentTokenPrefix)
 			it := tx.NewIterator(badger.DefaultIteratorOptions)
 			defer it.Close()
 			for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {

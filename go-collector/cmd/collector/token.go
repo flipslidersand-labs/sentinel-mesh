@@ -30,6 +30,7 @@ func openTokenStore(dataDir string) (*store.Store, error) {
 const (
 	flagDataDir = "data-dir"
 	flagYes     = "yes"
+	flagForce   = "force"
 )
 
 // tokenDataDir reads --data-dir, returning the lookup error instead of
@@ -100,13 +101,19 @@ Fails if node_id already has an active (non-revoked) token; run
 
 func tokenRevokeCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "revoke <node_id>",
+		Use:   "revoke <node_id | --force record_key>",
 		Short: "Revoke an agent's token",
 		Long: `revoke marks node_id's current token as revoked. Because "serve" must be
 stopped to run this command, the revoke takes effect when the collector is
 started again: from then on the agent can no longer authenticate. It must
 be issued a new token ("token issue <node_id>") and reconfigured to
 reconnect.
+
+With --force, the argument is instead the token record key (as printed in
+the "token list" warning for a record that could not be decoded, e.g.
+agenttoken:<node_id>). The record is deleted without being decoded; this is
+the way to remove a damaged record that plain revoke cannot read. It fails if
+the key does not exist.
 
 Prompts for confirmation unless --yes is given.`,
 		Args: cobra.ExactArgs(1),
@@ -117,12 +124,17 @@ Prompts for confirmation unless --yes is given.`,
 			}
 			r := &flagReader{cmd: cmd}
 			yes := r.boolean(flagYes)
+			force := r.boolean(flagForce)
 			dataDir := r.str(flagDataDir)
 			if r.err != nil {
 				return r.err
 			}
 			if !yes {
-				fmt.Fprintf(cmd.OutOrStdout(), "Revoke token for node_id %q? [y/N] ", nodeID)
+				if force {
+					fmt.Fprintf(cmd.OutOrStdout(), "Delete token record %q without decoding it? [y/N] ", nodeID)
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "Revoke token for node_id %q? [y/N] ", nodeID)
+				}
 				line, _ := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
 				if strings.ToLower(strings.TrimSpace(line)) != "y" {
 					fmt.Fprintln(cmd.OutOrStdout(), "aborted")
@@ -135,10 +147,14 @@ Prompts for confirmation unless --yes is given.`,
 			}
 			defer st.Close() //nolint:errcheck
 
+			if force {
+				return st.RevokeRawRecord(cmd.Context(), nodeID)
+			}
 			return st.RevokeToken(cmd.Context(), nodeID)
 		},
 	}
 	cmd.Flags().Bool(flagYes, false, "skip the confirmation prompt")
+	cmd.Flags().Bool(flagForce, false, "treat the argument as a token record key and delete that record without decoding it")
 	return cmd
 }
 

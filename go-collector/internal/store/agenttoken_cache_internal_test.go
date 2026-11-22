@@ -428,3 +428,43 @@ func TestListTokens_SkipsUndecodableRecords(t *testing.T) {
 		t.Errorf("warning must not leak tokens or hashes: %q", logs)
 	}
 }
+
+// RevokeRawRecord deletes a record by key without decoding it (#276). A
+// healthy record's index entry is dropped too, so its token stops resolving.
+func TestRevokeRawRecord(t *testing.T) {
+	ctx := context.Background()
+	st := openTempStore(t, t.TempDir())
+	tokA, err := st.IssueToken(ctx, "node-a")
+	if err != nil {
+		t.Fatalf("IssueToken a: %v", err)
+	}
+	tokB, err := st.IssueToken(ctx, "node-b")
+	if err != nil {
+		t.Fatalf("IssueToken b: %v", err)
+	}
+	putRaw(t, st, "agenttoken:node-broken", "{not json")
+
+	if err := st.RevokeRawRecord(ctx, "agenttoken:node-broken"); err != nil {
+		t.Fatalf("RevokeRawRecord broken: %v", err)
+	}
+	if err := st.RevokeRawRecord(ctx, "agenttoken:node-broken"); !errors.Is(err, ErrTokenRecordNotFound) {
+		t.Fatalf("second delete err = %v, want ErrTokenRecordNotFound", err)
+	}
+	if err := st.RevokeRawRecord(ctx, "events:x"); err == nil {
+		t.Fatal("key outside agenttoken: namespace must be refused")
+	}
+
+	if err := st.RevokeRawRecord(ctx, "agenttoken:node-a"); err != nil {
+		t.Fatalf("RevokeRawRecord node-a: %v", err)
+	}
+	if _, ok, _ := st.LookupNodeID(ctx, tokA); ok {
+		t.Error("deleted record's token must not resolve")
+	}
+	if id, ok, _ := st.LookupNodeID(ctx, tokB); !ok || id != "node-b" {
+		t.Errorf("node-b token = (%q, %v), want it to still resolve", id, ok)
+	}
+	tokens, err := st.ListTokens(ctx)
+	if err != nil || len(tokens) != 1 || tokens[0].NodeID != "node-b" {
+		t.Fatalf("ListTokens = %+v, %v; want only node-b", tokens, err)
+	}
+}
