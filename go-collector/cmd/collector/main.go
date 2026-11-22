@@ -205,21 +205,17 @@ because the bearer token would otherwise cross the network in plaintext.`,
 			}
 			defer logger.Sync() //nolint:errcheck
 
-			// Validate REST TLS files before opening the store or any listener.
-			if err := checkHTTPTLS(cfg, logger, "REST API"); err != nil {
-				return err
-			}
-
-			// Aggregate mode: no gRPC/store — poll upstream region collectors and
-			// serve a merged read-only view.
 			if cfg.aggregate {
 				warnIgnoredNormalModeFlags(cmd, cfg.grpcAddr, logger)
-				return runAggregate(cfg, logger)
 			}
-			return runNormal(cfg, logger)
+
+			// SIGINT/SIGTERM cancel ctx so run shuts down gracefully (#117).
+			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+			return run(ctx, cfg, logger)
 		},
 	}
-	cmd.Flags().String("grpc-addr", defaultGRPCAddr, "gRPC listen address")
+	cmd.Flags().String(grpcAddrFlag, defaultGRPCAddr, "gRPC listen address")
 	cmd.Flags().String("grpc-tls-cert", "", "path to gRPC server TLS certificate (PEM); requires --grpc-tls-key")
 	cmd.Flags().String("grpc-tls-key", "", "path to gRPC server TLS private key (PEM); requires --grpc-tls-cert")
 	cmd.Flags().String("grpc-auth", "required", "gRPC authentication: required (per-agent tokens; rejects all RPCs if none issued) or disabled (unauthenticated, dev only)")
@@ -241,6 +237,22 @@ because the bearer token would otherwise cross the network in plaintext.`,
 	cmd.MarkFlagsRequiredTogether("grpc-tls-cert", "grpc-tls-key")
 	cmd.MarkFlagsRequiredTogether("http-tls-cert", "http-tls-key")
 	return cmd
+}
+
+// run assembles and starts the collector from an already-loaded cfg and
+// blocks until ctx is cancelled or a server fails. The logger and ctx are
+// supplied by the caller so tests can drive it without signals (#265).
+func run(ctx context.Context, cfg *serveConfig, logger *zap.Logger) error {
+	// Validate REST TLS files before opening the store or any listener.
+	if err := checkHTTPTLS(cfg, logger, "REST API"); err != nil {
+		return err
+	}
+	// Aggregate mode: no gRPC/store — poll upstream region collectors and
+	// serve a merged read-only view.
+	if cfg.aggregate {
+		return runAggregate(ctx, cfg, logger)
+	}
+	return runNormal(ctx, cfg, logger)
 }
 
 // checkHTTPTLS validates the REST API TLS cert/key and logs a warning when
@@ -267,7 +279,7 @@ func validateTLSFiles(cert, key string) error {
 // that was explicitly set by the caller but is ignored in --aggregate mode
 // (#152), so a mistaken flag (e.g. --grpc-tls-cert) doesn't silently no-op.
 func warnIgnoredNormalModeFlags(cmd *cobra.Command, grpcAddr string, logger *zap.Logger) {
-	if cmd.Flags().Changed("grpc-addr") && grpcAddr != defaultGRPCAddr {
+	if cmd.Flags().Changed(grpcAddrFlag) && grpcAddr != defaultGRPCAddr {
 		logger.Warn("--aggregate mode ignores --grpc-addr")
 	}
 	for _, name := range normalOnlyFlags {
@@ -279,7 +291,7 @@ func warnIgnoredNormalModeFlags(cmd *cobra.Command, grpcAddr string, logger *zap
 
 // runAggregate starts the cross-region aggregator: it polls upstream region
 // collectors' REST APIs and serves a merged read-only view on --http-addr.
-func runAggregate(cfg *serveConfig, logger *zap.Logger) error {
+func runAggregate(ctx context.Context, cfg *serveConfig, logger *zap.Logger) error {
 	httpAddr, apiToken := cfg.httpAddr, cfg.apiToken
 	if cfg.restUnauth {
 		logger.Warn("aggregator REST API is UNAUTHENTICATED (--http-auth=disabled) — set " + httpauth.EnvAPIToken + " and use --http-auth=required")
@@ -293,9 +305,6 @@ func runAggregate(cfg *serveConfig, logger *zap.Logger) error {
 		return fmt.Errorf("--aggregate requires at least one --upstreams region=url")
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-
 	agg := aggregator.New(upstreams, cfg.pollInterval, apiToken, logger)
 	agg.Start(ctx)
 	logger.Info("aggregator started",
@@ -307,7 +316,7 @@ func runAggregate(cfg *serveConfig, logger *zap.Logger) error {
 }
 
 // runNormal runs normal mode (gRPC + REST + store) from an already-loaded cfg.
-func runNormal(cfg *serveConfig, logger *zap.Logger) error {
+func runNormal(parent context.Context, cfg *serveConfig, logger *zap.Logger) error {
 	st, err := store.New(cfg.dataDir)
 	if err != nil {
 		return fmt.Errorf("badger open: %w", err)
@@ -316,7 +325,7 @@ func runNormal(cfg *serveConfig, logger *zap.Logger) error {
 
 	reg := registry.New()
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
 	// Phase 4: mark agents inactive after 60s of silence, check every 30s

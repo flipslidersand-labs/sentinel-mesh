@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -204,5 +206,47 @@ func TestServeCmd_HTTPTLSBadFilesFailFast(t *testing.T) {
 	err := cmd.Execute()
 	if err == nil || !strings.Contains(err.Error(), "--http-tls-cert/--http-tls-key") {
 		t.Fatalf("expected TLS load error, got %v", err)
+	}
+}
+
+// run must return nil promptly once ctx is cancelled in normal mode (#265;
+// aggregate mode is not covered here). Listeners use port 0 on loopback; the
+// store lives in a tmp dir.
+//
+// Startup is detected via the "REST API listening" log, which is emitted just
+// before the servers are launched; the ports are :0 so they cannot be dialed,
+// and gRPC logs nothing on listen. A short grace sleep follows, so this does
+// not strictly guarantee the servers were accepting before cancel.
+func TestRun_ReturnsOnContextCancel(t *testing.T) {
+	cmd := serveCmd()
+	if err := cmd.ParseFlags([]string{"--http-auth=disabled", "--grpc-auth=disabled",
+		"--http-addr=127.0.0.1:0", "--grpc-addr=127.0.0.1:0", "--data-dir=" + t.TempDir()}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadServeConfig(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	core, logs := observer.New(zapcore.InfoLevel)
+	go func() { done <- run(ctx, cfg, zap.New(core)) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for logs.FilterMessage("REST API listening").Len() == 0 {
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatal("run did not reach REST API startup")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run returned %v after cancel", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("run did not return after ctx cancel")
 	}
 }
