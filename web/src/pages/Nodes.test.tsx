@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, type NodeInfo } from "../api";
 import { Nodes } from "./Nodes";
@@ -60,5 +60,33 @@ describe("Nodes page", () => {
     expect(screen.getByText("active").className).toContain("badge active");
     expect(screen.getByText("inactive").className).toContain("badge inactive");
     expect(screen.getByText("2h ago")).toBeTruthy();
+  });
+
+  it("keeps the previous table and shows an error banner when a later poll fails", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      nodesMock.mockResolvedValueOnce([
+        {
+          node_id: "node-1",
+          hostname: "host-a",
+          region: "jp-east",
+          status: "active",
+          last_seen: new Date().toISOString(),
+        },
+      ] as unknown as NodeInfo[]);
+      nodesMock.mockRejectedValue(new Error("collector down"));
+      render(<Nodes />);
+      expect(await screen.findByText("node-1")).toBeTruthy();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+
+      expect(await screen.findByText(/collector down/)).toBeTruthy();
+      expect(screen.getByText("node-1")).toBeTruthy();
+      expect(screen.getAllByRole("row")).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -12,36 +12,40 @@ export function Nodes() {
   const { data, error, loading } = usePolling<NodeInfo[]>(api.nodes);
 
   if (loading) return <div className="status">Loading…</div>;
-  if (error) return <div className="status error">{error}</div>;
+  // Keep showing the last good data when a later poll fails.
+  if (error && data === null) return <div className="status error">{error}</div>;
   const nodes = asArray<NodeInfo>(data);
-  if (!nodes.length) return <div className="status">No nodes registered</div>;
+  if (!nodes.length && !error) return <div className="status">No nodes registered</div>;
 
   return (
-    <table>
-      <thead>
-        <tr>
-          <th>Node ID</th>
-          <th>Hostname</th>
-          <th>Region</th>
-          <th>Status</th>
-          <th>Last Seen</th>
-        </tr>
-      </thead>
-      <tbody>
-        {nodes.map((n) => (
-          <tr key={n.node_id}>
-            <td className="mono">{n.node_id}</td>
-            <td>{n.hostname}</td>
-            <td>{n.region}</td>
-            <td>
-              <span className={`badge ${n.status === "active" ? "active" : "inactive"}`}>
-                {n.status}
-              </span>
-            </td>
-            <td>{timeSince(n.last_seen)}</td>
+    <>
+      {error && <div className="status error">{error}</div>}
+      <table>
+        <thead>
+          <tr>
+            <th>Node ID</th>
+            <th>Hostname</th>
+            <th>Region</th>
+            <th>Status</th>
+            <th>Last Seen</th>
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {nodes.map((n) => (
+            <tr key={n.node_id}>
+              <td className="mono">{n.node_id}</td>
+              <td>{n.hostname}</td>
+              <td>{n.region}</td>
+              <td>
+                <span className={`badge ${n.status === "active" ? "active" : "inactive"}`}>
+                  {n.status}
+                </span>
+              </td>
+              <td>{timeSince(n.last_seen)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </>
   );
 }
