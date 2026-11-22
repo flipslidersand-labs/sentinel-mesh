@@ -73,6 +73,9 @@ type Store struct {
 	// token records while this Store is open, so these are the only write
 	// paths. tokenIndexErr is the startup load error, if any: auth then fails
 	// closed instead of treating every token as unknown.
+	// tokensMu guards tokenIndex/tokenIndexErr only and is never held across
+	// Badger I/O; tokenWriteMu serializes IssueToken/RevokeToken (#243).
+	tokenWriteMu  sync.Mutex
 	tokensMu      sync.RWMutex
 	tokenIndex    map[string]string
 	tokenIndexErr error

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 )
 
 func newConcurrencyStore(t *testing.T) *Store {
@@ -197,5 +198,46 @@ func TestIssueToken_ReissueOverwritesRevokedRecord(t *testing.T) {
 	}
 	if len(recs) != 1 || recs[0].RevokedAt != nil {
 		t.Fatalf("records = %+v, want a single active record", recs)
+	}
+}
+
+// A slow token write must not stall LookupNodeID: the index lock is held only
+// for index updates, not across Badger I/O (#243).
+func TestLookupNodeID_NotBlockedBySlowTokenWrite(t *testing.T) {
+	st := newConcurrencyStore(t)
+	ctx := context.Background()
+	tok, err := st.IssueToken(ctx, "node-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	st.putTokenFn = func(context.Context, AgentToken) error {
+		close(entered)
+		<-release
+		return nil
+	}
+	done := make(chan error, 1)
+	go func() { done <- st.RevokeToken(ctx, "node-a") }()
+	<-entered
+
+	looked := make(chan struct{})
+	go func() {
+		st.LookupNodeID(ctx, tok)
+		close(looked)
+	}()
+	select {
+	case <-looked:
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("LookupNodeID blocked while a token write was in flight")
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("RevokeToken: %v", err)
+	}
+	if _, ok, _ := st.LookupNodeID(ctx, tok); ok {
+		t.Fatal("token still valid after revoke")
 	}
 }

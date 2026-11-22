@@ -59,13 +59,13 @@ func generateToken() (string, error) {
 // non-revoked token — RevokeToken it first to reissue. Reissuing after a
 // revoke overwrites the revoked record (same key per node_id), so the revoke
 // history is not retained; a generation-scoped key would be needed for that.
-// Concurrent calls for one node_id are serialized by tokensMu, so exactly one
+// Concurrent calls for one node_id are serialized by tokenWriteMu, so exactly one
 // succeeds and the others get ErrTokenExists (#323).
 func (s *Store) IssueToken(ctx context.Context, nodeID string) (string, error) {
 	// Held across read-check-write so concurrent issue/revoke for the same
 	// node can't leave the index disagreeing with what's on disk.
-	s.tokensMu.Lock()
-	defer s.tokensMu.Unlock()
+	s.tokenWriteMu.Lock()
+	defer s.tokenWriteMu.Unlock()
 
 	existing, err := s.getAgentToken(ctx, nodeID)
 	if err != nil {
@@ -90,7 +90,9 @@ func (s *Store) IssueToken(ctx context.Context, nodeID string) (string, error) {
 	if err := s.writeAgentToken(context.WithoutCancel(ctx), rec); err != nil {
 		return "", err
 	}
+	s.tokensMu.Lock()
 	s.tokenIndex[rec.TokenHash] = nodeID
+	s.tokensMu.Unlock()
 	return token, nil
 }
 
@@ -98,8 +100,8 @@ func (s *Store) IssueToken(ctx context.Context, nodeID string) (string, error) {
 // (returns nil) if nodeID has no token or is already revoked, so callers
 // don't need to check existence first.
 func (s *Store) RevokeToken(ctx context.Context, nodeID string) error {
-	s.tokensMu.Lock()
-	defer s.tokensMu.Unlock()
+	s.tokenWriteMu.Lock()
+	defer s.tokenWriteMu.Unlock()
 
 	rec, err := s.getAgentToken(ctx, nodeID)
 	if err != nil {
@@ -114,11 +116,15 @@ func (s *Store) RevokeToken(ctx context.Context, nodeID string) error {
 	// with WithoutCancel so a cancelled ctx can't return while the revoke
 	// commits in the background. The index entry is restored only when the
 	// write definitely failed (the record on disk is then still active).
+	s.tokensMu.Lock()
 	activeNodeID, wasActive := s.tokenIndex[rec.TokenHash]
 	delete(s.tokenIndex, rec.TokenHash)
+	s.tokensMu.Unlock()
 	if err := s.writeAgentToken(context.WithoutCancel(ctx), *rec); err != nil {
 		if wasActive {
+			s.tokensMu.Lock()
 			s.tokenIndex[rec.TokenHash] = activeNodeID
+			s.tokensMu.Unlock()
 		}
 		return err
 	}
