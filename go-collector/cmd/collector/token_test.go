@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 func runTokenCmd(t *testing.T, dataDir string, stdin string, args ...string) (stdout string, err error) {
@@ -132,5 +134,42 @@ func TestTokenIssue_OpenStoreErrorIsWrapped(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "stop it first") {
 		t.Errorf("expected hint about stopping the collector, got: %v", err)
+	}
+}
+
+// Subcommands run without the parent "token" command lack the persistent
+// --data-dir flag; the lookup error must surface instead of yielding "".
+func TestTokenSubcommands_UnknownFlagLookupErrors(t *testing.T) {
+	cases := map[string][]string{
+		"issue":  {"node-a"},
+		"revoke": {"--yes", "node-a"},
+		"list":   {},
+	}
+	ctors := map[string]func() *cobra.Command{
+		"issue": tokenIssueCmd, "revoke": tokenRevokeCmd, "list": tokenListCmd,
+	}
+	for name, args := range cases {
+		t.Run(name, func(t *testing.T) {
+			cmd := ctors[name]()
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs(args)
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), "flag accessed but not defined: "+flagDataDir) {
+				t.Fatalf("expected flag lookup error for %q, got %v", flagDataDir, err)
+			}
+		})
+	}
+}
+
+func TestTokenRevoke_MissingYesFlagErrors(t *testing.T) {
+	cmd := tokenRevokeCmd()
+	cmd.ResetFlags() // drop --yes to simulate a typo'd/missing name
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"node-a"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "flag accessed but not defined: "+flagYes) {
+		t.Fatalf("expected flag lookup error for %q, got %v", flagYes, err)
 	}
 }

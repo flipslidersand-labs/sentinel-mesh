@@ -26,6 +26,19 @@ func openTokenStore(dataDir string) (*store.Store, error) {
 	return st, nil
 }
 
+const (
+	flagDataDir = "data-dir"
+	flagYes     = "yes"
+)
+
+// tokenDataDir reads --data-dir, returning the lookup error instead of
+// silently yielding an empty path.
+func tokenDataDir(cmd *cobra.Command) (string, error) {
+	r := &flagReader{cmd: cmd}
+	dir := r.str(flagDataDir)
+	return dir, r.err
+}
+
 func tokenCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "token",
@@ -38,7 +51,7 @@ events/alerts (--data-dir, shared with "serve"). Because BadgerDB takes an
 exclusive lock on its directory, "sentinel-collector serve" must be stopped
 before running any token subcommand against the same --data-dir.`,
 	}
-	cmd.PersistentFlags().String("data-dir", "/tmp/sentinel-data", "BadgerDB data directory (must match the collector's --data-dir)")
+	cmd.PersistentFlags().String(flagDataDir, "/tmp/sentinel-data", "BadgerDB data directory (must match the collector's --data-dir)")
 	cmd.AddCommand(tokenIssueCmd(), tokenRevokeCmd(), tokenListCmd())
 	return cmd
 }
@@ -61,7 +74,10 @@ Fails if node_id already has an active (non-revoked) token; run
 			if nodeID == "" {
 				return fmt.Errorf("node_id must not be empty")
 			}
-			dataDir, _ := cmd.Flags().GetString("data-dir")
+			dataDir, err := tokenDataDir(cmd)
+			if err != nil {
+				return err
+			}
 			st, err := openTokenStore(dataDir)
 			if err != nil {
 				return err
@@ -95,7 +111,12 @@ Prompts for confirmation unless --yes is given.`,
 			if nodeID == "" {
 				return fmt.Errorf("node_id must not be empty")
 			}
-			yes, _ := cmd.Flags().GetBool("yes")
+			r := &flagReader{cmd: cmd}
+			yes := r.boolean(flagYes)
+			dataDir := r.str(flagDataDir)
+			if r.err != nil {
+				return r.err
+			}
 			if !yes {
 				fmt.Fprintf(cmd.OutOrStdout(), "Revoke token for node_id %q? [y/N] ", nodeID)
 				line, _ := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
@@ -104,7 +125,6 @@ Prompts for confirmation unless --yes is given.`,
 					return nil
 				}
 			}
-			dataDir, _ := cmd.Flags().GetString("data-dir")
 			st, err := openTokenStore(dataDir)
 			if err != nil {
 				return err
@@ -114,7 +134,7 @@ Prompts for confirmation unless --yes is given.`,
 			return st.RevokeToken(cmd.Context(), nodeID)
 		},
 	}
-	cmd.Flags().Bool("yes", false, "skip the confirmation prompt")
+	cmd.Flags().Bool(flagYes, false, "skip the confirmation prompt")
 	return cmd
 }
 
@@ -124,7 +144,10 @@ func tokenListCmd() *cobra.Command {
 		Short: "List all issued tokens",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			dataDir, _ := cmd.Flags().GetString("data-dir")
+			dataDir, err := tokenDataDir(cmd)
+			if err != nil {
+				return err
+			}
 			st, err := openTokenStore(dataDir)
 			if err != nil {
 				return err
