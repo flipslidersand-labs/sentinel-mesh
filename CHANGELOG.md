@@ -120,6 +120,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **go-collector:** `serve` now logs a warning when `--data-dir` is under `/tmp` (the unchanged default); README notes the default is for development only (#506). Newly created data directories are already mode 0700 (pinned by a test).
 - **web:** the Nodes page keeps showing the last fetched table and shows the error as a banner when a later poll fails; only a first-load error replaces the table (#254).
 - **go-collector:** `--upstreams` now rejects a duplicate region name at startup instead of silently ignoring one of the entries (#254).
 - **Collector:** `token issue <node_id>` now rejects node_ids that Register would always refuse (non-printable-ASCII or over 256 bytes) instead of issuing an unusable token (#254).

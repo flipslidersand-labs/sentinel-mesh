@@ -317,6 +317,7 @@ func runAggregate(ctx context.Context, cfg *serveConfig, logger *zap.Logger) err
 
 // runNormal runs normal mode (gRPC + REST + store) from an already-loaded cfg.
 func runNormal(parent context.Context, cfg *serveConfig, logger *zap.Logger) error {
+	warnIfTmpDataDir(logger, cfg.dataDir)
 	st, err := store.New(cfg.dataDir)
 	if err != nil {
 		return fmt.Errorf("badger open: %w", err)
