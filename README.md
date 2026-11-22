@@ -154,6 +154,8 @@ Options:
 
 token issue <node_id>    Issue a new token, printed once (never stored in plaintext)
 token revoke <node_id>   Revoke a token; prompts for confirmation unless --yes
+token revoke --force <key> Delete a damaged (undecodable) record by the key shown in the
+                         `token list` warning (e.g. agenttoken:<node_id>); no decoding
 token list               List every node_id with issued time and active/revoked status
 ```
 

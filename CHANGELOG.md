@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **go-collector:** `token revoke --force <record key>` deletes a token record that cannot be decoded (and so cannot be revoked by node_id), using the key shown in the `token list` warning. `token list` still exits 0 when it skips such records (#276).
 - **Agent / eBPF:** IPv6 TCP connections and IPv4 connections made through dual-stack
   AF_INET6 sockets (v4-mapped) are now emitted as TCP events; `TcpEvent` carries a family
   and 16-byte addresses (#429). Not yet verified on a real host (no CAP_BPF test): the
@@ -212,6 +213,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **go-collector (#457):** a re-sent duplicate event (same `node_id`/`event_id`) no longer re-runs alert evaluation, anomaly detection or event metrics; the Ack stays `ok=true`. Adds `store.SaveEventDedup`; `SaveEvent` keeps its signature.
 - **go-collector (#324):** the REST `region` filter is now applied inside the store scan, so `limit` counts matching records, and an unregistered region returns `[]` without scanning the store. If matches lie beyond the scan cap (`maxNodeFilterScan`), fewer than `limit` results are returned. The aggregator's upstream fetch is a separate path and is unchanged.
 - **go-collector (#494):** `token issue/revoke/list` now return flag lookup errors (via `flagReader`) instead of silently using an empty `--data-dir` or `--yes` value.
+- **web:** the Events table no longer produces duplicate React keys when events share an `event_id` (across nodes or before server-side dedup); rows are keyed by `node_id`, `event_id` and row index (#422, partial).
 
 ### Security
 

@@ -60,6 +60,28 @@ describe("Events page", () => {
     expect(within(table).getByText("raw-string")).toBeTruthy();
   });
 
+  it("renders rows with a duplicate event_id without a duplicate-key warning", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      eventsMock.mockResolvedValue([
+        event({ event_id: "dup", node_id: "n-a" }),
+        event({ event_id: "dup", node_id: "n-b" }),
+      ]);
+      render(<Events />);
+      await screen.findByText("n-a");
+
+      const table = screen.getByRole("table");
+      expect(within(table).getAllByRole("row")).toHaveLength(3); // header + 2
+      expect(screen.getByText("n-b")).toBeTruthy();
+      const sameKey = errorSpy.mock.calls.filter((c) =>
+        c.some((a) => typeof a === "string" && a.includes("same key")),
+      );
+      expect(sameKey).toHaveLength(0);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it("filters by type on the client", async () => {
     eventsMock.mockResolvedValue([
       event({ event_id: "e-1", node_id: "n-exec", type: "exec" }),

@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
 
+	badger "github.com/dgraph-io/badger/v4"
 	"github.com/spf13/cobra"
 )
 
@@ -196,5 +198,91 @@ func TestTokenIssue_AcceptsMaxLengthNodeID(t *testing.T) {
 	id := strings.Repeat("a", 256)
 	if _, err := runTokenCmd(t, t.TempDir(), "", "issue", id); err != nil {
 		t.Fatalf("token issue: %v", err)
+	}
+}
+
+// putBrokenTokenRecord writes an undecodable token record under key straight
+// into Badger (the store is closed between CLI invocations, so this is safe).
+func putBrokenTokenRecord(t *testing.T, dataDir, key string) {
+	t.Helper()
+	db, err := badger.Open(badger.DefaultOptions(dataDir).WithLogger(nil))
+	if err != nil {
+		t.Fatalf("open badger: %v", err)
+	}
+	defer db.Close() //nolint:errcheck
+	if err := db.Update(func(tx *badger.Txn) error {
+		return tx.Set([]byte(key), []byte(`{"node_id":"node-broken","token_hash":"trunc`))
+	}); err != nil {
+		t.Fatalf("raw put: %v", err)
+	}
+}
+
+// A record that cannot be decoded can't be revoked by node_id (#276); --force
+// removes it by its record key, and only that record.
+func TestTokenRevokeForce_RemovesBrokenRecord(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{"node-a", "node-b"} {
+		if _, err := runTokenCmd(t, dir, "", "issue", n); err != nil {
+			t.Fatalf("issue %s: %v", n, err)
+		}
+	}
+	const key = "agenttoken:node-broken"
+	putBrokenTokenRecord(t, dir, key)
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	// The list warning names the key to pass to --force.
+	if _, err := runTokenCmd(t, dir, "", "list"); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if !strings.Contains(buf.String(), key) {
+		t.Fatalf("list warning should contain %q, got %q", key, buf.String())
+	}
+
+	// Without --force the node_id path still fails on the broken record.
+	if _, err := runTokenCmd(t, dir, "", "revoke", "node-broken", "--yes"); err == nil {
+		t.Fatal("plain revoke of a broken record should fail")
+	}
+	if _, err := runTokenCmd(t, dir, "", "revoke", "--yes", "--force", key); err != nil {
+		t.Fatalf("revoke --force: %v", err)
+	}
+
+	buf.Reset()
+	out, err := runTokenCmd(t, dir, "", "list")
+	if err != nil {
+		t.Fatalf("list after force: %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("list should no longer warn, got %q", buf.String())
+	}
+	if !strings.Contains(out, "node-a") || !strings.Contains(out, "node-b") {
+		t.Errorf("healthy records must remain, got %q", out)
+	}
+}
+
+func TestTokenRevokeForce_UnknownKeyErrors(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := runTokenCmd(t, dir, "", "issue", "node-a"); err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	if _, err := runTokenCmd(t, dir, "", "revoke", "--yes", "--force", "agenttoken:nope"); err == nil {
+		t.Fatal("expected error for a record key that does not exist")
+	}
+	// Keys outside the token namespace are refused, never deleted.
+	if _, err := runTokenCmd(t, dir, "", "revoke", "--yes", "--force", "event:whatever"); err == nil {
+		t.Fatal("expected error for a key outside the agenttoken: namespace")
+	}
+	if out, _ := runTokenCmd(t, dir, "", "list"); !strings.Contains(out, "node-a") {
+		t.Errorf("node-a must remain, got %q", out)
+	}
+}
+
+// Without --force, a node_id that has no record is still a no-op (unchanged).
+func TestTokenRevoke_WithoutForceUnknownNodeIsNoop(t *testing.T) {
+	if _, err := runTokenCmd(t, t.TempDir(), "", "revoke", "--yes", "ghost"); err != nil {
+		t.Fatalf("revoke unknown node_id: %v", err)
 	}
 }
