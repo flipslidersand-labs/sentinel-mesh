@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	badger "github.com/dgraph-io/badger/v4"
@@ -45,6 +46,16 @@ var maxNodeFilterScan = 10000
 type Store struct {
 	db        *badger.DB
 	retention time.Duration
+	now       func() time.Time // clock for node-region write bookkeeping; tests replace it
+
+	// nodeRegionMu/nodeRegionAt remember when each node's region record was last
+	// written, so TouchNodeRegion refreshes the TTL only once less than half of
+	// it is left instead of on every event (#530). In memory only: after a
+	// restart the first touch of each node writes. nodeRegionWrites counts real
+	// writes (tests).
+	nodeRegionMu     sync.Mutex
+	nodeRegionAt     map[string]nodeRegionMark
+	nodeRegionWrites atomic.Int64
 
 	// inflight counts runWithContext goroutines still touching db, so Close
 	// can wait for them instead of closing the DB underneath a running View
@@ -108,13 +119,15 @@ func New(dir string) (*Store, error) {
 		return nil, err
 	}
 	s := &Store{
-		db:        db,
-		retention: DefaultRetention,
-		counters:  zeroCounters(),
-		sem:       make(chan struct{}, maxInflight),
-		readSem:   make(chan struct{}, maxReadInflight),
-		gcStop:    make(chan struct{}),
-		gcDone:    make(chan struct{}),
+		db:           db,
+		retention:    DefaultRetention,
+		now:          time.Now,
+		nodeRegionAt: map[string]nodeRegionMark{},
+		counters:     zeroCounters(),
+		sem:          make(chan struct{}, maxInflight),
+		readSem:      make(chan struct{}, maxReadInflight),
+		gcStop:       make(chan struct{}),
+		gcDone:       make(chan struct{}),
 	}
 	if err := s.loadCounters(); err != nil {
 		db.Close() //nolint:errcheck
