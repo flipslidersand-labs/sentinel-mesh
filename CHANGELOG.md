@@ -123,7 +123,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **go-collector:** `store.Store` operations started after `Close` now fail with `ErrClosed` instead of reaching the closed DB or racing the close-time wait, and `Close` is safe to call more than once (#422). The REST/gRPC layers do not yet map `ErrClosed` (nor `ErrBusy`) to a specific status.
+- **go-collector:** `store.Store` operations started after `Close` now fail fast with `ErrClosed` instead of racing the close-time wait (a `sync.WaitGroup` reuse panic under concurrent `Close`), and `Close` is safe to call more than once (it used to panic on the second call) (#422). The REST/gRPC layers do not yet map `ErrClosed` (nor `ErrBusy`) to a specific status.
 - **go-collector:** FILE/EXEC payload text (comm, cmdline, cwd, path) may now contain printable non-ASCII characters instead of the whole event being rejected, which let a single non-ASCII character in a file name evade detection; control characters, NUL, bidi/format characters and invalid UTF-8 are still rejected, and node_id/event_id/op stay ASCII-only (#251, #154).
 - **go-collector:** aggregate mode now serves `/api/stats` (event counts summed over upstream regions) so the UI Stats page no longer 404s, and `/api/nodes` merges in a deterministic node_id order (#251).
 - **go-collector/notify:** each notifier now gets its own send timeout instead of sharing one, so a slow notifier no longer causes the others to time out (#251).

@@ -17,25 +17,6 @@ func guardEvent(id string) model.Event {
 	return model.Event{EventID: id, NodeID: "n1", Timestamp: time.Now(), Type: "exec", Payload: json.RawMessage(`{}`)}
 }
 
-// Calls after Close must fail with an error instead of reaching the closed
-// DB (Badger panics with "DB Closed" on a goroutine nobody can recover, #422).
-func TestAfterClose_CallsReturnErrorWithoutPanic(t *testing.T) {
-	st, err := New(t.TempDir())
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if err := st.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	ctx := context.Background()
-	if _, err := st.SaveEventDedup(ctx, guardEvent("after-close")); err == nil {
-		t.Error("SaveEventDedup after Close returned nil error")
-	}
-	if _, err := st.ListEventsWhere(ctx, nil, 10); err == nil {
-		t.Error("ListEventsWhere after Close returned nil error")
-	}
-}
-
 // Close may be called more than once (deferred Close plus a shutdown path).
 func TestClose_MultipleCallsDoNotPanic(t *testing.T) {
 	st, err := New(t.TempDir())
@@ -96,6 +77,8 @@ func TestClose_ConcurrentWithOperations(t *testing.T) {
 	wg.Wait()
 }
 
+// Operations started after Close fail fast with ErrClosed instead of racing the
+// close-time wait (#422).
 func TestAfterClose_ReturnsErrClosed(t *testing.T) {
 	st, err := New(t.TempDir())
 	if err != nil {
