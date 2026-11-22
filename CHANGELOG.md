@@ -7,11 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **go-collector:** `--upstreams` now rejects a duplicate region name at startup instead of silently ignoring one of the entries (#254).
-- **web:** the Nodes page keeps showing the last fetched table and shows the error as a banner when a later poll fails; only a first-load error replaces the table (#254).
-
 ### Added
 
 - **Agent / eBPF:** IPv6 TCP connections and IPv4 connections made through dual-stack
@@ -125,6 +120,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **web:** the Nodes page keeps showing the last fetched table and shows the error as a banner when a later poll fails; only a first-load error replaces the table (#254).
+- **go-collector:** `--upstreams` now rejects a duplicate region name at startup instead of silently ignoring one of the entries (#254).
 - **Collector:** `token issue <node_id>` now rejects node_ids that Register would always refuse (non-printable-ASCII or over 256 bytes) instead of issuing an unusable token (#254).
 - **Collector (#491):** an anomaly alert whose save failed is now saved when the agent resends the same event, without double-counting it in the detector. The pending alert is kept in memory only (lost on restart).
 - **rust-agent (#241):** events taken from the queue but not yet acked are now kept (up to 2048 events or 2 MiB) and re-sent first after a reconnect (at-least-once), instead of being discarded. Re-sent events can reach the collector twice; it dedups by `event_id` within its retention window. The queue does not survive process exit. Events acked `ok=false` are not re-sent unless the collector marks them retryable (#488).
