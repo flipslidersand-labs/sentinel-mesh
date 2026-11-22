@@ -74,7 +74,7 @@ func TestEvents_SkewedAgentClockDoesNotDominate(t *testing.T) {
 	if got := getEventIDs(t, a, "/api/events?limit=1"); len(got) != 1 || got[0] != "fresh" {
 		t.Fatalf("limit=1 = %v, want [fresh]", got)
 	}
-	if got := a.Events(); len(got) != 3 || got[0].EventID != "fresh" || got[1].EventID != "skewed" || got[2].EventID != "older" {
+	if got := a.EventsIn(""); len(got) != 3 || got[0].EventID != "fresh" || got[1].EventID != "skewed" || got[2].EventID != "older" {
 		t.Fatalf("Events() = %+v, want upstream order", got)
 	}
 }

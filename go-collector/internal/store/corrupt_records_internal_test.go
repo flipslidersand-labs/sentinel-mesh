@@ -29,7 +29,7 @@ func TestCorruptEventRecord_Skipped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SaveEvent(ctx, model.Event{EventID: "good", NodeID: "n1", Type: "exec", Timestamp: time.Now()}); err != nil {
+	if _, err := st.SaveEventDedup(ctx, model.Event{EventID: "good", NodeID: "n1", Type: "exec", Timestamp: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	putRaw(t, st, "event:2000-01-01T00:00:00.000000000Z:bad1", `{"event_id":"bad1`)
@@ -49,7 +49,7 @@ func TestCorruptEventRecord_Skipped(t *testing.T) {
 	}
 
 	buf.Reset()
-	evs, err := st.ListEvents(ctx, "", 10)
+	evs, err := st.ListEventsWhere(ctx, nil, 10)
 	if err != nil || len(evs) != 1 || evs[0].EventID != "good" {
 		t.Fatalf("ListEvents = %v, %v; want only good", evs, err)
 	}
@@ -67,7 +67,7 @@ func TestCorruptAlertRecord_Skipped(t *testing.T) {
 	putRaw(t, st, "alert:2000-01-01T00:00:00.000000000Z:bad", `{"alert_id":`)
 
 	buf := captureLogs(t)
-	al, err := st.ListAlerts(ctx, "", 10)
+	al, err := st.ListAlertsWhere(ctx, nil, 10)
 	if err != nil || len(al) != 1 || al[0].AlertID != "good" {
 		t.Fatalf("ListAlerts = %v, %v; want only good", al, err)
 	}

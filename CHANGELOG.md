@@ -39,6 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **go-collector (#469):** removed test-only/unused code (`Store.SaveEvent`/`ListEvents`/`ListAlerts`, `runHTTPServerUntilDone`, `sendMailContext`, `Aggregator.Events`/`Alerts`, `authlimit.Limiter.Tracked`, the `receiver` authfail alias file); tests use the `*Dedup`/`*Where`/`*In` APIs. No behavior change.
+- **go-collector:** `serve` now builds and starts the server in `run(ctx, cfg, logger)`; the logger and the signal-aware ctx are created in `RunE`, so `run` returns when ctx is cancelled. The `--grpc-addr` flag name is now a shared constant (no behavior change) (#265).
 - **go-collector:** `validateKernelEvent` now reads per-type fields from the `eventtype` table instead of a type switch; behaviour unchanged (#353).
 - **refactor (#421):** removed the unreachable heartbeat-timeout fallback in `registry.StartHeartbeatChecker` (caller validates), and bundled the per-connection parameters of the rust-agent gRPC session functions into one struct (no behavior change).
 - **rust-agent (#477):** eBPF loader (`--features ebpf`) no longer uses deprecated APIs: `aya::Bpf` -> `aya::Ebpf`, `AsyncFd::new` -> `unsafe AsyncFd::register` (workspace tokio minimum raised to 1.54). Ring buffer ownership is unchanged. Not verified on a real eBPF run; compile/clippy/test only.
@@ -117,6 +119,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Collector (#491):** an anomaly alert whose save failed is now saved when the agent resends the same event, without double-counting it in the detector. The pending alert is kept in memory only (lost on restart).
 - **rust-agent (#241):** events taken from the queue but not yet acked are now kept (up to 2048 events or 2 MiB) and re-sent first after a reconnect (at-least-once), instead of being discarded. Re-sent events can reach the collector twice; it dedups by `event_id` within its retention window. The queue does not survive process exit. Events acked `ok=false` are not re-sent unless the collector marks them retryable (#488).
 - **proto/collector/rust-agent (#488):** `EventAck` gains `reason` (`AckReason`: `INVALID`, `RATE_LIMITED`, `RETRYABLE`). The collector sets `RETRYABLE` when saving an event or alert fails, `INVALID` for validation / node_id mismatch, `RATE_LIMITED` for throttling. The agent re-sends only `RETRYABLE` events, at the back of the queue with exponential backoff, up to 5 times, then drops them with a warning. A reason-less `ok=false` (older collector) is still not re-sent. Wire-compatible in both directions (new field 2).
 - **rust-agent (#432):** EXEC events now carry `ppid` and `cmdline` (argv joined by spaces, ASCII-sanitized (bytes outside 0x20-0x7E become `?`) and capped at 256 bytes to match the collector limit), read in userspace from `/proc/<pid>/status` and `/proc/<pid>/cmdline`. Very short-lived processes that exit before the read still report `ppid` 0 / empty `cmdline`. Not verified on a real eBPF run.
@@ -195,6 +198,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **deploy-agent (#420):** `scripts/deploy-agent.sh` now refuses `--grpc-token` without `--tls` when the collector is not loopback (`localhost`, `127.0.0.0/8`), before anything is uploaded, matching the agent's own startup check.
 - **go-collector (#252):** bump `go` in `go.mod` from 1.26.10 to 1.26.11 to pick up the standard-library `net/http` fix for GO-2026-6859; `govulncheck` now reports 0 affected vulnerabilities.
 - **rust-agent (#470):** the plaintext-token loopback check now also ends the collector authority at `#`, so `http://<remote>#@127.0.0.1:50051` is rejected instead of sending the token in plaintext to the remote host.
 - **ci/rust-agent (#420):** pin all GitHub Actions in `ci.yml` to commit SHAs, set top-level `permissions: contents: read`, and hide `SENTINEL_API_TOKEN` from the agent's `--help` output (`hide_env_values`).

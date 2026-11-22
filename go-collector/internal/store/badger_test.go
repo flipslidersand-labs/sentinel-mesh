@@ -39,12 +39,12 @@ func TestListEvents_NoFilter(t *testing.T) {
 		{"node-b", "tcp"},
 		{"node-a", "file"},
 	} {
-		if err := st.SaveEvent(context.Background(), makeEvent(args[0], args[1], i)); err != nil {
+		if _, err := st.SaveEventDedup(context.Background(), makeEvent(args[0], args[1], i)); err != nil {
 			t.Fatalf("SaveEvent: %v", err)
 		}
 	}
 
-	got, err := st.ListEvents(context.Background(), "", 100)
+	got, err := st.ListEventsWhere(context.Background(), nil, 100)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
@@ -63,12 +63,12 @@ func TestListEvents_NodeFilter(t *testing.T) {
 		{"node-b", "tcp"},
 	}
 	for i, args := range saves {
-		if err := st.SaveEvent(context.Background(), makeEvent(args[0], args[1], i)); err != nil {
+		if _, err := st.SaveEventDedup(context.Background(), makeEvent(args[0], args[1], i)); err != nil {
 			t.Fatalf("SaveEvent: %v", err)
 		}
 	}
 
-	gotA, err := st.ListEvents(context.Background(), "node-a", 100)
+	gotA, err := st.ListEventsWhere(context.Background(), func(id string) bool { return id == "node-a" }, 100)
 	if err != nil {
 		t.Fatalf("ListEvents node-a: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestListEvents_NodeFilter(t *testing.T) {
 		}
 	}
 
-	gotB, err := st.ListEvents(context.Background(), "node-b", 100)
+	gotB, err := st.ListEventsWhere(context.Background(), func(id string) bool { return id == "node-b" }, 100)
 	if err != nil {
 		t.Fatalf("ListEvents node-b: %v", err)
 	}
@@ -92,11 +92,11 @@ func TestListEvents_NodeFilter(t *testing.T) {
 
 func TestListEvents_NodeFilter_Unknown(t *testing.T) {
 	st := newTempStore(t)
-	if err := st.SaveEvent(context.Background(), makeEvent("node-a", "exec", 0)); err != nil {
+	if _, err := st.SaveEventDedup(context.Background(), makeEvent("node-a", "exec", 0)); err != nil {
 		t.Fatalf("SaveEvent: %v", err)
 	}
 
-	got, err := st.ListEvents(context.Background(), "node-x", 100)
+	got, err := st.ListEventsWhere(context.Background(), func(id string) bool { return id == "node-x" }, 100)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestSaveEvent_AgentTimestampCannotPinOrdering(t *testing.T) {
 		Type:      "exec",
 		Payload:   json.RawMessage(`{}`),
 	}
-	if err := st.SaveEvent(context.Background(), honest); err != nil {
+	if _, err := st.SaveEventDedup(context.Background(), honest); err != nil {
 		t.Fatalf("SaveEvent(honest): %v", err)
 	}
 
@@ -132,11 +132,11 @@ func TestSaveEvent_AgentTimestampCannotPinOrdering(t *testing.T) {
 		Type:      "exec",
 		Payload:   json.RawMessage(`{}`),
 	}
-	if err := st.SaveEvent(context.Background(), malicious); err != nil {
+	if _, err := st.SaveEventDedup(context.Background(), malicious); err != nil {
 		t.Fatalf("SaveEvent(malicious): %v", err)
 	}
 
-	got, err := st.ListEvents(context.Background(), "", 100)
+	got, err := st.ListEventsWhere(context.Background(), nil, 100)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
@@ -158,12 +158,12 @@ func TestSaveEvent_AgentTimestampCannotPinOrdering(t *testing.T) {
 func TestListEvents_Limit_WithFilter(t *testing.T) {
 	st := newTempStore(t)
 	for i := 0; i < 5; i++ {
-		if err := st.SaveEvent(context.Background(), makeEvent("node-a", "exec", i)); err != nil {
+		if _, err := st.SaveEventDedup(context.Background(), makeEvent("node-a", "exec", i)); err != nil {
 			t.Fatalf("SaveEvent: %v", err)
 		}
 	}
 
-	got, err := st.ListEvents(context.Background(), "node-a", 3)
+	got, err := st.ListEventsWhere(context.Background(), func(id string) bool { return id == "node-a" }, 3)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestListEvents_Limit_WithFilter(t *testing.T) {
 func TestStats_MatchesSavedEvents(t *testing.T) {
 	st := newTempStore(t)
 	for i, typ := range []string{"exec", "exec", "tcp", "file", "file", "file"} {
-		if err := st.SaveEvent(context.Background(), makeEvent("node-a", typ, i)); err != nil {
+		if _, err := st.SaveEventDedup(context.Background(), makeEvent("node-a", typ, i)); err != nil {
 			t.Fatalf("SaveEvent: %v", err)
 		}
 	}
@@ -202,7 +202,7 @@ func TestStats_SurvivesRestart(t *testing.T) {
 		t.Fatalf("store.New: %v", err)
 	}
 	for i, typ := range []string{"exec", "tcp", "tcp"} {
-		if err := st1.SaveEvent(context.Background(), makeEvent("node-a", typ, i)); err != nil {
+		if _, err := st1.SaveEventDedup(context.Background(), makeEvent("node-a", typ, i)); err != nil {
 			t.Fatalf("SaveEvent: %v", err)
 		}
 	}
@@ -243,7 +243,7 @@ func TestListAlerts_NoFilter(t *testing.T) {
 		}
 	}
 
-	got, err := st.ListAlerts(context.Background(), "", 100)
+	got, err := st.ListAlertsWhere(context.Background(), nil, 100)
 	if err != nil {
 		t.Fatalf("ListAlerts: %v", err)
 	}
@@ -260,7 +260,7 @@ func TestListAlerts_NodeFilter(t *testing.T) {
 		}
 	}
 
-	gotA, err := st.ListAlerts(context.Background(), "node-a", 100)
+	gotA, err := st.ListAlertsWhere(context.Background(), func(id string) bool { return id == "node-a" }, 100)
 	if err != nil {
 		t.Fatalf("ListAlerts node-a: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestListAlerts_NodeFilter_Unknown(t *testing.T) {
 		t.Fatalf("SaveAlert: %v", err)
 	}
 
-	got, err := st.ListAlerts(context.Background(), "node-x", 100)
+	got, err := st.ListAlertsWhere(context.Background(), func(id string) bool { return id == "node-x" }, 100)
 	if err != nil {
 		t.Fatalf("ListAlerts: %v", err)
 	}
@@ -297,7 +297,7 @@ func TestListAlerts_Limit(t *testing.T) {
 		}
 	}
 
-	got, err := st.ListAlerts(context.Background(), "node-a", 3)
+	got, err := st.ListAlertsWhere(context.Background(), func(id string) bool { return id == "node-a" }, 3)
 	if err != nil {
 		t.Fatalf("ListAlerts: %v", err)
 	}
@@ -312,7 +312,7 @@ func TestListAlerts_Limit(t *testing.T) {
 // "null" instead of "[]", which can break clients that assume an array.
 func TestListEvents_EmptyStore_ReturnsNonNilSlice(t *testing.T) {
 	st := newTempStore(t)
-	got, err := st.ListEvents(context.Background(), "", 100)
+	got, err := st.ListEventsWhere(context.Background(), nil, 100)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
@@ -323,7 +323,7 @@ func TestListEvents_EmptyStore_ReturnsNonNilSlice(t *testing.T) {
 
 func TestListAlerts_EmptyStore_ReturnsNonNilSlice(t *testing.T) {
 	st := newTempStore(t)
-	got, err := st.ListAlerts(context.Background(), "", 100)
+	got, err := st.ListAlertsWhere(context.Background(), nil, 100)
 	if err != nil {
 		t.Fatalf("ListAlerts: %v", err)
 	}
@@ -340,10 +340,10 @@ func TestSaveEvent_StampsReceivedAt(t *testing.T) {
 	e := makeEvent("node-a", "exec", 1)
 	e.ReceivedAt = forged
 	before := time.Now().Add(-time.Second)
-	if err := st.SaveEvent(context.Background(), e); err != nil {
+	if _, err := st.SaveEventDedup(context.Background(), e); err != nil {
 		t.Fatal(err)
 	}
-	got, err := st.ListEvents(context.Background(), "", 10)
+	got, err := st.ListEventsWhere(context.Background(), nil, 10)
 	if err != nil || len(got) != 1 {
 		t.Fatalf("ListEvents = %v, %v", got, err)
 	}

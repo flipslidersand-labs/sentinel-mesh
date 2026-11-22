@@ -14,6 +14,8 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
+
+	"github.com/flipslidersand/sentinel-mesh/internal/authlimit"
 )
 
 func authCtx(ip, token string) context.Context {
@@ -33,9 +35,9 @@ func (c *fakeClock) add(d time.Duration) {
 	c.mu.Unlock()
 }
 
-func newTestLimiter() (*authFailLimiter, *fakeClock) {
+func newTestLimiter() (*authlimit.Limiter, *fakeClock) {
 	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
-	l := newAuthFailLimiter()
+	l := authlimit.New()
 	l.Now = clk.now
 	return l, clk
 }
@@ -43,7 +45,7 @@ func newTestLimiter() (*authFailLimiter, *fakeClock) {
 func TestCheckAuth_RateLimitsRepeatedFailuresPerIP(t *testing.T) {
 	lim, _ := newTestLimiter()
 	st := newAuthTestStore(t)
-	for i := 0; i < int(authFailBurst); i++ {
+	for i := 0; i < int(authlimit.Burst); i++ {
 		_, err := checkAuthLimited(authCtx("203.0.113.1", "bad"), st, true, lim)
 		assertUnauthenticated(t, err)
 	}
@@ -69,14 +71,14 @@ func TestAuthFailLimiter_ConcurrentReserveIsAtomic(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if got := passed.Load(); got != int64(authFailBurst) {
-		t.Fatalf("expected exactly %d to pass, got %d", int(authFailBurst), got)
+	if got := passed.Load(); got != int64(authlimit.Burst) {
+		t.Fatalf("expected exactly %d to pass, got %d", int(authlimit.Burst), got)
 	}
 }
 
 func TestAuthFailLimiter_RecoversOverTime(t *testing.T) {
 	lim, clk := newTestLimiter()
-	for i := 0; i < int(authFailBurst); i++ {
+	for i := 0; i < int(authlimit.Burst); i++ {
 		lim.Reserve("198.51.100.7")
 	}
 	if lim.Reserve("198.51.100.7") {
@@ -98,7 +100,7 @@ func TestCheckAuth_SuccessLeavesNoLimiterEntry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < int(authFailBurst)*3; i++ {
+	for i := 0; i < int(authlimit.Burst)*3; i++ {
 		if _, err := checkAuthLimited(authCtx("203.0.113.9", token), st, true, lim); err != nil {
 			t.Fatalf("valid attempt %d rejected: %v", i, err)
 		}
@@ -110,7 +112,7 @@ func TestCheckAuth_SuccessLeavesNoLimiterEntry(t *testing.T) {
 
 func TestAuthFailLimiter_IPv6SharesSlash64(t *testing.T) {
 	lim, _ := newTestLimiter()
-	for i := 0; i < int(authFailBurst); i++ {
+	for i := 0; i < int(authlimit.Burst); i++ {
 		lim.Reserve("2001:db8:1:2::1")
 	}
 	if lim.Reserve("2001:db8:1:2:ffff::9") {
@@ -125,7 +127,7 @@ func TestAuthFailLimiter_CapEvictsOldestAndKeepsTracking(t *testing.T) {
 	lim, clk := newTestLimiter()
 	lim.MaxKeys = 3
 	for _, ip := range []string{"192.0.2.1", "192.0.2.2", "192.0.2.3"} {
-		for i := 0; i < int(authFailBurst); i++ {
+		for i := 0; i < int(authlimit.Burst); i++ {
 			lim.Reserve(ip)
 		}
 		clk.add(time.Second)
@@ -134,11 +136,13 @@ func TestAuthFailLimiter_CapEvictsOldestAndKeepsTracking(t *testing.T) {
 	if lim.Len() != 3 {
 		t.Fatalf("table size %d, want 3", lim.Len())
 	}
-	if lim.Tracked("192.0.2.1") {
+	// An evicted source restarts with a full bucket, whereas a still-tracked
+	// one has spent its burst (refill is far slower than the 2s elapsed).
+	if !lim.Reserve("192.0.2.1") {
 		t.Fatal("oldest entry should be evicted")
 	}
 	// New IP is tracked (not fail-open): it gets throttled after its burst.
-	for i := 0; i < int(authFailBurst)-1; i++ {
+	for i := 0; i < int(authlimit.Burst)-1; i++ {
 		lim.Reserve("192.0.2.4")
 	}
 	if lim.Reserve("192.0.2.4") {
@@ -158,7 +162,7 @@ func TestStreamAuthInterceptor_RateLimits(t *testing.T) {
 	st := newAuthTestStore(t)
 	itc := streamAuthInterceptor(st, true, lim)
 	handler := func(any, grpc.ServerStream) error { return nil }
-	for i := 0; i < int(authFailBurst); i++ {
+	for i := 0; i < int(authlimit.Burst); i++ {
 		err := itc(nil, authFakeStream{ctx: authCtx("203.0.113.5", "bad")}, &grpc.StreamServerInfo{}, handler)
 		assertUnauthenticated(t, err)
 	}
@@ -179,7 +183,7 @@ func TestCheckAuth_ValidTokenPassesWhenIPExhausted(t *testing.T) {
 		t.Fatalf("IssueToken: %v", err)
 	}
 	const ip = "198.51.100.7"
-	for i := 0; i < int(authFailBurst); i++ {
+	for i := 0; i < int(authlimit.Burst); i++ {
 		_, err := checkAuthLimited(authCtx(ip, "bad"), st, true, lim)
 		assertUnauthenticated(t, err)
 	}
@@ -205,7 +209,7 @@ func TestCheckAuth_WrongLengthTokenCountsAsFailure(t *testing.T) {
 	st := newAuthTestStore(t)
 	const ip = "198.51.100.9"
 	huge := strings.Repeat("x", 1<<20)
-	for i := 0; i < int(authFailBurst); i++ {
+	for i := 0; i < int(authlimit.Burst); i++ {
 		_, err := checkAuthLimited(authCtx(ip, huge), st, true, lim)
 		assertUnauthenticated(t, err)
 	}

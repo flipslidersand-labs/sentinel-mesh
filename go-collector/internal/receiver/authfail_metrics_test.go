@@ -9,6 +9,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/flipslidersand/sentinel-mesh/internal/authlimit"
 	"github.com/flipslidersand/sentinel-mesh/internal/otel"
 	"github.com/flipslidersand/sentinel-mesh/internal/store"
 )
@@ -30,12 +31,12 @@ func TestCheckAuth_RecordsFailureReasons(t *testing.T) {
 	}
 
 	// invalid tokens up to the burst, then rate limited
-	for i := 0; i < int(authFailBurst); i++ {
+	for i := 0; i < int(authlimit.Burst); i++ {
 		_, _ = checkAuthLimited(authCtx("203.0.113.1", "bad"), st, true, lim)
 	}
 	_, _ = checkAuthLimited(authCtx("203.0.113.1", "bad"), st, true, lim)
-	if got[otel.AuthFailInvalidToken] != int(authFailBurst) {
-		t.Fatalf("invalid_token = %d, want %d (%v)", got[otel.AuthFailInvalidToken], int(authFailBurst), got)
+	if got[otel.AuthFailInvalidToken] != int(authlimit.Burst) {
+		t.Fatalf("invalid_token = %d, want %d (%v)", got[otel.AuthFailInvalidToken], int(authlimit.Burst), got)
 	}
 	if got[otel.AuthFailRateLimited] != 1 {
 		t.Fatalf("rate_limited = %d, want 1 (%v)", got[otel.AuthFailRateLimited], got)
