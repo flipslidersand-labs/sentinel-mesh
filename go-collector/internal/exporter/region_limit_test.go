@@ -70,12 +70,13 @@ func TestRegionFilter_LimitCountsMatches(t *testing.T) {
 
 type countingData struct {
 	fakeData
-	calls int
+	calls      int // alert listings
+	eventCalls int
 }
 
-func (c *countingData) ListEventsWhere(ctx context.Context, keep func(string) bool, n int) ([]model.Event, error) {
-	c.calls++
-	return c.fakeData.ListEventsWhere(ctx, keep, n)
+func (c *countingData) ListEventsMatching(ctx context.Context, keep func(model.Event) bool, n int) ([]model.Event, error) {
+	c.eventCalls++
+	return c.fakeData.ListEventsMatching(ctx, keep, n)
 }
 
 func (c *countingData) ListAlertsWhere(ctx context.Context, keep func(string) bool, n int) ([]model.Alert, error) {
@@ -83,8 +84,10 @@ func (c *countingData) ListAlertsWhere(ctx context.Context, keep func(string) bo
 	return c.fakeData.ListAlertsWhere(ctx, keep, n)
 }
 
-// An unregistered region has no nodes, so nothing can match: answer [] without
-// scanning the store (up to maxNodeFilterScan records otherwise).
+// An unregistered region has no nodes, so no alert can match (alerts carry no
+// region): answer [] without scanning the store (up to maxNodeFilterScan
+// records otherwise). Events are the exception since #512: they carry their own
+// region, so events of an evicted node may still match and the store is scanned.
 func TestRegionFilter_UnknownRegionSkipsStore(t *testing.T) {
 	f := &countingData{}
 	r := Router(RouterConfig{Events: f, Alerts: f, Stats: f, Nodes: registry.New(), StaticDir: t.TempDir(), APIToken: "unused-test-value-0123456789abcdef"})
@@ -98,6 +101,9 @@ func TestRegionFilter_UnknownRegionSkipsStore(t *testing.T) {
 		}
 	}
 	if f.calls != 0 {
-		t.Errorf("store called %d times for an unknown region, want 0", f.calls)
+		t.Errorf("alert store called %d times for an unknown region, want 0", f.calls)
+	}
+	if f.eventCalls != 1 {
+		t.Errorf("event store called %d times for an unknown region, want 1", f.eventCalls)
 	}
 }
