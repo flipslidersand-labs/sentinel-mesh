@@ -41,7 +41,7 @@ func startSilentServer(t *testing.T, greet bool) string {
 
 // Regression guard for #109/#132: an unresponsive SMTP server must not block
 // past the ctx deadline.
-func TestSendMailContext_UnresponsiveServerHonorsDeadline(t *testing.T) {
+func TestSendMail_UnresponsiveServerHonorsDeadline(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		greet bool
@@ -57,7 +57,7 @@ func TestSendMailContext_UnresponsiveServerHonorsDeadline(t *testing.T) {
 			res := make(chan error, 1)
 			start := time.Now()
 			go func() {
-				res <- sendMailContext(ctx, addr, nil, "a@x", []string{"b@x"}, []byte("x\r\n"))
+				res <- sendMailWithOptions(ctx, addr, nil, "a@x", []string{"b@x"}, []byte("x\r\n"), smtpOptions{})
 			}()
 			select {
 			case err := <-res:
@@ -68,16 +68,16 @@ func TestSendMailContext_UnresponsiveServerHonorsDeadline(t *testing.T) {
 					t.Fatalf("returned after %v, want close to the 200ms deadline", el)
 				}
 			case <-time.After(3 * time.Second):
-				t.Fatal("sendMailContext did not return after ctx deadline (hung)")
+				t.Fatal("sendMailWithOptions did not return after ctx deadline (hung)")
 			}
 		})
 	}
 }
 
-func TestSendMailContext_DeliversMessage(t *testing.T) {
+func TestSendMail_DeliversMessage(t *testing.T) {
 	cert, _ := newTestCert(t)
 	s := startFakeSMTP(t, false, cert)
-	err := sendMailContext(context.Background(), s.ln.Addr().String(), nil, "from@x", []string{"a@x", "b@x"}, []byte("Subject: hi\r\n\r\nhello-body\r\n"))
+	err := sendMailWithOptions(context.Background(), s.ln.Addr().String(), nil, "from@x", []string{"a@x", "b@x"}, []byte("Subject: hi\r\n\r\nhello-body\r\n"), smtpOptions{})
 	if err != nil {
 		t.Fatalf("send: %v", err)
 	}
@@ -94,11 +94,11 @@ func TestSendMailContext_DeliversMessage(t *testing.T) {
 	}
 }
 
-func TestSendMailContext_RcptRejected(t *testing.T) {
+func TestSendMail_RcptRejected(t *testing.T) {
 	cert, _ := newTestCert(t)
 	s := startFakeSMTP(t, false, cert)
 	s.rejectRcpt = "bad@x"
-	err := sendMailContext(context.Background(), s.ln.Addr().String(), nil, "from@x", []string{"ok@x", "bad@x"}, []byte("x\r\n"))
+	err := sendMailWithOptions(context.Background(), s.ln.Addr().String(), nil, "from@x", []string{"ok@x", "bad@x"}, []byte("x\r\n"), smtpOptions{})
 	if err == nil || !strings.Contains(err.Error(), "550") {
 		t.Fatalf("expected 550 error, got %v", err)
 	}
@@ -109,14 +109,14 @@ func TestSendMailContext_RcptRejected(t *testing.T) {
 	}
 }
 
-func TestSendMailContext_DialFailure(t *testing.T) {
+func TestSendMail_DialFailure(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	addr := ln.Addr().String()
 	ln.Close() // nothing listens now
-	if err := sendMailContext(context.Background(), addr, nil, "a@x", []string{"b@x"}, []byte("x")); err == nil {
+	if err := sendMailWithOptions(context.Background(), addr, nil, "a@x", []string{"b@x"}, []byte("x"), smtpOptions{}); err == nil {
 		t.Fatal("expected dial error")
 	}
 }
@@ -125,7 +125,7 @@ func TestSendMailContext_DialFailure(t *testing.T) {
 // server that does not advertise AUTH, sending fails closed (same as
 // net/smtp.SendMail: "server doesn't support AUTH") and no message is
 // delivered (issue #247). Without credentials, no auth is attempted.
-func TestSendMailContext_AuthBranches(t *testing.T) {
+func TestSendMail_AuthBranches(t *testing.T) {
 	cert, _ := newTestCert(t)
 	for _, tc := range []struct {
 		name     string
@@ -142,7 +142,7 @@ func TestSendMailContext_AuthBranches(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := startFakeSMTP(t, false, cert)
 			s.noAuthExt = tc.noAuth
-			err := sendMailContext(context.Background(), s.ln.Addr().String(), tc.auth, "a@x", []string{"b@x"}, []byte("x\r\n"))
+			err := sendMailWithOptions(context.Background(), s.ln.Addr().String(), tc.auth, "a@x", []string{"b@x"}, []byte("x\r\n"), smtpOptions{})
 			if tc.wantErr {
 				if err == nil || !strings.Contains(err.Error(), "AUTH") {
 					t.Fatalf("want AUTH error, got %v", err)

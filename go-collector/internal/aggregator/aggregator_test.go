@@ -169,10 +169,10 @@ func TestAggregator_MergeAndReachability(t *testing.T) {
 	if nodes := agg.Nodes(); len(nodes) != 2 {
 		t.Errorf("nodes = %d, want 2 (only us-east)", len(nodes))
 	}
-	if events := agg.Events(); len(events) != 1 {
+	if events := agg.EventsIn(""); len(events) != 1 {
 		t.Errorf("events = %d, want 1", len(events))
 	}
-	if alerts := agg.Alerts(); len(alerts) != 1 {
+	if alerts := agg.AlertsIn(""); len(alerts) != 1 {
 		t.Errorf("alerts = %d, want 1", len(alerts))
 	}
 
@@ -277,8 +277,8 @@ func TestAggregator_Start(t *testing.T) {
 	if n := agg.Nodes(); len(n) != 1 || n[0].NodeID != "a1" {
 		t.Fatalf("Nodes() right after Start = %+v", n)
 	}
-	if len(agg.Events()) != 1 || len(agg.Alerts()) != 1 {
-		t.Fatalf("events/alerts right after Start = %d/%d, want 1/1", len(agg.Events()), len(agg.Alerts()))
+	if len(agg.EventsIn("")) != 1 || len(agg.AlertsIn("")) != 1 {
+		t.Fatalf("events/alerts right after Start = %d/%d, want 1/1", len(agg.EventsIn("")), len(agg.AlertsIn("")))
 	}
 	if r := agg.Regions(); len(r) != 1 || !r[0].Reachable {
 		t.Fatalf("Regions() right after Start = %+v", r)

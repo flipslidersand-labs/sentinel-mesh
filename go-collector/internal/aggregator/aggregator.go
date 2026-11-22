@@ -282,9 +282,6 @@ func (a *Aggregator) Nodes() []registry.AgentNode {
 	return out
 }
 
-// Events returns merged events across all reachable regions, newest first.
-func (a *Aggregator) Events() []model.Event { return a.EventsIn("") }
-
 // cachedEvents returns one reachable region's cached events, narrowed to node
 // when non-empty. It is the fallback when a direct upstream fetch fails.
 func (a *Aggregator) cachedEvents(region, node string) []model.Event {
@@ -303,7 +300,8 @@ func (a *Aggregator) cachedEvents(region, node string) []model.Event {
 	return out
 }
 
-// EventsIn is Events restricted to one region (empty = all regions).
+// EventsIn returns merged events across reachable regions, newest first,
+// restricted to one region (empty = all regions).
 func (a *Aggregator) EventsIn(region string) []model.Event {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -398,10 +396,8 @@ func (a *Aggregator) FetchEvents(ctx context.Context, region, node string, limit
 	return mergeEvents(lists)
 }
 
-// Alerts returns merged alerts across all reachable regions, newest first.
-func (a *Aggregator) Alerts() []model.Alert { return a.AlertsIn("") }
-
-// AlertsIn is Alerts restricted to one region (empty = all regions).
+// AlertsIn returns merged alerts across reachable regions, newest first,
+// restricted to one region (empty = all regions).
 func (a *Aggregator) AlertsIn(region string) []model.Alert {
 	a.mu.RLock()
 	defer a.mu.RUnlock()

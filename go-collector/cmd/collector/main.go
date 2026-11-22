@@ -41,20 +41,14 @@ const (
 // remaining connections (#117). A variable so tests can shorten it.
 var httpShutdownTimeout = 10 * time.Second
 
-// runHTTPServerUntilDone starts srv in the background and blocks until ctx
+// runHTTPServerTLSUntilDone starts srv in the background and blocks until ctx
 // is cancelled, at which point it gracefully shuts srv down (bounded by
 // httpShutdownTimeout) so callers don't hang on SIGINT/SIGTERM (#117). Any
 // ListenAndServe error other than the expected http.ErrServerClosed is
 // returned (and logged) so callers can fail the process (#318). It returns
 // only after the server has fully stopped, including in-flight requests
-// (#316).
-func runHTTPServerUntilDone(ctx context.Context, srv *http.Server, name string, logger *zap.Logger) error {
-	return runHTTPServerTLSUntilDone(ctx, srv, name, "", "", logger)
-}
-
-// runHTTPServerTLSUntilDone is runHTTPServerUntilDone with optional TLS:
-// when both certFile and keyFile are non-empty the server listens with
-// ListenAndServeTLS, otherwise it serves plaintext HTTP (#359).
+// (#316). When both certFile and keyFile are non-empty the server listens
+// with ListenAndServeTLS, otherwise it serves plaintext HTTP (#359).
 func runHTTPServerTLSUntilDone(ctx context.Context, srv *http.Server, name, certFile, keyFile string, logger *zap.Logger) error {
 	errCh := make(chan error, 1)
 	go func() {

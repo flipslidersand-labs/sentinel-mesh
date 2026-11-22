@@ -170,7 +170,7 @@ func TestEvents_RegionFilter(t *testing.T) {
 
 	now := time.Now().UTC()
 	for i, node := range []string{"a1", "a1", "b1"} {
-		if err := st.SaveEvent(context.Background(), model.Event{
+		if _, err := st.SaveEventDedup(context.Background(), model.Event{
 			EventID:   node + "-" + string(rune('0'+i)),
 			NodeID:    node,
 			Timestamp: now.Add(time.Duration(i) * time.Millisecond),
@@ -216,7 +216,7 @@ func TestEvents_LimitClampedToMax(t *testing.T) {
 
 	now := time.Now().UTC()
 	for i := 0; i < 5; i++ {
-		if err := st.SaveEvent(context.Background(), model.Event{
+		if _, err := st.SaveEventDedup(context.Background(), model.Event{
 			EventID:   "a1-" + string(rune('0'+i)),
 			NodeID:    "a1",
 			Timestamp: now.Add(time.Duration(i) * time.Millisecond),

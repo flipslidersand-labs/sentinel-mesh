@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **go-collector (#469):** removed test-only/unused code (`Store.SaveEvent`/`ListEvents`/`ListAlerts`, `runHTTPServerUntilDone`, `sendMailContext`, `Aggregator.Events`/`Alerts`, `authlimit.Limiter.Tracked`, the `receiver` authfail alias file); tests use the `*Dedup`/`*Where`/`*In` APIs. No behavior change.
 - **refactor (#421):** removed the unreachable heartbeat-timeout fallback in `registry.StartHeartbeatChecker` (caller validates), and bundled the per-connection parameters of the rust-agent gRPC session functions into one struct (no behavior change).
 - **rust-agent (#477):** eBPF loader (`--features ebpf`) no longer uses deprecated APIs: `aya::Bpf` -> `aya::Ebpf`, `AsyncFd::new` -> `unsafe AsyncFd::register` (workspace tokio minimum raised to 1.54). Ring buffer ownership is unchanged. Not verified on a real eBPF run; compile/clippy/test only.
 - **go-collector (#469):** anomaly detector keeps a fixed ring of 1-second counters per key (about 1.2KB for the default 5m window) instead of one timestamp per event; window counts now have 1-second precision, and maxDuration is computed once in New.

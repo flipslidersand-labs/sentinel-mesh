@@ -22,7 +22,7 @@ func newInternalStore(t *testing.T) *Store {
 
 func countStored(t *testing.T, st *Store) (stored, execCount int) {
 	t.Helper()
-	events, err := st.ListEvents(context.Background(), "", 100)
+	events, err := st.ListEventsWhere(context.Background(), nil, 100)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestSaveEvent_RetryAfterTimeoutStoresOnce(t *testing.T) {
 	e := model.Event{EventID: "e1", NodeID: "n1", Timestamp: time.Now(), Type: "exec", Payload: json.RawMessage(`{}`)}
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
-	go func() { errCh <- st.SaveEvent(ctx, e) }()
+	go func() { _, err := st.SaveEventDedup(ctx, e); errCh <- err }()
 	<-started
 	cancel()
 	if err := <-errCh; err == nil {
@@ -59,7 +59,7 @@ func TestSaveEvent_RetryAfterTimeoutStoresOnce(t *testing.T) {
 	st.inflight.Wait() // the first write lands in the background
 
 	// The agent sees Ack ok=false and resends the same event.
-	if err := st.SaveEvent(context.Background(), e); err != nil {
+	if _, err := st.SaveEventDedup(context.Background(), e); err != nil {
 		t.Fatalf("retry SaveEvent: %v", err)
 	}
 
@@ -73,13 +73,13 @@ func TestSaveEvent_DuplicateEventIDIsScopedPerNode(t *testing.T) {
 	ctx := context.Background()
 	for _, node := range []string{"n1", "n2", "n1:x"} {
 		e := model.Event{EventID: "same", NodeID: node, Timestamp: time.Now(), Type: "exec", Payload: json.RawMessage(`{}`)}
-		if err := st.SaveEvent(ctx, e); err != nil {
+		if _, err := st.SaveEventDedup(ctx, e); err != nil {
 			t.Fatalf("SaveEvent(%s): %v", node, err)
 		}
 	}
 	// "n1" + "x:same" must not collide with "n1:x" + "same" either.
 	e := model.Event{EventID: "x:same", NodeID: "n1", Timestamp: time.Now(), Type: "exec", Payload: json.RawMessage(`{}`)}
-	if err := st.SaveEvent(ctx, e); err != nil {
+	if _, err := st.SaveEventDedup(ctx, e); err != nil {
 		t.Fatalf("SaveEvent: %v", err)
 	}
 	if stored, n := countStored(t, st); stored != 4 || n != 4 {
@@ -92,7 +92,7 @@ func TestSaveEvent_EmptyEventIDIsNotDeduplicated(t *testing.T) {
 	st := newInternalStore(t)
 	e := model.Event{NodeID: "n1", Timestamp: time.Now(), Type: "exec", Payload: json.RawMessage(`{}`)}
 	for i := 0; i < 2; i++ {
-		if err := st.SaveEvent(context.Background(), e); err != nil {
+		if _, err := st.SaveEventDedup(context.Background(), e); err != nil {
 			t.Fatalf("SaveEvent: %v", err)
 		}
 	}
@@ -121,7 +121,7 @@ func TestRun_FailsFastWhenInflightLimitReached(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		e := model.Event{EventID: "stuck" + string(rune('a'+i)), NodeID: "n1", Type: "exec", Payload: json.RawMessage(`{}`)}
 		done := make(chan error, 1)
-		go func() { done <- st.SaveEvent(ctx, e) }()
+		go func() { _, err := st.SaveEventDedup(ctx, e); done <- err }()
 		<-stuck
 		cancel()
 		if err := <-done; !errors.Is(err, context.Canceled) {
@@ -131,7 +131,7 @@ func TestRun_FailsFastWhenInflightLimitReached(t *testing.T) {
 
 	e := model.Event{EventID: "over", NodeID: "n1", Type: "exec", Payload: json.RawMessage(`{}`)}
 	start := time.Now()
-	if err := st.SaveEvent(context.Background(), e); !errors.Is(err, ErrBusy) {
+	if _, err := st.SaveEventDedup(context.Background(), e); !errors.Is(err, ErrBusy) {
 		t.Fatalf("SaveEvent over limit: err=%v; want ErrBusy", err)
 	}
 	if d := time.Since(start); d > time.Second {
@@ -141,7 +141,7 @@ func TestRun_FailsFastWhenInflightLimitReached(t *testing.T) {
 	close(release)
 	st.inflight.Wait()
 	st.beforeUpdateFn = nil
-	if err := st.SaveEvent(context.Background(), e); err != nil {
+	if _, err := st.SaveEventDedup(context.Background(), e); err != nil {
 		t.Fatalf("SaveEvent after slots freed: %v", err)
 	}
 	if stored, n := countStored(t, st); stored != 3 || n != 3 {
@@ -171,7 +171,7 @@ func TestRun_StuckReadsDoNotBlockWrites(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
 		go func() {
-			_, err := st.ListEvents(ctx, "", 10)
+			_, err := st.ListEventsWhere(ctx, nil, 10)
 			done <- err
 		}()
 		select {
@@ -189,7 +189,7 @@ func TestRun_StuckReadsDoNotBlockWrites(t *testing.T) {
 	}
 
 	e := model.Event{EventID: "w1", NodeID: "n1", Type: "exec", Payload: json.RawMessage(`{}`)}
-	if err := st.SaveEvent(context.Background(), e); err != nil {
+	if _, err := st.SaveEventDedup(context.Background(), e); err != nil {
 		t.Fatalf("SaveEvent with read slots full: %v; want writes to keep their own slots", err)
 	}
 }
@@ -237,7 +237,7 @@ func TestSaveAlertDedup(t *testing.T) {
 			t.Fatalf("case %d: dup=%v err=%v, want dup=%v", i, dup, err, c.dup)
 		}
 	}
-	got, err := st.ListAlerts(ctx, "", 100)
+	got, err := st.ListAlertsWhere(ctx, nil, 100)
 	if err != nil || len(got) != 5 {
 		t.Fatalf("stored alerts = %d (err %v), want 5", len(got), err)
 	}

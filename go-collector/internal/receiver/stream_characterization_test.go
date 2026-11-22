@@ -50,11 +50,11 @@ func TestStreamEvents_ValidEventWithAlertAcksOkAndPersistsAll(t *testing.T) {
 	if len(stream.acks) != 2 || !stream.acks[0].Ok || !stream.acks[1].Ok {
 		t.Fatalf("want 2 Ok acks, got %v", stream.acks)
 	}
-	evs, err := st.ListEvents(context.Background(), "node-1", 10)
+	evs, err := st.ListEventsWhere(context.Background(), func(id string) bool { return id == "node-1" }, 10)
 	if err != nil || len(evs) != 2 {
 		t.Fatalf("ListEvents = %d, %v; want 2", len(evs), err)
 	}
-	alerts, err := st.ListAlerts(context.Background(), "node-1", 10)
+	alerts, err := st.ListAlertsWhere(context.Background(), func(id string) bool { return id == "node-1" }, 10)
 	if err != nil || len(alerts) == 0 {
 		t.Fatalf("ListAlerts = %d, %v; want >0", len(alerts), err)
 	}

@@ -28,7 +28,7 @@ func TestRunHTTPServerUntilDone_ListenErrorReturned(t *testing.T) {
 	}
 	defer ln.Close()
 	srv := newHTTPServer(ln.Addr().String(), http.NewServeMux())
-	err = runHTTPServerUntilDone(context.Background(), srv, "test", zap.NewNop())
+	err = runHTTPServerTLSUntilDone(context.Background(), srv, "test", "", "", zap.NewNop())
 	if err == nil {
 		t.Fatal("expected error for address in use, got nil")
 	}
@@ -52,7 +52,7 @@ func TestRunHTTPServerUntilDone_WaitsForInflightRequest(t *testing.T) {
 	srv := newHTTPServer(addr, mux)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- runHTTPServerUntilDone(ctx, srv, "test", zap.NewNop()) }()
+	go func() { done <- runHTTPServerTLSUntilDone(ctx, srv, "test", "", "", zap.NewNop()) }()
 
 	var resp *http.Response
 	reqDone := make(chan struct{})
@@ -256,7 +256,7 @@ func TestRunHTTPServerUntilDone_ShutdownTimeoutForceCloses(t *testing.T) {
 	srv := newHTTPServer(addr, mux)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- runHTTPServerUntilDone(ctx, srv, "test", zap.NewNop()) }()
+	go func() { done <- runHTTPServerTLSUntilDone(ctx, srv, "test", "", "", zap.NewNop()) }()
 
 	clientErr := make(chan error, 1)
 	go func() {
@@ -291,7 +291,7 @@ func TestRunHTTPServerUntilDone_ShutdownTimeoutForceCloses(t *testing.T) {
 			t.Errorf("unexpected error: %v", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("runHTTPServerUntilDone did not return after shutdown timeout")
+		t.Fatal("runHTTPServerTLSUntilDone did not return after shutdown timeout")
 	}
 	select {
 	case <-ctxCancelled:
