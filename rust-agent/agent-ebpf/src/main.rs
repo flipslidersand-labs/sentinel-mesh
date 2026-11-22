@@ -37,10 +37,13 @@ pub struct FileEvent {
 #[repr(C)]
 pub struct TcpEvent {
     pub event_type: u8,
+    /// AF_INET (2) or AF_INET6 (10). For AF_INET only the first 4 bytes of
+    /// src_addr/dst_addr are used (network byte order); the rest is zero (#429).
+    pub family: u8,
     pub pid: u32,
     pub comm: [u8; 16],
-    pub src_ip: u32,
-    pub dst_ip: u32,
+    pub src_addr: [u8; 16],
+    pub dst_addr: [u8; 16],
     pub src_port: u16,
     pub dst_port: u16,
 }
@@ -204,20 +207,51 @@ fn try_tcp_connect(ctx: ProbeContext) -> Result<(), i64> {
     // tracked as a follow-up, out of scope for this fix (#72).
     let sk: *const u8 = ctx.arg(0).ok_or(1i64)?;
     // tcp_v6_connect() also reaches tcp_connect(); for AF_INET6 sockets offsets
-    // 0/4 are not IPv4 addresses. Only IPv4 is supported — drop everything else
-    // instead of recording bogus addresses (#369).
-    // Known limitation: a dual-stack AF_INET6 socket connecting to a v4-mapped
-    // address (tcp_v6_connect -> tcp_v4_connect) keeps sk_family = AF_INET6 and is
-    // dropped here too, although offsets 0/4 hold a valid IPv4 pair; see #429.
+    // 0/4 are not IPv4 addresses unless the socket connects to a v4-mapped
+    // address (#369, #429). Verified against net/ipv6/tcp_ipv6.c (v6.12):
+    //   - tcp_v6_connect sets sk_v6_daddr = usin->sin6_addr BEFORE the
+    //     IPV6_ADDR_MAPPED branch, so for a v4-mapped target sk_v6_daddr is
+    //     ::ffff:a.b.c.d here, and tcp_v4_connect fills skc_daddr/skc_rcv_saddr.
+    //   - For a native IPv6 connect, inet_rcv_saddr is set to LOOPBACK4_IPV6
+    //     (127.0.0.6) and sk_v6_rcv_saddr is already set (inet_bhash2_update_saddr).
+    //     (The 127.0.0.6 marker is on rcv_saddr @4, not daddr as first guessed in #429.)
+    // skc_v6_daddr @56 / skc_v6_rcv_saddr @72 (16 bytes each) follow skc_net
+    // @48 in struct sock_common. These are raw offsets like the ones above and
+    // assume x86_64 with CONFIG_NET_NS and CONFIG_IPV6; CO-RE would be more robust
+    // (same follow-up as #72). NOT yet verified on a real host.
     const AF_INET: u16 = 2;
+    const AF_INET6: u16 = 10;
+    const LOOPBACK4_IPV6_BE: u32 = u32::from_ne_bytes([127, 0, 0, 6]);
     let family: u16 =
         unsafe { bpf_probe_read_kernel(sk.add(16) as *const u16) }.map_err(|_| 1i64)?;
-    if family != AF_INET {
+    if family != AF_INET && family != AF_INET6 {
         return Ok(());
     }
     let src_ip: u32 =
         unsafe { bpf_probe_read_kernel(sk.add(4) as *const u32) }.map_err(|_| 1i64)?;
     let dst_ip: u32 = unsafe { bpf_probe_read_kernel(sk as *const u32) }.map_err(|_| 1i64)?;
+    let mut src_addr = [0u8; 16];
+    let mut dst_addr = [0u8; 16];
+    let mut out_family = AF_INET as u8;
+    // Native IPv6 only when rcv_saddr is the 127.0.0.6 marker AND sk_v6_daddr is
+    // not v4-mapped; every other AF_INET6 socket is an IPv4 connection.
+    if family == AF_INET6 && src_ip == LOOPBACK4_IPV6_BE {
+        let v6_dst: [u8; 16] =
+            unsafe { bpf_probe_read_kernel(sk.add(56) as *const [u8; 16]) }.map_err(|_| 1i64)?;
+        let mapped = v6_dst[..10].iter().all(|b| *b == 0) && v6_dst[10] == 0xff && v6_dst[11] == 0xff;
+        if !mapped {
+            let v6_src: [u8; 16] =
+                unsafe { bpf_probe_read_kernel(sk.add(72) as *const [u8; 16]) }
+                    .map_err(|_| 1i64)?;
+            src_addr = v6_src;
+            dst_addr = v6_dst;
+            out_family = AF_INET6 as u8;
+        }
+    }
+    if out_family == AF_INET as u8 {
+        src_addr[..4].copy_from_slice(&src_ip.to_ne_bytes());
+        dst_addr[..4].copy_from_slice(&dst_ip.to_ne_bytes());
+    }
     let src_port: u16 =
         unsafe { bpf_probe_read_kernel(sk.add(14) as *const u16) }.map_err(|_| 1i64)?;
     let dst_port_be: u16 =
@@ -235,8 +269,9 @@ fn try_tcp_connect(ctx: ProbeContext) -> Result<(), i64> {
         core::ptr::write_bytes(ev, 0, 1);
         (*ev).event_type = ET_TCP;
         (*ev).pid = pid;
-        (*ev).src_ip = src_ip;
-        (*ev).dst_ip = dst_ip;
+        (*ev).family = out_family;
+        (*ev).src_addr = src_addr;
+        (*ev).dst_addr = dst_addr;
         (*ev).src_port = src_port;
         (*ev).dst_port = dst_port;
         for i in 0..16 {

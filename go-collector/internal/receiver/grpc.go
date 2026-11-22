@@ -382,41 +382,26 @@ func validateKernelEvent(e *pb.KernelEvent) error {
 		{"node_id", e.NodeId},
 		{"event_id", e.EventId},
 	}
-	switch e.Type {
-	case pb.EventType_EXEC:
-		if ex := e.GetExec(); ex != nil {
-			fields = append(fields,
-				namedField{"comm", ex.Comm},
-				namedField{"cmdline", ex.Cmdline},
-				namedField{"cwd", ex.Cwd},
-			)
-		}
-	case pb.EventType_TCP:
-		if t := e.GetTcp(); t != nil {
-			fields = append(fields,
-				namedField{"comm", t.Comm},
-				namedField{"direction", t.Direction},
-			)
-			if err := validateFields(fields); err != nil {
-				return err
-			}
-			if err := validateIP("src_ip", t.SrcIp); err != nil {
-				return err
-			}
-			return validateIP("dst_ip", t.DstIp)
-		}
-	case pb.EventType_FILE:
-		if f := e.GetFile(); f != nil {
-			fields = append(fields,
-				namedField{"comm", f.Comm},
-				namedField{"path", f.Path},
-				namedField{"op", f.Op},
-			)
-		}
-	default:
+	info, ok := eventtype.Lookup(e.Type)
+	if !ok {
 		return fmt.Errorf("unknown event type %d", int32(e.Type))
 	}
-	return validateFields(fields)
+	if info.Strings != nil {
+		for _, f := range info.Strings(e) {
+			fields = append(fields, namedField{f.Name, f.Value})
+		}
+	}
+	if err := validateFields(fields); err != nil {
+		return err
+	}
+	if info.IPs != nil {
+		for _, f := range info.IPs(e) {
+			if err := validateIP(f.Name, f.Value); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // peerIP extracts the caller's address from the gRPC peer connection and
