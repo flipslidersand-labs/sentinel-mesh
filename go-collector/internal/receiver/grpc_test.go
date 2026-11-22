@@ -410,7 +410,7 @@ func TestStreamEvents_AllowsMatchingAuthenticatedIdentity(t *testing.T) {
 // StreamEvents case above for the unary Register RPC.
 func TestRegister_RejectsNodeIDNotMatchingAuthenticatedIdentity(t *testing.T) {
 	reg := registry.New()
-	s := &server{reg: reg, log: zap.NewNop()}
+	s := &server{st: &fakeStorage{}, reg: reg, log: zap.NewNop()}
 
 	authedCtx := context.WithValue(context.Background(), authedNodeIDKey{}, "node-a")
 	resp, err := s.Register(authedCtx, &pb.RegisterRequest{NodeId: "node-b", Hostname: "h", Version: "v1", Region: "us-east"})
@@ -492,7 +492,7 @@ func TestStreamEvents_InvalidEventsConsumeRateLimit(t *testing.T) {
 // non-empty value would be spoofable by anything not verified via mTLS.
 func TestServerRegister_DerivesIPFromPeerNotRequest(t *testing.T) {
 	reg := registry.New()
-	s := &server{reg: reg, log: zap.NewNop()}
+	s := &server{st: &fakeStorage{}, reg: reg, log: zap.NewNop()}
 
 	ctx := peer.NewContext(context.Background(), &peer.Peer{
 		Addr: &net.TCPAddr{IP: net.ParseIP("203.0.113.5"), Port: 54321},
@@ -522,7 +522,7 @@ func TestServerRegister_DerivesIPFromPeerNotRequest(t *testing.T) {
 // the untrusted req.Ip.
 func TestServerRegister_NoPeerInContextYieldsEmptyIP(t *testing.T) {
 	reg := registry.New()
-	s := &server{reg: reg, log: zap.NewNop()}
+	s := &server{st: &fakeStorage{}, reg: reg, log: zap.NewNop()}
 
 	resp, err := s.Register(context.Background(), &pb.RegisterRequest{
 		NodeId: "node-1", Hostname: "h", Ip: "10.0.0.99", Version: "v1",
@@ -539,7 +539,7 @@ func TestServerRegister_NoPeerInContextYieldsEmptyIP(t *testing.T) {
 }
 
 func TestServerRegister_RejectsInvalidInput(t *testing.T) {
-	s := &server{reg: registry.New(), log: zap.NewNop()}
+	s := &server{st: &fakeStorage{}, reg: registry.New(), log: zap.NewNop()}
 	resp, err := s.Register(context.Background(), &pb.RegisterRequest{NodeId: "node-1\x00", Hostname: "h", Ip: "", Version: "v1", Region: ""})
 	if err != nil {
 		t.Fatalf("expected no transport error, got %v", err)
@@ -711,7 +711,7 @@ func TestStreamEvents_ReturnsWhenStreamContextDone(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already done before StreamEvents is even called
 
-	s := &server{reg: registry.New(), log: zap.NewNop()}
+	s := &server{st: &fakeStorage{}, reg: registry.New(), log: zap.NewNop()}
 	stream := &fakeStream{
 		ctx: ctx,
 		// If the context check were missing, StreamEvents would instead
@@ -742,7 +742,7 @@ func TestGracefulStopWithTimeout_FallsBackToStopOnHungStream(t *testing.T) {
 	}
 
 	srv := grpc.NewServer()
-	pb.RegisterSentinelCollectorServer(srv, &server{reg: registry.New(), log: zap.NewNop()})
+	pb.RegisterSentinelCollectorServer(srv, &server{st: &fakeStorage{}, reg: registry.New(), log: zap.NewNop()})
 	go srv.Serve(lis) //nolint:errcheck
 
 	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -861,7 +861,7 @@ func TestServe_CompleteTLSConfigLoadsCredentials(t *testing.T) {
 func floodRateLimitLogs(t *testing.T, clientNodeID string, ctx context.Context) []string {
 	t.Helper()
 	core, logs := observer.New(zap.WarnLevel)
-	s := &server{reg: registry.New(), log: zap.New(core)}
+	s := &server{st: &fakeStorage{}, reg: registry.New(), log: zap.New(core)}
 	const floodMargin = 2000
 	events := make([]*pb.KernelEvent, 0, int(streamEventsRateBurst)+floodMargin)
 	for i := 0; i < int(streamEventsRateBurst)+floodMargin; i++ {
