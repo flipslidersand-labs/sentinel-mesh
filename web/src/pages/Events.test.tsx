@@ -80,4 +80,19 @@ describe("Events page", () => {
     await screen.findByText("No events");
     expect(eventsMock).toHaveBeenCalledWith(undefined, 50);
   });
+  it("does not warn about React keys when event_id is missing or duplicated", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const ts = new Date().toISOString();
+    eventsMock.mockResolvedValue([
+      event({ event_id: undefined as unknown as string, timestamp: ts, node_id: "n1" }),
+      event({ event_id: undefined as unknown as string, timestamp: ts, node_id: "n1" }),
+      event({ event_id: "e-9", node_id: "n2" }),
+    ]);
+    render(<Events />);
+    await screen.findByText("n2");
+    expect(screen.getAllByText("n1")).toHaveLength(2);
+    const warned = err.mock.calls.some((c) => String(c[0]).includes("key"));
+    err.mockRestore();
+    expect(warned).toBe(false);
+  });
 });

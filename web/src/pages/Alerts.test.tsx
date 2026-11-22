@@ -105,4 +105,35 @@ describe("Alerts page", () => {
     expect(screen.queryByText("m1")).toBeNull();
     expect(screen.getByText("m2")).toBeTruthy();
   });
+  it("critical filter includes high/error alerts, matching the badge class", async () => {
+    alertsMock.mockResolvedValue([
+      alert({ alert_id: "a-1", message: "m-crit", severity: "critical" }),
+      alert({ alert_id: "a-2", message: "m-high", severity: "high" }),
+      alert({ alert_id: "a-3", message: "m-err", severity: "ERROR" }),
+      alert({ alert_id: "a-4", message: "m-warn", severity: "warning" }),
+      alert({ alert_id: "a-5", message: "m-info", severity: "info" }),
+    ]);
+    render(<Alerts />);
+    await screen.findByText("m-crit");
+    const select = screen.getAllByRole("combobox")[0] as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "critical" } });
+    expect(screen.getByText("m-high")).toBeTruthy();
+    expect(screen.getByText("m-err")).toBeTruthy();
+    expect(screen.queryByText("m-warn")).toBeNull();
+    expect(screen.queryByText("m-info")).toBeNull();
+  });
+
+  it("does not crash when rule_id is missing and a rule filter is typed", async () => {
+    alertsMock.mockResolvedValue([
+      alert({ alert_id: "a-1", message: "m-norule", rule_id: undefined as unknown as string }),
+      alert({ alert_id: "a-2", message: "m-rule", rule_id: "ssh-brute" }),
+    ]);
+    render(<Alerts />);
+    await screen.findByText("m-norule");
+    fireEvent.change(screen.getByPlaceholderText("Filter by rule"), {
+      target: { value: "ssh" },
+    });
+    expect(screen.getByText("m-rule")).toBeTruthy();
+    expect(screen.queryByText("m-norule")).toBeNull();
+  });
 });
