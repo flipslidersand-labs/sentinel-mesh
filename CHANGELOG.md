@@ -121,6 +121,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **web:** Alerts severity filter now uses the same mapping as the badge (critical includes high/error), a missing `rule_id` no longer crashes the rule filter, and Events rows fall back to a composite React key when `event_id` is absent (#422).
+- **go-collector:** an empty `node_id` is now rejected by Register, StreamEvents and `token issue` (an empty `event_id` is still accepted, as the store skips dedup for it) (#468).
+- **go-collector:** `Store.Close` waits at most 10s for the GC goroutine and in-flight work, then logs a warning and closes the DB instead of hanging (#468).
 - **CI:** the `rust-agent` job now runs `cargo clippy -p sentinel-agent --features ebpf --all-targets -- -D warnings` (with an empty placeholder for the embedded eBPF object, no nightly/bpf-linker), so the `ebpf` feature code is linted; fixed the one `type_complexity` warning it surfaced in a grpc test (#477).
 - **go-collector:** `serve` now logs a warning when `--data-dir` is under `/tmp` (the unchanged default); README notes the default is for development only (#506). Newly created data directories are already mode 0700 (pinned by a test).
 - **web:** the Nodes page keeps showing the last fetched table and shows the error as a banner when a later poll fails; only a first-load error replaces the table (#254).
