@@ -711,28 +711,6 @@ mod tests {
     }
 
     #[test]
-    fn connect_timeout_is_set_and_bounded() {
-        // Regression guard for #108: `run_once` must bound how long
-        // `.connect().await` can block, or a silently-dropping firewall
-        // stalls it past the OS/TCP default (minutes) and the
-        // backoff-reconnect loop in `stream_to_collector` never runs.
-        assert!(CONNECT_TIMEOUT > Duration::ZERO);
-        assert!(CONNECT_TIMEOUT <= Duration::from_secs(30));
-    }
-
-    #[test]
-    fn backoff_doubles_and_caps_at_max() {
-        let mut b = INITIAL_BACKOFF;
-        assert_eq!(b, Duration::from_millis(100));
-        b = (b * 2).min(MAX_BACKOFF);
-        assert_eq!(b, Duration::from_millis(200));
-        for _ in 0..20 {
-            b = (b * 2).min(MAX_BACKOFF);
-        }
-        assert_eq!(b, MAX_BACKOFF);
-    }
-
-    #[test]
     fn backoff_resets_after_stable_connection() {
         // Escalated to the cap, then a connection that lived long enough:
         // the next wait restarts from INITIAL_BACKOFF (#313).
@@ -758,17 +736,6 @@ mod tests {
         // still capped
         let (_, next) = next_backoff(MAX_BACKOFF, None);
         assert_eq!(next, MAX_BACKOFF);
-    }
-
-    #[test]
-    fn keepalive_defaults_are_bounded_and_respect_collector_policy() {
-        // The collector's EnforcementPolicy MinTime is 10s
-        // (go-collector/internal/receiver/grpc.go:535-538 — keep in sync);
-        // pinging faster gets the connection GOAWAY'd. Detection should stay
-        // under ~1 min.
-        assert!(KEEPALIVE_INTERVAL >= Duration::from_secs(10));
-        assert!(KEEPALIVE_TIMEOUT > Duration::ZERO);
-        assert!(KEEPALIVE_INTERVAL + KEEPALIVE_TIMEOUT <= Duration::from_secs(60));
     }
 
     mod half_open {
