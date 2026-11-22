@@ -9,6 +9,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -161,6 +162,45 @@ type server struct {
 	// node's registry LastSeen while idle (#260). Zero means
 	// defaultLivenessInterval.
 	livenessInterval time.Duration
+
+	// pendingAnomaly holds anomaly alerts whose save failed, keyed by
+	// (node, event_id), so a resend of that event can save them without
+	// re-counting it in the detector (#491). Bounded by maxPendingAnomaly.
+	pendingMu      sync.Mutex
+	pendingAnomaly map[pendingKey]model.Alert
+}
+
+type pendingKey struct{ nodeID, eventID string }
+
+const maxPendingAnomaly = 1024
+
+func (s *server) rememberAnomaly(a model.Alert) {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	if s.pendingAnomaly == nil {
+		s.pendingAnomaly = make(map[pendingKey]model.Alert)
+	}
+	k := pendingKey{a.NodeID, a.EventID}
+	if _, ok := s.pendingAnomaly[k]; !ok && len(s.pendingAnomaly) >= maxPendingAnomaly {
+		for old := range s.pendingAnomaly { // drop an arbitrary entry
+			delete(s.pendingAnomaly, old)
+			break
+		}
+	}
+	s.pendingAnomaly[k] = a
+}
+
+func (s *server) forgetAnomaly(a model.Alert) {
+	s.pendingMu.Lock()
+	delete(s.pendingAnomaly, pendingKey{a.NodeID, a.EventID})
+	s.pendingMu.Unlock()
+}
+
+func (s *server) pendingAnomalyFor(ev model.Event) (model.Alert, bool) {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	a, ok := s.pendingAnomaly[pendingKey{ev.NodeID, ev.EventID}]
+	return a, ok
 }
 
 // defaultLivenessInterval is a third of the registry's default heartbeat
@@ -669,9 +709,10 @@ func (s *server) persistEvent(ctx context.Context, ev model.Event) (ok, duplicat
 // detector or vice versa (#150).
 //
 // For a duplicate (resent) event (#465):
-//   - the anomaly detector is skipped so the event is not counted twice. Known
-//     limit: if an anomaly alert failed to save on the first delivery, the
-//     resend does not regenerate it.
+//   - the anomaly detector is skipped so the event is not counted twice. An
+//     anomaly alert that failed to save on the first delivery is kept in
+//     memory and saved again on the resend (#491); it is lost if the process
+//     restarts in between.
 //   - an alert the store already holds is neither recorded nor notified again.
 //   - notification is at-least-once: an alert is notified even when its save
 //     failed, so a resend that then saves it notifies a second time. A
@@ -695,8 +736,17 @@ func (s *server) evaluateAndNotify(ctx context.Context, ev model.Event, duplicat
 		alerts = append(alerts, s.engine.Evaluate(ev)...)
 	}
 	// Phase 7: frequency-based anomaly detection
+	anomalyIDs := map[string]bool{}
 	if s.detector != nil && !duplicate {
-		alerts = append(alerts, s.detector.Record(ev)...)
+		for _, a := range s.detector.Record(ev) {
+			anomalyIDs[a.AlertID] = true
+			alerts = append(alerts, a)
+		}
+	} else if duplicate {
+		if a, ok := s.pendingAnomalyFor(ev); ok {
+			anomalyIDs[a.AlertID] = true
+			alerts = append(alerts, a)
+		}
 	}
 
 	for _, alert := range alerts {
@@ -709,6 +759,11 @@ func (s *server) evaluateAndNotify(ctx context.Context, ev model.Event, duplicat
 			if s.metrics != nil {
 				s.metrics.RecordStoreWriteFailure("alert")
 			}
+			if anomalyIDs[alert.AlertID] {
+				s.rememberAnomaly(alert)
+			}
+		} else if anomalyIDs[alert.AlertID] {
+			s.forgetAnomaly(alert)
 		}
 		if alertDup {
 			continue
