@@ -56,6 +56,7 @@ var regionNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 // allowInsecureHTTP is true (#359).
 func ParseUpstreams(specs []string, allowInsecureHTTP bool) ([]Upstream, error) {
 	out := make([]Upstream, 0, len(specs))
+	seen := make(map[string]struct{}, len(specs))
 	// Error messages deliberately never include the spec or URL: the value
 	// may carry credentials in userinfo (#364).
 	for i, spec := range specs {
@@ -85,6 +86,10 @@ func ParseUpstreams(specs []string, allowInsecureHTTP bool) ([]Upstream, error) 
 		if parsed.Scheme == "http" && !allowInsecureHTTP && !isLoopbackHost(parsed.Hostname()) {
 			return nil, fmt.Errorf("invalid upstream %q: plaintext http:// to a non-loopback host would send the bearer token unencrypted; use https:// or pass --aggregate-allow-insecure-http", region)
 		}
+		if _, dup := seen[region]; dup {
+			return nil, fmt.Errorf("invalid upstream %q: duplicate region", region)
+		}
+		seen[region] = struct{}{}
 		out = append(out, Upstream{Region: region, URL: rawURL})
 	}
 	return out, nil
