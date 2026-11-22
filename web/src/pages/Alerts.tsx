@@ -1,12 +1,8 @@
 import { useMemo, useState } from "react";
 import { api, asArray, type Alert } from "../api";
 import { usePolling } from "../hooks/usePolling";
-import {
-  TIME_RANGES,
-  rangeMsFor,
-  withinRange,
-  type RangeKey,
-} from "../filters";
+import { RangeSelect } from "../components/RangeSelect";
+import { rangeMsFor, withinRange, type RangeKey } from "../filters";
 
 const SEVERITIES = ["info", "warning", "critical"] as const;
 
@@ -74,16 +70,7 @@ export function Alerts() {
             </option>
           ))}
         </select>
-        <select
-          value={range}
-          onChange={(e) => setRange(e.target.value as RangeKey)}
-        >
-          {TIME_RANGES.map((r) => (
-            <option key={r.key} value={r.key}>
-              {r.label}
-            </option>
-          ))}
-        </select>
+        <RangeSelect value={range} onChange={setRange} />
       </div>
 
       {loading && <div className="status">Loading…</div>}
