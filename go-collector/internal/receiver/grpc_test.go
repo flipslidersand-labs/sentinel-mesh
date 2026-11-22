@@ -984,3 +984,48 @@ func TestStreamEvents_RejectsMissingOrMismatchedPayload(t *testing.T) {
 		})
 	}
 }
+
+func fileEventWithPath(path string) *pb.KernelEvent {
+	return &pb.KernelEvent{NodeId: "node-1", EventId: "evt-1", Type: pb.EventType_FILE,
+		Payload: &pb.KernelEvent_File{File: &pb.FileEvent{Comm: "sh", Path: path, Op: "open"}}}
+}
+
+func TestValidateKernelEvent_AllowsPrintableNonASCIIPath(t *testing.T) {
+	for _, p := range []string{"/home/u/日本語.txt", "/tmp/café", "/tmp/📁/x"} {
+		if err := validateKernelEvent(fileEventWithPath(p)); err != nil {
+			t.Errorf("path %q should pass, got %v", p, err)
+		}
+	}
+}
+
+func TestValidateKernelEvent_RejectsUnsafePathRunes(t *testing.T) {
+	for name, p := range map[string]string{
+		"newline":      "/tmp/a\nb",
+		"nul":          "/tmp/a\x00b",
+		"bidi":         "/tmp/evil‮gpj.exe",
+		"invalid utf8": "/tmp/\xff\xfe",
+		"too long":     "/tmp/" + strings.Repeat("日", maxRegisterFieldLength),
+	} {
+		if err := validateKernelEvent(fileEventWithPath(p)); err == nil {
+			t.Errorf("%s: expected rejection", name)
+		}
+	}
+}
+
+func TestValidateKernelEvent_RejectsNonASCIIIdentifiers(t *testing.T) {
+	e := fileEventWithPath("/tmp/x")
+	e.NodeId = "ノード1"
+	if err := validateKernelEvent(e); err == nil {
+		t.Error("non-ASCII node_id must still be rejected")
+	}
+	e = fileEventWithPath("/tmp/x")
+	e.EventId = "évt"
+	if err := validateKernelEvent(e); err == nil {
+		t.Error("non-ASCII event_id must still be rejected")
+	}
+	e = fileEventWithPath("/tmp/x")
+	e.GetFile().Op = "オープン"
+	if err := validateKernelEvent(e); err == nil {
+		t.Error("non-ASCII op must still be rejected")
+	}
+}
