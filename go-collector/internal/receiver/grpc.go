@@ -872,7 +872,13 @@ func (s *server) evaluateAndNotify(ctx context.Context, ev model.Event, duplicat
 		}
 	}
 
-	for _, alert := range alerts {
+	for i := range alerts {
+		// Stamp the node's region (as on the event) so the alert stays
+		// reachable by /api/alerts?region= after the node leaves the registry.
+		if alerts[i].Region == "" {
+			alerts[i].Region = ev.Region
+		}
+		alert := alerts[i]
 		alertCtx, alertCancel := context.WithTimeout(ctx, storeOpTimeout)
 		alertDup, alertErr := s.st.SaveAlertDedup(alertCtx, alert)
 		alertCancel()

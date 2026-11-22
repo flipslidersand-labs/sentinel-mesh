@@ -556,7 +556,13 @@ func (s *Store) SaveAlertDedup(ctx context.Context, a model.Alert) (duplicate bo
 // ListAlertsWhere is the alert counterpart of ListEventsWhere: newest first,
 // node predicate keep (nil keeps everything), same scan bound (#153, #324).
 func (s *Store) ListAlertsWhere(ctx context.Context, keep func(nodeID string) bool, limit int) ([]model.Alert, error) {
-	return scanNewestFirst(ctx, s, "alert:", "alert", byNode[model.Alert](keep, func(a model.Alert) string { return a.NodeID }), limit)
+	return s.ListAlertsMatching(ctx, byNode[model.Alert](keep, func(a model.Alert) string { return a.NodeID }), limit)
+}
+
+// ListAlertsMatching is ListAlertsWhere with a predicate over the whole alert
+// (e.g. its Region, #531). The same scan cap applies when keep is non-nil.
+func (s *Store) ListAlertsMatching(ctx context.Context, keep func(model.Alert) bool, limit int) ([]model.Alert, error) {
+	return scanNewestFirst(ctx, s, "alert:", "alert", keep, limit)
 }
 
 // closeWaitTimeout bounds how long Close waits for the GC goroutine and

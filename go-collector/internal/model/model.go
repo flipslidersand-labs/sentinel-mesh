@@ -35,4 +35,9 @@ type Alert struct {
 	Timestamp time.Time `json:"timestamp"`
 	Message   string    `json:"message"`
 	Severity  string    `json:"severity"`
+	// Region is the region of the node when the alert was raised. It lets
+	// /api/alerts?region= keep matching after the node left the registry
+	// (eviction, restart). Alerts stored before this field existed have it
+	// empty; readers fall back to the registry for those (#531).
+	Region string `json:"region,omitempty"`
 }
