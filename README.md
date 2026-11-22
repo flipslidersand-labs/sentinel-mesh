@@ -474,7 +474,7 @@ must be readable by `sentinel` and not under `/home`).
 
 ```bash
 bash scripts/install-collector.sh <SSH_HOST> [OPTIONS]
-# Options: --region, --grpc-addr, --http-addr, --data-dir, --grpc-tls-cert, --grpc-tls-key, --grpc-auth, --http-auth
+# Options: --region, --grpc-addr, --http-addr, --data-dir, --grpc-tls-cert, --grpc-tls-key, --http-tls-cert, --http-tls-key, --grpc-auth, --http-auth
 # Example (demo; --http-auth defaults to required and the unit crash-loops without SENTINEL_API_TOKEN):
 bash scripts/install-collector.sh minipc --grpc-addr :50051 --http-addr :8081 --http-auth disabled
 # Production: keep --http-auth required and put SENTINEL_API_TOKEN in a mode-600 EnvironmentFile

@@ -120,6 +120,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `scripts/install-collector.sh`: add `--http-tls-cert`/`--http-tls-key` for the REST API, and fail with exit 1 when only one of a TLS cert/key pair is given (gRPC or REST) instead of silently starting in plaintext (#254).
 - **go-collector:** `StreamEvents` now rejects events whose oneof payload is missing or does not match the event type, instead of storing `payload:null` and counting it (#468).
 
 - **go-collector:** events dropped by the per-node rate limit are now counted in the unlabelled `sentinel_events_throttled_total` metric instead of only a 1-in-1000 warn log (#420). No alert on it yet.
