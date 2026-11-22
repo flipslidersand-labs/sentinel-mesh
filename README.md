@@ -109,6 +109,7 @@ Options:
   --http-tls-key <PATH>      REST API TLS private key (PEM); requires --http-tls-cert
                              (without both, the REST API and its bearer token are plaintext; a warning is logged)
   --data-dir <PATH>          BadgerDB data directory [default: /tmp/sentinel-data]
+                             (the /tmp default is for development only; for production use scripts/install-collector.sh or set --data-dir explicitly)
   --heartbeat-timeout <DUR>  Inactivity before agent is marked inactive [default: 60s]
   --rules <PATH>             Alerting rules YAML file [default: none]
   --otel-endpoint <URL>      OTLP HTTP endpoint for distributed tracing, e.g. http://localhost:4318 [default: none]
