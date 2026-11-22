@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Agent / eBPF:** IPv6 TCP connections and IPv4 connections made through dual-stack
+  AF_INET6 sockets (v4-mapped) are now emitted as TCP events; `TcpEvent` carries a family
+  and 16-byte addresses (#429). Not yet verified on a real host (no CAP_BPF test): the
+  eBPF object builds, but the verifier/runtime behaviour and the raw `sock_common`
+  offsets (assume x86_64, CONFIG_NET_NS, CONFIG_IPV6) are untested.
 - **CI:** `go mod tidy` consistency check for `go-collector` (fails if `go.mod`/`go.sum` would change) (#330).
 - **go-collector:** `--http-tls-cert`/`--http-tls-key` serve the REST API (normal and
   `--aggregate` mode) over TLS; they must be given together. Without them the REST API stays
@@ -34,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **go-collector:** `validateKernelEvent` now reads per-type fields from the `eventtype` table instead of a type switch; behaviour unchanged (#353).
 - **refactor (#421):** removed the unreachable heartbeat-timeout fallback in `registry.StartHeartbeatChecker` (caller validates), and bundled the per-connection parameters of the rust-agent gRPC session functions into one struct (no behavior change).
 - **rust-agent (#477):** eBPF loader (`--features ebpf`) no longer uses deprecated APIs: `aya::Bpf` -> `aya::Ebpf`, `AsyncFd::new` -> `unsafe AsyncFd::register` (workspace tokio minimum raised to 1.54). Ring buffer ownership is unchanged. Not verified on a real eBPF run; compile/clippy/test only.
 - **go-collector (#469):** anomaly detector keeps a fixed ring of 1-second counters per key (about 1.2KB for the default 5m window) instead of one timestamp per event; window counts now have 1-second precision, and maxDuration is computed once in New.

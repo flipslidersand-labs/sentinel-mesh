@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"github.com/flipslidersand/sentinel-mesh/internal/pb"
 )
@@ -49,5 +50,46 @@ func TestFields(t *testing.T) {
 	}
 	if !Fields(Any)["dst_port"] || !Fields(Any)["uid"] {
 		t.Error("union wrong")
+	}
+}
+
+// TestValidatedFieldsCoverPBStrings fails when a pb payload gains a string
+// field that Strings/IPs do not validate (#154 injection hardening).
+func TestValidatedFieldsCoverPBStrings(t *testing.T) {
+	cases := map[pb.EventType]struct {
+		msg proto.Message
+		ev  *pb.KernelEvent
+	}{
+		pb.EventType_EXEC: {&pb.ExecEvent{}, &pb.KernelEvent{Payload: &pb.KernelEvent_Exec{Exec: &pb.ExecEvent{}}}},
+		pb.EventType_TCP:  {&pb.TcpEvent{}, &pb.KernelEvent{Payload: &pb.KernelEvent_Tcp{Tcp: &pb.TcpEvent{}}}},
+		pb.EventType_FILE: {&pb.FileEvent{}, &pb.KernelEvent{Payload: &pb.KernelEvent_File{File: &pb.FileEvent{}}}},
+	}
+	for typ, c := range cases {
+		info, ok := Lookup(typ)
+		if !ok {
+			t.Fatalf("%v missing from table", typ)
+		}
+		want := map[string]bool{}
+		fs := c.msg.ProtoReflect().Descriptor().Fields()
+		for i := 0; i < fs.Len(); i++ {
+			if fs.Get(i).Kind() == protoreflect.StringKind {
+				want[string(fs.Get(i).Name())] = true
+			}
+		}
+		got := map[string]bool{}
+		for _, fn := range []func(*pb.KernelEvent) []Field{info.Strings, info.IPs} {
+			if fn == nil {
+				continue
+			}
+			for _, f := range fn(c.ev) {
+				if got[f.Name] {
+					t.Errorf("%s: field %q validated twice", info.Name, f.Name)
+				}
+				got[f.Name] = true
+			}
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: validated string fields %v != pb string fields %v", info.Name, got, want)
+		}
 	}
 }
