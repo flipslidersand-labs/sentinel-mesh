@@ -188,6 +188,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **go-collector (#252):** bump `go` in `go.mod` from 1.26.10 to 1.26.11 to pick up the standard-library `net/http` fix for GO-2026-6859; `govulncheck` now reports 0 affected vulnerabilities.
 - **rust-agent (#470):** the plaintext-token loopback check now also ends the collector authority at `#`, so `http://<remote>#@127.0.0.1:50051` is rejected instead of sending the token in plaintext to the remote host.
 - **ci/rust-agent (#420):** pin all GitHub Actions in `ci.yml` to commit SHAs, set top-level `permissions: contents: read`, and hide `SENTINEL_API_TOKEN` from the agent's `--help` output (`hide_env_values`).
 - **go-collector:** REST API now throttles repeated failed bearer-auth attempts per source
