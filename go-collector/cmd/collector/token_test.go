@@ -173,3 +173,28 @@ func TestTokenRevoke_MissingYesFlagErrors(t *testing.T) {
 		t.Fatalf("expected flag lookup error for %q, got %v", flagYes, err)
 	}
 }
+
+func TestTokenIssue_RejectsInvalidNodeID(t *testing.T) {
+	cases := map[string]string{
+		"non-ascii": "nodo-\u00e9",
+		"too-long":  strings.Repeat("a", 257),
+	}
+	for name, id := range cases {
+		t.Run(name, func(t *testing.T) {
+			out, err := runTokenCmd(t, t.TempDir(), "", "issue", id)
+			if err == nil {
+				t.Fatalf("expected error for node_id %q, got output %q", id, out)
+			}
+			if strings.TrimSpace(out) != "" && !strings.Contains(out, "node_id") {
+				t.Fatalf("unexpected output: %q", out)
+			}
+		})
+	}
+}
+
+func TestTokenIssue_AcceptsMaxLengthNodeID(t *testing.T) {
+	id := strings.Repeat("a", 256)
+	if _, err := runTokenCmd(t, t.TempDir(), "", "issue", id); err != nil {
+		t.Fatalf("token issue: %v", err)
+	}
+}
