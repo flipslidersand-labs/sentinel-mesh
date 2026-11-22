@@ -275,3 +275,45 @@ func TestShouldSend_StaleReleaseKeepsNewerClaim(t *testing.T) {
 		t.Fatal("stale release must not remove the newer claim")
 	}
 }
+
+// slowNotifier blocks until its context is done, like a hung endpoint.
+type slowNotifier struct{}
+
+func (slowNotifier) Name() string { return "slow" }
+
+func (slowNotifier) Send(ctx context.Context, _ model.Alert) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// ctxNotifier records whether its context was already expired when Send began.
+type ctxNotifier struct {
+	mu      sync.Mutex
+	sent    int
+	expired bool
+}
+
+func (c *ctxNotifier) Name() string { return "ctx" }
+
+func (c *ctxNotifier) Send(ctx context.Context, _ model.Alert) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.sent++
+	if ctx.Err() != nil {
+		c.expired = true
+		return ctx.Err()
+	}
+	return nil
+}
+
+// A slow notifier must not consume the timeout of the notifiers after it.
+func TestDispatch_TimeoutIsPerNotifier(t *testing.T) {
+	fast := &ctxNotifier{}
+	d := NewDispatcher(Options{Notifiers: []Notifier{slowNotifier{}, fast}, MinSeverity: "info"})
+	d.timeout = 50 * time.Millisecond
+
+	d.Dispatch(alert("r1", "n1", "critical"))
+	if fast.sent != 1 || fast.expired {
+		t.Fatalf("fast notifier must get its own fresh timeout: sent=%d expired=%v", fast.sent, fast.expired)
+	}
+}
