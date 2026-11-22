@@ -7,16 +7,6 @@ use uuid::Uuid;
 
 use crate::pb::{kernel_event::Payload, EventType, ExecEvent, FileEvent, KernelEvent, TcpEvent};
 
-#[cfg(feature = "ebpf")]
-macro_rules! include_bytes_aligned {
-    ($path:expr) => {{
-        #[repr(C, align(4096))]
-        struct Aligned<const N: usize>([u8; N]);
-        static DATA: Aligned<{ include_bytes!($path).len() }> = Aligned(*include_bytes!($path));
-        &DATA.0
-    }};
-}
-
 // Mock pools for realistic-looking events
 static MOCK_IPS: &[&str] = &[
     "10.0.0.1",
@@ -293,7 +283,7 @@ async fn mock_source_counted(tx: Sender<KernelEvent>, rate: u64, dropped: Arc<At
 
 #[cfg(feature = "ebpf")]
 pub async fn ebpf_source(tx: Sender<KernelEvent>) {
-    use aya::{maps::RingBuf, programs::TracePoint, Ebpf};
+    use aya::{include_bytes_aligned, maps::RingBuf, programs::TracePoint, Ebpf};
 
     let bytes = include_bytes_aligned!(concat!(
         env!("CARGO_MANIFEST_DIR"),
