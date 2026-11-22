@@ -293,6 +293,31 @@ sudo -u sentinel sentinel-collector token list --data-dir /var/lib/sentinel   # 
 
 With auth enabled, a stream that is already established with a revoked token is closed with `Unauthenticated` at the next liveness tick (within `heartbeat-timeout / 3`). If the token lookup fails transiently, the stream is kept and the check is retried on the next tick.
 
+## Monitoring
+
+`GET /metrics` (Bearer auth, see above) exposes Prometheus metrics. Alert rules are not shipped in this repository; evaluate them in your own Prometheus. Two counters are worth alerting on:
+
+| Metric | Meaning |
+| ------ | ------- |
+| `sentinel_events_throttled_total` | Events dropped by the per-node rate limit (2000 events/s per authenticated `node_id`). Unlabelled on purpose (`node_id` would be high cardinality). The agent receives an `ACK_REASON_RATE_LIMITED` ack, but the collector logs only 1 in 1000 drops, so this counter is the reliable signal. |
+| `sentinel_auth_failures_total` | Rejected gRPC authentication attempts, by `reason`. |
+
+Sustained throttling means an agent (or a host being attacked) is producing events faster than the collector accepts them, so events are being lost. An example rule:
+
+```yaml
+groups:
+  - name: sentinel-mesh
+    rules:
+      - alert: SentinelEventsThrottled
+        # Tune the threshold to your baseline; any sustained drop means lost events.
+        expr: rate(sentinel_events_throttled_total[5m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "sentinel-mesh collector is dropping events (per-node rate limit)"
+```
+
 ## Heartbeat Tracking
 
 The collector runs a background goroutine that checks agent liveness every `heartbeat-timeout / 2`. An agent is marked `inactive` when its last gRPC message is older than `heartbeat-timeout`. Status is visible in `GET /api/nodes`.
