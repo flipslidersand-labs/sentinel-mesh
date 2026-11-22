@@ -33,6 +33,12 @@ var (
 		Name: "sentinel_auth_failures_total",
 		Help: "Total number of rejected gRPC authentication attempts",
 	}, []string{"reason"})
+	// eventsThrottledTotal counts events dropped by the per-node event rate
+	// limit (#420). Deliberately unlabelled: node_id would be high cardinality.
+	eventsThrottledTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "sentinel_events_throttled_total",
+		Help: "Total number of events dropped by the per-node rate limit",
+	})
 )
 
 // MaxNodeLabels is the number of distinct node_id values kept as their own
@@ -108,4 +114,9 @@ func (mp *MetricsProvider) RecordStoreWriteFailure(kind string) {
 // (one of the AuthFail* constants).
 func (mp *MetricsProvider) RecordAuthFailure(reason string) {
 	authFailuresTotal.WithLabelValues(reason).Inc()
+}
+
+// RecordEventThrottled increments the counter of events dropped by the rate limit.
+func (mp *MetricsProvider) RecordEventThrottled() {
+	eventsThrottledTotal.Inc()
 }

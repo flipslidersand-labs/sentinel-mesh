@@ -442,8 +442,8 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
                 0 if data.len() == core::mem::size_of::<EbpfExecEvent>() => {
                     let raw =
                         unsafe { core::ptr::read_unaligned(data.as_ptr() as *const EbpfExecEvent) };
-                    // Userspace enrichment (#432); falls back to 0 / empty.
-                    let (ppid, cmdline) = read_proc_exec_info(Path::new("/proc"), raw.pid);
+                    // Userspace enrichment (#432); falls back to 0 / empty (cwd via /proc/<pid>/cwd, #422).
+                    let (ppid, cmdline, cwd) = read_proc_exec_info(Path::new("/proc"), raw.pid);
                     KernelEvent {
                         event_id: Uuid::new_v4().to_string(),
                         node_id: String::new(),
@@ -454,7 +454,7 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
                             ppid,
                             comm: bytes_to_str(&raw.comm),
                             cmdline,
-                            cwd: String::new(),
+                            cwd,
                             uid: raw.uid,
                         })),
                     }
@@ -668,15 +668,15 @@ fn parse_cmdline(raw: &[u8]) -> String {
         .collect()
 }
 
-/// Read (ppid, cmdline) for `pid` under `proc_root` (normally /proc).
+/// Read (ppid, cmdline, cwd) for `pid` under `proc_root` (normally /proc).
 ///
 /// Known limitation: this runs after the kernel event is queued, so a very
 /// short-lived process may already be gone (or unreadable); then ppid is 0
-/// and cmdline is empty. Capturing these in the kernel (CO-RE) would avoid
+/// and cmdline/cwd are empty. Capturing these in the kernel (CO-RE) would avoid
 /// the race but needs real-hardware verification. The two small std::fs
 /// reads of /proc are cheap and never fail the event.
 #[cfg_attr(not(feature = "ebpf"), allow(dead_code))]
-fn read_proc_exec_info(proc_root: &Path, pid: u32) -> (u32, String) {
+fn read_proc_exec_info(proc_root: &Path, pid: u32) -> (u32, String, String) {
     let dir = proc_root.join(pid.to_string());
     let ppid = std::fs::read_to_string(dir.join("status"))
         .ok()
@@ -685,7 +685,10 @@ fn read_proc_exec_info(proc_root: &Path, pid: u32) -> (u32, String) {
     let cmdline = std::fs::read(dir.join("cmdline"))
         .map(|b| parse_cmdline(&b))
         .unwrap_or_default();
-    (ppid, cmdline)
+    let cwd = std::fs::read_link(dir.join("cwd"))
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    (ppid, cmdline, cwd)
 }
 
 #[cfg(test)]
@@ -1131,12 +1134,27 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("status"), "Name:\tx\nPPid:\t77\n").unwrap();
         std::fs::write(dir.join("cmdline"), b"/usr/bin/x\0--flag\0").unwrap();
+        // cwd is a symlink in /proc/<pid>/cwd
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("/srv/work", dir.join("cwd")).unwrap();
+        #[cfg(unix)]
         assert_eq!(
             read_proc_exec_info(&root, 1234),
-            (77, "/usr/bin/x --flag".to_string())
+            (77, "/usr/bin/x --flag".to_string(), "/srv/work".to_string())
         );
         // missing pid falls back without error
-        assert_eq!(read_proc_exec_info(&root, 9999), (0, String::new()));
+        assert_eq!(
+            read_proc_exec_info(&root, 9999),
+            (0, String::new(), String::new())
+        );
+        // unreadable cwd (no symlink) leaves cwd empty
+        let dir2 = root.join("4321");
+        std::fs::create_dir_all(&dir2).unwrap();
+        std::fs::write(dir2.join("status"), "PPid:\t5\n").unwrap();
+        assert_eq!(
+            read_proc_exec_info(&root, 4321),
+            (5, String::new(), String::new())
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 }
