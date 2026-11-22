@@ -91,6 +91,14 @@ type Store struct {
 
 	gcStop chan struct{}
 	gcDone chan struct{}
+
+	// closeMu/closed make Close and runOn mutually ordered: runOn registers
+	// itself in inflight under RLock, Close sets closed under Lock, so no
+	// inflight.Add can race inflight.Wait and nothing starts after Close (#422).
+	closeMu   sync.RWMutex
+	closed    bool
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func New(dir string) (*Store, error) {
@@ -229,13 +237,25 @@ func (s *Store) runRead(ctx context.Context, fn func() error) error {
 	return s.runOn(ctx, s.readSem, fn)
 }
 
+// ErrClosed is returned without touching the db once Close has been called.
+var ErrClosed = errors.New("store: closed")
+
 func (s *Store) runOn(ctx context.Context, sem chan struct{}, fn func() error) error {
+	// The closed check and inflight.Add share one RLock section so Close
+	// (which takes the write Lock before waiting) never sees a late Add.
+	s.closeMu.RLock()
+	if s.closed {
+		s.closeMu.RUnlock()
+		return ErrClosed
+	}
 	select {
 	case sem <- struct{}{}:
 	default:
+		s.closeMu.RUnlock()
 		return ErrBusy
 	}
 	s.inflight.Add(1)
+	s.closeMu.RUnlock()
 	return runWithContext(ctx, func() error {
 		defer func() {
 			<-sem
@@ -544,7 +564,18 @@ func (s *Store) ListAlertsWhere(ctx context.Context, keep func(nodeID string) bo
 // can shrink it.
 var closeWaitTimeout = 10 * time.Second
 
+// Close stops background work and closes the DB. It is safe to call more than
+// once; later calls return the first call's result. Operations started after
+// Close fail with ErrClosed.
 func (s *Store) Close() error {
+	s.closeOnce.Do(func() { s.closeErr = s.close() })
+	return s.closeErr
+}
+
+func (s *Store) close() error {
+	s.closeMu.Lock()
+	s.closed = true
+	s.closeMu.Unlock()
 	close(s.gcStop)
 	drained := make(chan struct{})
 	go func() {
