@@ -24,7 +24,7 @@ func (d errData) ListEventsMatching(context.Context, func(model.Event) bool, int
 	return nil, d.err
 }
 
-func (d errData) ListAlertsWhere(context.Context, func(string) bool, int) ([]model.Alert, error) {
+func (d errData) ListAlertsMatching(context.Context, func(model.Alert) bool, int) ([]model.Alert, error) {
 	return nil, d.err
 }
 
