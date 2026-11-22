@@ -30,7 +30,8 @@ func parseLimit(c *gin.Context, key string, def int) (limit int, ok bool) {
 	return httpserver.ParseLimit(c, key, def)
 }
 
-// nodeFilter builds the store-level node predicate from the optional "node"
+// nodeFilter builds the store-level node predicate (used for alerts, which carry
+// no region) from the optional "node"
 // and "region" query parameters; nil means no filtering. The region is
 // resolved to a node set once, so the store can apply it while scanning and
 // still return up to limit matches (#324). The store's scan cap
@@ -65,17 +66,50 @@ func nodeFilter(c *gin.Context, reg NodeLister) (keep func(string) bool, none bo
 	}, false
 }
 
+// eventFilter builds the event predicate from the "node" and "region" query
+// parameters; nil means no filtering. An event carrying its own Region is
+// matched on that, so events of nodes that left the registry (eviction,
+// restart) stay reachable. Events stored before Region existed fall back to
+// the registry's current node set (#512).
+func eventFilter(c *gin.Context, reg NodeLister) func(model.Event) bool {
+	node, region := c.Query("node"), c.Query("region")
+	if node == "" && region == "" {
+		return nil
+	}
+	var set map[string]struct{}
+	if region != "" {
+		nodes := reg.ListByRegion(region)
+		set = make(map[string]struct{}, len(nodes))
+		for _, n := range nodes {
+			set[n.NodeID] = struct{}{}
+		}
+	}
+	return func(e model.Event) bool {
+		if node != "" && e.NodeID != node {
+			return false
+		}
+		if region == "" {
+			return true
+		}
+		if e.Region != "" {
+			return e.Region == region
+		}
+		_, ok := set[e.NodeID]
+		return ok
+	}
+}
+
 // EventLister lists stored events. *store.Store satisfies it.
 type EventLister interface {
-	// ListEventsWhere returns up to limit newest-first events whose node ID
-	// passes keep (nil keeps all). The store keeps scanning until limit
-	// matches are found or its scan cap is hit (#324).
-	ListEventsWhere(ctx context.Context, keep func(nodeID string) bool, limit int) ([]model.Event, error)
+	// ListEventsMatching returns up to limit newest-first events that pass keep
+	// (nil keeps all). The store keeps scanning until limit matches are found
+	// or its scan cap is hit (#324).
+	ListEventsMatching(ctx context.Context, keep func(model.Event) bool, limit int) ([]model.Event, error)
 }
 
 // AlertLister lists stored alerts. *store.Store satisfies it.
 type AlertLister interface {
-	// ListAlertsWhere is the alert counterpart of ListEventsWhere.
+	// ListAlertsWhere is the alert counterpart of the event listing.
 	ListAlertsWhere(ctx context.Context, keep func(nodeID string) bool, limit int) ([]model.Alert, error)
 }
 
@@ -138,12 +172,7 @@ func Router(cfg RouterConfig) *gin.Engine {
 			if !ok {
 				return
 			}
-			keep, none := nodeFilter(c, reg)
-			if none {
-				c.JSON(http.StatusOK, []model.Event{})
-				return
-			}
-			events, err := cfg.Events.ListEventsWhere(c.Request.Context(), keep, limit)
+			events, err := cfg.Events.ListEventsMatching(c.Request.Context(), eventFilter(c, reg), limit)
 			if err != nil {
 				internalError(c, err)
 				return

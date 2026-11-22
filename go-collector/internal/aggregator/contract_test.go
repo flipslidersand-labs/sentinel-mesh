@@ -16,11 +16,11 @@ type contractData struct{}
 func (contractData) ListEvents(_ context.Context, _ string, _ int) ([]model.Event, error) {
 	return []model.Event{{EventID: "e1", NodeID: "n1"}}, nil
 }
-func (d contractData) ListEventsWhere(ctx context.Context, keep func(string) bool, limit int) ([]model.Event, error) {
+func (d contractData) ListEventsMatching(ctx context.Context, keep func(model.Event) bool, limit int) ([]model.Event, error) {
 	all, _ := d.ListEvents(ctx, "", limit)
 	out := make([]model.Event, 0, len(all))
 	for _, e := range all {
-		if keep == nil || keep(e.NodeID) {
+		if keep == nil || keep(e) {
 			out = append(out, e)
 		}
 	}

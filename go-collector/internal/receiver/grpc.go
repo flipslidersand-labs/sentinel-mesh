@@ -144,6 +144,14 @@ type TokenResolver interface {
 type Storage interface {
 	EventSaver
 	TokenResolver
+	NodeRegions
+}
+
+// NodeRegions persists each node's region so it survives registry eviction and
+// restarts (#512).
+type NodeRegions interface {
+	SaveNodeRegion(ctx context.Context, nodeID, region string) error
+	NodeRegion(ctx context.Context, nodeID string) (region string, ok bool, err error)
 }
 
 var _ Storage = (*store.Store)(nil)
@@ -543,6 +551,17 @@ func (s *server) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.Reg
 	if err := s.reg.Register(req.NodeId, req.Hostname, peerIP(ctx), req.Version, region); err != nil {
 		return &pb.RegisterResponse{Ok: false, Message: err.Error()}, nil
 	}
+	// Persist the region the registry settled on (normalised) so a node
+	// re-created after eviction or restart keeps it (#512). Not fatal on
+	// failure: the node is registered, only the durable copy is missing.
+	if stored, ok := s.reg.Region(req.NodeId); ok {
+		region = stored
+		saveCtx, cancel := context.WithTimeout(ctx, storeOpTimeout)
+		if err := s.st.SaveNodeRegion(saveCtx, req.NodeId, region); err != nil {
+			s.log.Error("persist node region", zap.String("node_id", req.NodeId), zap.Error(err))
+		}
+		cancel()
+	}
 	s.log.Info("agent registered",
 		zap.String("node_id", req.NodeId),
 		zap.String("host", req.Hostname),
@@ -694,7 +713,7 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 			continue
 		}
 
-		s.reg.HeartbeatOrRegister(event.NodeId, peerIP(stream.Context()), s.defaultRegion)
+		region, regionOK := s.touchNode(stream.Context(), event.NodeId)
 		if stopLiveness == nil {
 			// No trusted identity here, so there is no token to re-check.
 			stopLiveness, _ = s.startLiveness(stream.Context(), event.NodeId, nil)
@@ -706,6 +725,9 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 			Timestamp: time.Unix(0, event.Timestamp).UTC(),
 			Type:      s.eventTypeName(event),
 			Payload:   s.eventPayload(event),
+		}
+		if regionOK {
+			storedEvent.Region = region
 		}
 
 		saveOk, duplicate := s.persistEvent(stream.Context(), storedEvent)
@@ -726,6 +748,39 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 			return err
 		}
 	}
+}
+
+// touchNode heartbeats nodeID, re-creating it in the registry if needed, and
+// returns its region. A node the registry does not know (evicted, or the
+// collector restarted) gets its persisted region back instead of the default
+// (#512); the lookup runs outside the registry lock and only in that rare case.
+// regionOK is false when the lookup failed: the node is then left unregistered
+// (the next event retries) and the event is saved without a region, so a guessed
+// default is never written permanently.
+func (s *server) touchNode(ctx context.Context, nodeID string) (region string, regionOK bool) {
+	fallback, found := s.defaultRegion, false
+	if _, known := s.reg.Region(nodeID); !known {
+		lookupCtx, cancel := context.WithTimeout(ctx, storeOpTimeout)
+		stored, ok, err := s.st.NodeRegion(lookupCtx, nodeID)
+		cancel()
+		if err != nil {
+			s.log.Warn("node region lookup failed; not re-registering node", zap.String("node_id", safeLogNodeID(nodeID, nodeID)), zap.Error(err))
+			return "", false
+		}
+		if ok {
+			fallback, found = stored, true
+		}
+	}
+	region = s.reg.HeartbeatOrRegister(nodeID, peerIP(ctx), fallback)
+	if found {
+		// Refresh the record's TTL now that the node is active again.
+		saveCtx, cancel := context.WithTimeout(ctx, storeOpTimeout)
+		if err := s.st.SaveNodeRegion(saveCtx, nodeID, region); err != nil {
+			s.log.Warn("refresh node region failed", zap.Error(err))
+		}
+		cancel()
+	}
+	return region, true
 }
 
 // rejectEvent runs logFn (the caller's rejection log) and then sends a

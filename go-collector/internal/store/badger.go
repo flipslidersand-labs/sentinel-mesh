@@ -369,14 +369,29 @@ func (s *Store) SaveEventDedup(ctx context.Context, e model.Event) (duplicate bo
 // are found, bounded by maxNodeFilterScan records when keep is non-nil, so
 // fewer than limit may be returned even if more matches exist (#153, #324).
 func (s *Store) ListEventsWhere(ctx context.Context, keep func(nodeID string) bool, limit int) ([]model.Event, error) {
-	return scanNewestFirst(ctx, s, "event:", "event", func(e model.Event) string { return e.NodeID }, keep, limit)
+	return s.ListEventsMatching(ctx, byNode[model.Event](keep, func(e model.Event) string { return e.NodeID }), limit)
+}
+
+// ListEventsMatching is ListEventsWhere with a predicate over the whole event
+// (e.g. its Region, #512). The same scan cap applies when keep is non-nil.
+func (s *Store) ListEventsMatching(ctx context.Context, keep func(model.Event) bool, limit int) ([]model.Event, error) {
+	return scanNewestFirst(ctx, s, "event:", "event", keep, limit)
+}
+
+// byNode adapts a node-ID predicate to a record predicate; nil stays nil so the
+// "no filter" scan-cap rule is unchanged.
+func byNode[T any](keep func(string) bool, nodeOf func(T) string) func(T) bool {
+	if keep == nil {
+		return nil
+	}
+	return func(r T) bool { return keep(nodeOf(r)) }
 }
 
 // scanNewestFirst walks the keys under prefix newest first, decoding each as T
-// and collecting up to limit records whose node passes keep. With a non-nil
+// and collecting up to limit records that pass keep. With a non-nil
 // keep the scan reads at most maxNodeFilterScan records (#153), so a rarely
 // matching filter cannot force a full walk of the retention window.
-func scanNewestFirst[T any](ctx context.Context, s *Store, prefixStr, label string, nodeOf func(T) string, keep func(string) bool, limit int) ([]T, error) {
+func scanNewestFirst[T any](ctx context.Context, s *Store, prefixStr, label string, keep func(T) bool, limit int) ([]T, error) {
 	// Non-nil so callers that JSON-marshal the result return "[]" not "null".
 	out := make([]T, 0)
 	err := s.runRead(ctx, func() error {
@@ -413,7 +428,7 @@ func scanNewestFirst[T any](ctx context.Context, s *Store, prefixStr, label stri
 					skipped++
 					continue
 				}
-				if keep != nil && !keep(nodeOf(rec)) {
+				if keep != nil && !keep(rec) {
 					continue
 				}
 				out = append(out, rec)
@@ -521,7 +536,7 @@ func (s *Store) SaveAlertDedup(ctx context.Context, a model.Alert) (duplicate bo
 // ListAlertsWhere is the alert counterpart of ListEventsWhere: newest first,
 // node predicate keep (nil keeps everything), same scan bound (#153, #324).
 func (s *Store) ListAlertsWhere(ctx context.Context, keep func(nodeID string) bool, limit int) ([]model.Alert, error) {
-	return scanNewestFirst(ctx, s, "alert:", "alert", func(a model.Alert) string { return a.NodeID }, keep, limit)
+	return scanNewestFirst(ctx, s, "alert:", "alert", byNode[model.Alert](keep, func(a model.Alert) string { return a.NodeID }), limit)
 }
 
 // closeWaitTimeout bounds how long Close waits for the GC goroutine and

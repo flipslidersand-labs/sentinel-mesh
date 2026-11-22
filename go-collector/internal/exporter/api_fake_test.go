@@ -14,11 +14,11 @@ import (
 
 type fakeData struct{}
 
-func (fakeData) ListEventsWhere(_ context.Context, keep func(string) bool, _ int) ([]model.Event, error) {
+func (fakeData) ListEventsMatching(_ context.Context, keep func(model.Event) bool, _ int) ([]model.Event, error) {
 	out := []model.Event{}
 	for _, n := range []string{"n1", "n2"} {
-		if keep == nil || keep(n) {
-			out = append(out, model.Event{NodeID: n})
+		if e := (model.Event{NodeID: n}); keep == nil || keep(e) {
+			out = append(out, e)
 		}
 	}
 	return out, nil
