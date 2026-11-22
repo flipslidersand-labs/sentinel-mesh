@@ -11,6 +11,8 @@
 #   --data-dir DIR        BadgerDB data directory (default: /var/lib/sentinel)
 #   --grpc-tls-cert PATH  path (on SSH_HOST) to gRPC TLS certificate (PEM); requires --grpc-tls-key
 #   --grpc-tls-key PATH   path (on SSH_HOST) to gRPC TLS private key (PEM); requires --grpc-tls-cert
+#   --http-tls-cert PATH  path (on SSH_HOST) to REST TLS certificate (PEM); requires --http-tls-key
+#   --http-tls-key PATH   path (on SSH_HOST) to REST TLS private key (PEM); requires --http-tls-cert
 #
 #   --grpc-auth MODE      gRPC auth: required (default) or disabled (#222)
 #   --http-auth MODE      REST auth: required (default) or disabled (#254)
@@ -41,6 +43,8 @@ HTTP_ADDR=":8081"
 DATA_DIR="/var/lib/sentinel"
 GRPC_TLS_CERT=""
 GRPC_TLS_KEY=""
+HTTP_TLS_CERT=""
+HTTP_TLS_KEY=""
 GRPC_AUTH="required"
 HTTP_AUTH="required"
 
@@ -52,6 +56,8 @@ while [[ $# -gt 0 ]]; do
     --data-dir)     DATA_DIR="$2";     shift 2 ;;
     --grpc-tls-cert) GRPC_TLS_CERT="$2"; shift 2 ;;
     --grpc-tls-key)  GRPC_TLS_KEY="$2";  shift 2 ;;
+    --http-tls-cert) HTTP_TLS_CERT="$2"; shift 2 ;;
+    --http-tls-key)  HTTP_TLS_KEY="$2";  shift 2 ;;
     --grpc-auth)    GRPC_AUTH="$2";    shift 2 ;;
     --http-auth)    HTTP_AUTH="$2";    shift 2 ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
@@ -105,10 +111,25 @@ if [[ "$data_depth" -lt 2 ]]; then
 fi
 [[ -n "$GRPC_TLS_CERT" ]] && validate_path "--grpc-tls-cert" "$GRPC_TLS_CERT"
 [[ -n "$GRPC_TLS_KEY" ]] && validate_path "--grpc-tls-key" "$GRPC_TLS_KEY"
+[[ -n "$HTTP_TLS_CERT" ]] && validate_path "--http-tls-cert" "$HTTP_TLS_CERT"
+[[ -n "$HTTP_TLS_KEY" ]] && validate_path "--http-tls-key" "$HTTP_TLS_KEY"
+
+# A lone cert or key must not silently degrade to plaintext.
+if [[ -n "$GRPC_TLS_CERT" || -n "$GRPC_TLS_KEY" ]] && [[ -z "$GRPC_TLS_CERT" || -z "$GRPC_TLS_KEY" ]]; then
+  echo "Error: --grpc-tls-cert and --grpc-tls-key must be supplied together" >&2
+  exit 1
+fi
+if [[ -n "$HTTP_TLS_CERT" || -n "$HTTP_TLS_KEY" ]] && [[ -z "$HTTP_TLS_CERT" || -z "$HTTP_TLS_KEY" ]]; then
+  echo "Error: --http-tls-cert and --http-tls-key must be supplied together" >&2
+  exit 1
+fi
 
 TLS_FLAGS=""
-if [[ -n "$GRPC_TLS_CERT" && -n "$GRPC_TLS_KEY" ]]; then
+if [[ -n "$GRPC_TLS_CERT" ]]; then
   TLS_FLAGS="--grpc-tls-cert ${GRPC_TLS_CERT} --grpc-tls-key ${GRPC_TLS_KEY}"
+fi
+if [[ -n "$HTTP_TLS_CERT" ]]; then
+  TLS_FLAGS="${TLS_FLAGS:+${TLS_FLAGS} }--http-tls-cert ${HTTP_TLS_CERT} --http-tls-key ${HTTP_TLS_KEY}"
 fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -159,9 +180,9 @@ REMOTE
 # readable by that user; we do not chown files we do not own (e.g. a shared
 # certificate store) -- fail early with a hint instead.
 echo "==> Preparing service user '${SERVICE_USER}' and ${DATA_DIR}..."
-ssh -- "$SSH_HOST" bash -s -- "$SERVICE_USER" "$DATA_DIR" "$GRPC_TLS_CERT" "$GRPC_TLS_KEY" <<'REMOTE'
+ssh -- "$SSH_HOST" bash -s -- "$SERVICE_USER" "$DATA_DIR" "$GRPC_TLS_CERT" "$GRPC_TLS_KEY" "$HTTP_TLS_CERT" "$HTTP_TLS_KEY" <<'REMOTE'
 set -euo pipefail
-user="$1"; data="$2"; cert="$3"; key="$4"
+user="$1"; data="$2"; cert="$3"; key="$4"; hcert="$5"; hkey="$6"
 if ! id -u "$user" >/dev/null 2>&1; then
   sudo useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$user"
 fi
@@ -172,7 +193,7 @@ fi
 sudo mkdir -p "$data"
 sudo chown -R "$user": "$data"
 sudo chmod 700 "$data"
-for f in "$cert" "$key"; do
+for f in "$cert" "$key" "$hcert" "$hkey"; do
   [[ -z "$f" ]] && continue
   if ! sudo -u "$user" test -r "$f"; then
     echo "Error: $f is not readable by user '$user' (note ProtectHome=yes hides /home)." >&2

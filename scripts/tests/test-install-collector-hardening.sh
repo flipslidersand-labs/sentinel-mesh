@@ -74,6 +74,30 @@ done
 check "stop before chown" "$TMP/remote-scripts" "systemctl stop sentinel-collector"
 check "user-group"        "$TMP/remote-scripts" "--user-group"
 
+# TLS cert/key must be supplied as a pair (gRPC and REST); a lone one used to
+# silently fall back to plaintext. Both set -> flags reach ExecStart.
+for pair in grpc http; do
+  for only in cert key; do
+    : > "$TMP/ssh-calls"
+    msg="$(bash "$TMP/scripts/install-collector.sh" testhost "--$pair-tls-$only" /etc/sentinel/x.pem 2>&1 >/dev/null)"; rc=$?
+    if [[ $rc -ne 0 && "$msg" == *"--$pair-tls-cert and --$pair-tls-key must be supplied together"* && ! -s "$TMP/ssh-calls" ]]; then
+      echo "ok   reject lone --$pair-tls-$only"
+    else
+      echo "FAIL lone --$pair-tls-$only (rc=$rc msg=$msg)"; fail=1
+    fi
+  done
+done
+rm -f "$TMP/unit"; : > "$TMP/ssh-calls"
+if bash "$TMP/scripts/install-collector.sh" testhost \
+     --grpc-tls-cert /etc/sentinel/g.crt --grpc-tls-key /etc/sentinel/g.key \
+     --http-tls-cert /etc/sentinel/h.crt --http-tls-key /etc/sentinel/h.key >/dev/null 2>&1; then
+  check "ExecStart grpc tls" "$TMP/unit" "--grpc-tls-cert /etc/sentinel/g.crt --grpc-tls-key /etc/sentinel/g.key"
+  check "ExecStart http tls" "$TMP/unit" "--http-tls-cert /etc/sentinel/h.crt --http-tls-key /etc/sentinel/h.key"
+  check "http tls files readability-checked" "$TMP/ssh-calls" "/etc/sentinel/h.key"
+else
+  echo "FAIL installer rejected full TLS pairs"; fail=1
+fi
+
 if command -v systemd-analyze >/dev/null 2>&1 && [[ -s "$TMP/unit" ]]; then
   # ExecStart binary is absent locally; only flag syntax/directive errors.
   # systemd-analyze needs a unit-type suffix (.service) to accept the file.
