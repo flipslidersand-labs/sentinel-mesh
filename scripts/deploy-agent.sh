@@ -154,6 +154,22 @@ validate_mock_rate "--mock-rate" "$MOCK_RATE"
 [[ -n "$GRPC_TOKEN" ]] && validate_secret "--grpc-token" "$GRPC_TOKEN"
 [[ -n "$GRPC_CA_CERT" ]] && validate_path "--grpc-ca-cert" "$GRPC_CA_CERT"
 
+# Refuse to deploy a bearer token that the unit would send in plaintext to a
+# non-loopback collector (#420). Mirrors check_token_transport() in
+# rust-agent/agent/src/main.rs: token set + no https (--tls) + host not
+# loopback (localhost, 127.0.0.0/8) is rejected there at agent start, so reject
+# it here before anything is uploaded. No --allow-insecure-token passthrough.
+if [[ -n "$GRPC_TOKEN" ]] && ! $TLS; then
+  collector_host="${COLLECTOR_ADDR%:*}"
+  octet='(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
+  if [[ "${collector_host,,}" != "localhost" &&
+        ! "$collector_host" =~ ^127(\.${octet}){3}$ ]]; then
+    echo "Error: --grpc-token without --tls would send the token in plaintext to non-loopback collector '${COLLECTOR_ADDR}'." >&2
+    echo "       Add --tls (collector needs --grpc-tls-cert/--grpc-tls-key), or use a loopback collector." >&2
+    exit 1
+  fi
+fi
+
 # ── Systemd unit template ─────────────────────────────────────────────────────
 make_unit() {
   local node_id="$1"
