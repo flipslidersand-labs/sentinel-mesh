@@ -169,6 +169,8 @@ type server struct {
 	// re-counting it in the detector (#491). Bounded by maxPendingAnomaly.
 	pendingMu      sync.Mutex
 	pendingAnomaly map[pendingKey]model.Alert
+	pendingOrder   []pendingKey // insertion order, oldest first (FIFO eviction)
+	maxPending     int          // zero means maxPendingAnomaly; tests lower it
 }
 
 type pendingKey struct{ nodeID, eventID string }
@@ -182,18 +184,32 @@ func (s *server) rememberAnomaly(a model.Alert) {
 		s.pendingAnomaly = make(map[pendingKey]model.Alert)
 	}
 	k := pendingKey{a.NodeID, a.EventID}
-	if _, ok := s.pendingAnomaly[k]; !ok && len(s.pendingAnomaly) >= maxPendingAnomaly {
-		for old := range s.pendingAnomaly { // drop an arbitrary entry
-			delete(s.pendingAnomaly, old)
-			break
-		}
+	limit := s.maxPending
+	if limit <= 0 {
+		limit = maxPendingAnomaly
+	}
+	if _, ok := s.pendingAnomaly[k]; !ok && len(s.pendingAnomaly) >= limit {
+		delete(s.pendingAnomaly, s.pendingOrder[0]) // drop the oldest entry
+		s.pendingOrder = s.pendingOrder[1:]
+	}
+	if _, ok := s.pendingAnomaly[k]; !ok {
+		s.pendingOrder = append(s.pendingOrder, k)
 	}
 	s.pendingAnomaly[k] = a
 }
 
 func (s *server) forgetAnomaly(a model.Alert) {
 	s.pendingMu.Lock()
-	delete(s.pendingAnomaly, pendingKey{a.NodeID, a.EventID})
+	k := pendingKey{a.NodeID, a.EventID}
+	if _, ok := s.pendingAnomaly[k]; ok {
+		delete(s.pendingAnomaly, k)
+		for i, o := range s.pendingOrder {
+			if o == k {
+				s.pendingOrder = append(s.pendingOrder[:i], s.pendingOrder[i+1:]...)
+				break
+			}
+		}
+	}
 	s.pendingMu.Unlock()
 }
 
