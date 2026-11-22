@@ -18,8 +18,15 @@ import (
 )
 
 // internalError logs err server-side and responds 500 with a fixed message so
-// store/Badger internals (paths, DB state) are not exposed to clients.
+// store/Badger internals (paths, DB state) are not exposed to clients. A
+// transient store error (busy or closed) is answered 503 instead so the client
+// retries (#533).
 func internalError(c *gin.Context, err error) {
+	if store.IsTransient(err) {
+		slog.Warn("exporter: store unavailable", "method", c.Request.Method, "path", c.Request.URL.Path, "err", err)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "service unavailable"})
+		return
+	}
 	slog.Error("exporter: internal error", "method", c.Request.Method, "path", c.Request.URL.Path, "err", err)
 	c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 }

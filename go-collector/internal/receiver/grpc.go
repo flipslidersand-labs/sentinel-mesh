@@ -1112,6 +1112,10 @@ func checkAuthLimited(ctx context.Context, st TokenResolver, authEnabled bool, l
 	// rest. Only failed attempts are counted against the source.
 	nodeID, ok, err = st.LookupNodeID(ctx, got)
 	if err != nil {
+		if store.IsTransient(err) {
+			// Busy or closing: the agent should reconnect and retry (#533).
+			return "", status.Error(codes.Unavailable, "auth lookup temporarily unavailable")
+		}
 		return "", status.Error(codes.Internal, "auth lookup failed") // store error is not the caller's failure
 	}
 	if ok {

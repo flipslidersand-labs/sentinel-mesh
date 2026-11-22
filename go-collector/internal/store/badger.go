@@ -240,6 +240,13 @@ func (s *Store) runRead(ctx context.Context, fn func() error) error {
 // ErrClosed is returned without touching the db once Close has been called.
 var ErrClosed = errors.New("store: closed")
 
+// IsTransient reports whether err means the store cannot serve the call right
+// now (all slots busy, or already closed) rather than that the call failed.
+// Callers map it to 503 / codes.Unavailable so clients retry (#533).
+func IsTransient(err error) bool {
+	return errors.Is(err, ErrBusy) || errors.Is(err, ErrClosed)
+}
+
 func (s *Store) runOn(ctx context.Context, sem chan struct{}, fn func() error) error {
 	// The closed check and inflight.Add share one RLock section so Close
 	// (which takes the write Lock before waiting) never sees a late Add.
