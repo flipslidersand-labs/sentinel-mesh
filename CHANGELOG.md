@@ -120,6 +120,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **go-collector:** FILE/EXEC payload text (comm, cmdline, cwd, path) may now contain printable non-ASCII characters instead of the whole event being rejected, which let a single non-ASCII character in a file name evade detection; control characters, NUL, bidi/format characters and invalid UTF-8 are still rejected, and node_id/event_id/op stay ASCII-only (#251, #154).
 - **go-collector:** aggregate mode now serves `/api/stats` (event counts summed over upstream regions) so the UI Stats page no longer 404s, and `/api/nodes` merges in a deterministic node_id order (#251).
 - **go-collector/notify:** each notifier now gets its own send timeout instead of sharing one, so a slow notifier no longer causes the others to time out (#251).
 - `scripts/install-collector.sh`: add `--http-tls-cert`/`--http-tls-key` for the REST API, and fail with exit 1 when only one of a TLS cert/key pair is given (gRPC or REST) instead of silently starting in plaintext (#254).

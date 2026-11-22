@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -380,7 +382,33 @@ func isPrintableASCII(s string) bool {
 
 // namedField pairs a field name (used in error messages) with its value, so
 // validateFields can report which field failed.
-type namedField struct{ name, value string }
+type namedField struct {
+	name, value string
+	freeText    bool // allow printable non-ASCII (see freeTextFields)
+}
+
+// freeTextFields are payload fields derived from file names, process names
+// and command lines. Those legitimately contain non-ASCII text, so they get
+// isPrintableText instead of isPrintableASCII; rejecting them wholesale let
+// one non-ASCII character in a file name evade detection (#251). Identifiers
+// (node_id, event_id, op, direction) stay ASCII-only.
+var freeTextFields = map[string]bool{"comm": true, "cmdline": true, "cwd": true, "path": true}
+
+// isPrintableText reports whether s is valid UTF-8 in which every rune is
+// printable (unicode.IsPrint). That rejects control characters, NUL, format
+// characters such as the bidi overrides (U+202E), unassigned code points and
+// invalid UTF-8, while allowing printable non-ASCII text.
+func isPrintableText(s string) bool {
+	if !utf8.ValidString(s) {
+		return false
+	}
+	for _, r := range s {
+		if !unicode.IsPrint(r) {
+			return false
+		}
+	}
+	return true
+}
 
 // validateFields enforces a length cap and an ASCII-printable charset on
 // each field in order, returning the first violation found. It is the
@@ -396,7 +424,11 @@ func validateFields(fields []namedField) error {
 		if len(f.value) > maxRegisterFieldLength {
 			return fmt.Errorf("%s exceeds max length of %d bytes", f.name, maxRegisterFieldLength)
 		}
-		if !isPrintableASCII(f.value) {
+		if f.freeText {
+			if !isPrintableText(f.value) {
+				return fmt.Errorf("%s must be valid UTF-8 with only printable characters", f.name)
+			}
+		} else if !isPrintableASCII(f.value) {
 			return fmt.Errorf("%s must contain only printable ASCII characters", f.name)
 		}
 	}
@@ -407,7 +439,7 @@ func validateFields(fields []namedField) error {
 // (length cap, printable ASCII), so callers such as "token issue" can reject
 // IDs that Register would always refuse.
 func ValidateNodeID(nodeID string) error {
-	return validateFields([]namedField{{"node_id", nodeID}})
+	return validateFields([]namedField{{name: "node_id", value: nodeID}})
 }
 
 // validateIP enforces a length cap and requires value (when non-empty) to
@@ -430,10 +462,10 @@ func validateIP(name, value string) error {
 // as a real IP address (#106).
 func validateRegisterRequest(req *pb.RegisterRequest) error {
 	if err := validateFields([]namedField{
-		{"node_id", req.NodeId},
-		{"hostname", req.Hostname},
-		{"version", req.Version},
-		{"region", req.Region},
+		{name: "node_id", value: req.NodeId},
+		{name: "hostname", value: req.Hostname},
+		{name: "version", value: req.Version},
+		{name: "region", value: req.Region},
 	}); err != nil {
 		return err
 	}
@@ -448,8 +480,8 @@ func validateRegisterRequest(req *pb.RegisterRequest) error {
 // /api/alerts dashboards (#154).
 func validateKernelEvent(e *pb.KernelEvent) error {
 	fields := []namedField{
-		{"node_id", e.NodeId},
-		{"event_id", e.EventId},
+		{name: "node_id", value: e.NodeId},
+		{name: "event_id", value: e.EventId},
 	}
 	info, ok := eventtype.Lookup(e.Type)
 	if !ok {
@@ -460,7 +492,7 @@ func validateKernelEvent(e *pb.KernelEvent) error {
 	}
 	if info.Strings != nil {
 		for _, f := range info.Strings(e) {
-			fields = append(fields, namedField{f.Name, f.Value})
+			fields = append(fields, namedField{f.Name, f.Value, freeTextFields[f.Name]})
 		}
 	}
 	if err := validateFields(fields); err != nil {
