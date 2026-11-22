@@ -56,8 +56,8 @@ func TestStoreErrors_TransientIs503(t *testing.T) {
 			if code != http.StatusServiceUnavailable {
 				t.Errorf("%s %s: code=%d, want 503 (body=%s)", name, path, code, body)
 			}
-			if strings.Contains(body, "store:") {
-				t.Errorf("%s %s: body leaks store error text: %s", name, path, body)
+			if strings.TrimSpace(body) != `{"error":"service unavailable"}` {
+				t.Errorf("%s %s: body=%s, want fixed service-unavailable message", name, path, body)
 			}
 		}
 	}

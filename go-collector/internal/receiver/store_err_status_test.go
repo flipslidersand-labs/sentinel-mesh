@@ -35,10 +35,17 @@ func TestCheckAuth_StoreErrorCodes(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			lim, _ := newTestLimiter()
+			got := map[string]int{}
+			lim.OnFail = func(reason string) { got[reason]++ }
 			_, err := checkAuthLimited(authCtx("203.0.113.7", tok), errResolver{tc.err}, true, lim)
-			if got := status.Code(err); got != tc.want {
-				t.Fatalf("code = %v, want %v (err=%v)", got, tc.want, err)
+			if code := status.Code(err); code != tc.want {
+				t.Fatalf("code = %v, want %v (err=%v)", code, tc.want, err)
 			}
+			if tc.want == codes.Unavailable && status.Convert(err).Message() != "auth lookup temporarily unavailable" {
+				t.Fatalf("message = %q", status.Convert(err).Message())
+			}
+			// A store error is not the caller's failure: nothing is counted.
+			assertCounts(t, got, map[string]int{})
 		})
 	}
 }
