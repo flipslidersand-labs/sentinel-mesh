@@ -626,15 +626,20 @@ const FREE_TEXT_MAX_BYTES: usize = 256;
 /// Trade-off: non-ASCII symbols and punctuation (em dash, euro sign, katakana
 /// middle dot, ...) also become '?'. That is deliberate: a '?' in a file name
 /// is better than the collector rejecting the whole event as INVALID, which
-/// would let a crafted name evade detection. Residual risk: a character that
-/// Rust's Unicode version knows but Go's does not (very new assignments) would
-/// still pass here and could be rejected by the collector.
+/// would let a crafted name evade detection.
+///
+/// Known gap: this is defense in depth on the agent side, not a guarantee.
+/// Measured against Go 1.23 (Unicode 15.0) and rustc 1.94: of the ~149k
+/// non-ASCII code points for which `is_alphanumeric` is true, ~9.7k are
+/// letters/digits added in Unicode 16/17 that Go's tables do not know, so the
+/// collector can still reject them. The full fix is to sanitize on the
+/// collector side (tracked as a separate issue).
 fn is_printable_char(c: char) -> bool {
     matches!(c, ' '..='~') || (!c.is_ascii() && c.is_alphanumeric())
 }
 
-/// Make `s` something the collector should accept (it does not retry INVALID,
-/// so a rejected value loses the whole event): characters failing
+/// Make `s` less likely to be rejected by the collector (it does not retry
+/// INVALID, so a rejected value loses the whole event): characters failing
 /// `is_printable_char` become '?' and the result is cut to
 /// `FREE_TEXT_MAX_BYTES` bytes on a character boundary.
 fn sanitize_free_text(s: &str) -> String {
