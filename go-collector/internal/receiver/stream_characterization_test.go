@@ -10,6 +10,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/flipslidersand/sentinel-mesh/internal/anomaly"
+	"github.com/flipslidersand/sentinel-mesh/internal/model"
 	"github.com/flipslidersand/sentinel-mesh/internal/notify"
 	"github.com/flipslidersand/sentinel-mesh/internal/pb"
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
@@ -50,11 +51,11 @@ func TestStreamEvents_ValidEventWithAlertAcksOkAndPersistsAll(t *testing.T) {
 	if len(stream.acks) != 2 || !stream.acks[0].Ok || !stream.acks[1].Ok {
 		t.Fatalf("want 2 Ok acks, got %v", stream.acks)
 	}
-	evs, err := st.ListEventsWhere(context.Background(), func(id string) bool { return id == "node-1" }, 10)
+	evs, err := st.ListEventsMatching(context.Background(), func(e model.Event) bool { return e.NodeID == "node-1" }, 10)
 	if err != nil || len(evs) != 2 {
 		t.Fatalf("ListEvents = %d, %v; want 2", len(evs), err)
 	}
-	alerts, err := st.ListAlertsWhere(context.Background(), func(id string) bool { return id == "node-1" }, 10)
+	alerts, err := st.ListAlertsMatching(context.Background(), func(a model.Alert) bool { return a.NodeID == "node-1" }, 10)
 	if err != nil || len(alerts) == 0 {
 		t.Fatalf("ListAlerts = %d, %v; want >0", len(alerts), err)
 	}

@@ -2,7 +2,6 @@ package registry
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"sync"
@@ -199,10 +198,6 @@ func (r *Registry) Regions() []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-func (r *Registry) MarshalJSON() ([]byte, error) {
-	return json.Marshal(r.List())
 }
 
 // DefaultEvictAfter is how long a node stays inactive before it is evicted

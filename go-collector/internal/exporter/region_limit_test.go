@@ -39,7 +39,7 @@ func TestRegionFilter_LimitCountsMatches(t *testing.T) {
 		if _, err := st.SaveEventDedup(ctx, model.Event{EventID: id, NodeID: node, Timestamp: ts, Type: "exec", Payload: json.RawMessage(`{}`)}); err != nil {
 			t.Fatal(err)
 		}
-		if err := st.SaveAlert(ctx, model.Alert{AlertID: id, NodeID: node, Timestamp: ts.Add(time.Duration(i) * time.Millisecond)}); err != nil {
+		if _, err := st.SaveAlertDedup(ctx, model.Alert{AlertID: id, NodeID: node, Timestamp: ts.Add(time.Duration(i) * time.Millisecond)}); err != nil {
 			t.Fatal(err)
 		}
 	}
