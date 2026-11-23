@@ -281,6 +281,64 @@ func TestAggregator_NodesRegionFollowsUpstreamKey(t *testing.T) {
 	}
 }
 
+// TestAggregator_EventsAlertsRegionFollowsUpstreamKey: like /api/nodes, the
+// records returned by /api/events and /api/alerts carry the --upstreams key as
+// their region, not the one the upstream stamped on them, so the returned value
+// agrees with the ?region= filter. Covers the cached path, the direct-fetch path
+// (node filter) and that the cache itself is not rewritten (#540, #468).
+func TestAggregator_EventsAlertsRegionFollowsUpstreamKey(t *testing.T) {
+	ts := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	up := fakeCollector(t,
+		[]registry.AgentNode{{NodeID: "a1", Region: "default", Status: "active"}},
+		[]model.Event{{EventID: "e1", NodeID: "a1", Region: "default", Timestamp: ts}},
+		[]model.Alert{{AlertID: "al1", NodeID: "a1", Region: "default", Timestamp: ts}},
+	)
+	agg := New([]Upstream{{Region: "tokyo", URL: up.URL}}, 0, "", nil)
+	agg.PollOnce(context.Background())
+	r := Router(agg, t.TempDir(), nil, "")
+
+	get := func(path string, out any) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s code = %d", path, w.Code)
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), out); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, path := range []string{
+		"/api/events?region=tokyo",         // cached (EventsIn)
+		"/api/events?region=tokyo&node=a1", // direct fetch (FetchEvents)
+		"/api/events",                      // all regions
+	} {
+		var evs []model.Event
+		get(path, &evs)
+		if len(evs) != 1 || evs[0].Region != "tokyo" {
+			t.Errorf("%s = %+v, want 1 event with region tokyo", path, evs)
+		}
+	}
+	for _, path := range []string{"/api/alerts?region=tokyo", "/api/alerts"} {
+		var als []model.Alert
+		get(path, &als)
+		if len(als) != 1 || als[0].Region != "tokyo" {
+			t.Errorf("%s = %+v, want 1 alert with region tokyo", path, als)
+		}
+	}
+
+	// The cache must not be rewritten: only the returned copies are.
+	agg.mu.RLock()
+	defer agg.mu.RUnlock()
+	if got := agg.state["tokyo"].events[0].Region; got != "default" {
+		t.Errorf("cached event region = %q, want unchanged %q", got, "default")
+	}
+	if got := agg.state["tokyo"].alerts[0].Region; got != "default" {
+		t.Errorf("cached alert region = %q, want unchanged %q", got, "default")
+	}
+}
+
 // eventually polls cond until it returns true or timeout elapses.
 func eventually(t *testing.T, timeout time.Duration, cond func() bool, msg string) {
 	t.Helper()
