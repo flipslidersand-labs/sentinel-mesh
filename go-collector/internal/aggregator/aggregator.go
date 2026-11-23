@@ -424,7 +424,34 @@ func mergeTime(e model.Event) time.Time {
 // served. region restricts to one upstream (empty = all). Upstreams that
 // fail are skipped, like unreachable regions in the cached view.
 func (a *Aggregator) FetchEvents(ctx context.Context, region, node string, limit int) []model.Event {
-	lists := make([][]model.Event, len(a.upstreams))
+	return mergeEvents(fetchPerUpstream(ctx, a, region, node, limit, api.PathEvents, "events",
+		a.cachedEvents, withEventRegion))
+}
+
+// FetchAlerts is the alert counterpart of FetchEvents: it asks the upstreams
+// directly for node / a limit above the cache size and falls back, per
+// upstream, to the node-filtered cache when the fetch fails (#553).
+func (a *Aggregator) FetchAlerts(ctx context.Context, region, node string, limit int) []model.Alert {
+	lists := fetchPerUpstream(ctx, a, region, node, limit, api.PathAlerts, "alerts",
+		a.cachedAlerts, withAlertRegion)
+	var out []model.Alert
+	for _, l := range lists {
+		out = append(out, l...)
+	}
+	sortAlerts(out)
+	if out == nil {
+		out = []model.Alert{}
+	}
+	return out
+}
+
+// fetchPerUpstream queries path on every upstream (or only region's) in
+// parallel with limit and node forwarded. An upstream that fails is replaced
+// by cached(region, node), and every list is stamped with its --upstreams key
+// via withRegion. The result has one entry per upstream, in upstream order.
+func fetchPerUpstream[T any](ctx context.Context, a *Aggregator, region, node string, limit int,
+	path, kind string, cached func(region, node string) []T, withRegion func([]T, string) []T) [][]T {
+	lists := make([][]T, len(a.upstreams))
 	var wg sync.WaitGroup
 	for i, u := range a.upstreams {
 		if region != "" && u.Region != region {
@@ -437,18 +464,18 @@ func (a *Aggregator) FetchEvents(ctx context.Context, region, node string, limit
 			if node != "" {
 				q.Set("node", node)
 			}
-			var evs []model.Event
-			if err := a.fetchJSON(ctx, u.URL+api.PathEvents+"?"+q.Encode(), &evs); err != nil {
-				a.log.Warn("upstream events fetch failed, falling back to cache",
+			var items []T
+			if err := a.fetchJSON(ctx, u.URL+path+"?"+q.Encode(), &items); err != nil {
+				a.log.Warn("upstream "+kind+" fetch failed, falling back to cache",
 					zap.String("region", u.Region), zap.String("url", u.URL), zap.Error(err))
-				lists[i] = withEventRegion(a.cachedEvents(u.Region, node), u.Region)
+				lists[i] = withRegion(cached(u.Region, node), u.Region)
 				return
 			}
-			lists[i] = withEventRegion(evs, u.Region)
+			lists[i] = withRegion(items, u.Region)
 		}(i, u)
 	}
 	wg.Wait()
-	return mergeEvents(lists)
+	return lists
 }
 
 // AlertsIn returns merged alerts across reachable regions, newest first,
@@ -466,12 +493,45 @@ func (a *Aggregator) AlertsIn(region string) []model.Alert {
 			}
 		}
 	}
+	sortAlerts(out)
+	return out
+}
+
+// sortAlerts orders alerts newest first, ties broken by AlertID.
+func sortAlerts(out []model.Alert) {
 	sort.SliceStable(out, func(i, j int) bool {
 		if !out[i].Timestamp.Equal(out[j].Timestamp) {
 			return out[i].Timestamp.After(out[j].Timestamp)
 		}
 		return out[i].AlertID < out[j].AlertID
 	})
+}
+
+// withAlertRegion returns a copy of als with Region set to the --upstreams
+// key. The cached slice is never modified.
+func withAlertRegion(als []model.Alert, region string) []model.Alert {
+	out := make([]model.Alert, len(als))
+	for i, al := range als {
+		al.Region = region
+		out[i] = al
+	}
+	return out
+}
+
+// cachedAlerts is the alert counterpart of cachedEvents.
+func (a *Aggregator) cachedAlerts(region, node string) []model.Alert {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	s := a.state[region]
+	if s == nil || !s.reachable {
+		return nil
+	}
+	out := make([]model.Alert, 0, len(s.alerts))
+	for _, al := range s.alerts {
+		if node == "" || al.NodeID == node {
+			out = append(out, al)
+		}
+	}
 	return out
 }
 
