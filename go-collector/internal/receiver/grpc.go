@@ -186,16 +186,25 @@ type server struct {
 	pendingOrder   []pendingKey // insertion order, oldest first (FIFO eviction)
 	maxPending     int          // zero means maxPendingAnomaly; tests lower it
 
-	// uncounted holds the events whose save failed and which therefore were
-	// not counted (event metric, anomaly detector) yet, keyed by (node,
-	// event_id). The resend that finally succeeds counts the event, whether
-	// the store reports it as new or as a duplicate (the failed write landed
-	// after all, #325) (#548). Guarded by pendingMu; same cap as pendingAnomaly.
-	uncounted      map[pendingKey]struct{}
-	uncountedOrder []pendingKey // insertion order, oldest first (FIFO eviction)
+	// countState remembers, per (node, event_id), whether the event has been
+	// counted (event metric, anomaly detector) on this process: countedState
+	// after a successful save, uncountedState while only failed saves were
+	// seen. A failed resend never downgrades a counted event. A duplicate
+	// resend counts the event only if it is marked uncounted (its timed-out
+	// write landed after all, #325) (#548). Guarded by pendingMu; same cap as
+	// pendingAnomaly, FIFO eviction: an evicted entry is forgotten.
+	countState      map[pendingKey]countStateKind
+	countStateOrder []pendingKey // insertion order, oldest first
 }
 
 type pendingKey struct{ nodeID, eventID string }
+
+type countStateKind uint8
+
+const (
+	uncountedState countStateKind = iota + 1
+	countedState
+)
 
 const maxPendingAnomaly = 1024
 
@@ -248,53 +257,58 @@ func (s *server) pendingAnomalyFor(ev model.Event) (model.Alert, bool) {
 	return a, ok
 }
 
-// markUncounted records that ev's save failed, so it has not been counted yet.
-// Events without an event_id are not tracked: the store cannot report their
-// resend as a duplicate, so the resend that succeeds is a new event anyway.
-func (s *server) markUncounted(ev model.Event) {
-	if ev.EventID == "" {
-		return
+// setCountState records st for ev (caller holds pendingMu), evicting the
+// oldest entry at the cap.
+func (s *server) setCountState(k pendingKey, st countStateKind) {
+	if s.countState == nil {
+		s.countState = make(map[pendingKey]countStateKind)
 	}
-	s.pendingMu.Lock()
-	defer s.pendingMu.Unlock()
-	if s.uncounted == nil {
-		s.uncounted = make(map[pendingKey]struct{})
+	if _, ok := s.countState[k]; !ok {
+		limit := s.maxPending
+		if limit <= 0 {
+			limit = maxPendingAnomaly
+		}
+		if len(s.countState) >= limit {
+			delete(s.countState, s.countStateOrder[0])
+			s.countStateOrder = s.countStateOrder[1:]
+		}
+		s.countStateOrder = append(s.countStateOrder, k)
 	}
-	k := pendingKey{ev.NodeID, ev.EventID}
-	if _, ok := s.uncounted[k]; ok {
-		return
-	}
-	limit := s.maxPending
-	if limit <= 0 {
-		limit = maxPendingAnomaly
-	}
-	if len(s.uncounted) >= limit {
-		delete(s.uncounted, s.uncountedOrder[0]) // drop the oldest: that event stays uncounted
-		s.uncountedOrder = s.uncountedOrder[1:]
-	}
-	s.uncounted[k] = struct{}{}
-	s.uncountedOrder = append(s.uncountedOrder, k)
+	s.countState[k] = st
 }
 
-// takeUncounted reports whether ev was marked uncounted and clears the mark,
-// in one step under the lock, so concurrent resends count the event once.
-func (s *server) takeUncounted(ev model.Event) bool {
+// noteSaveFailed records that ev's save failed. An event not counted before is
+// marked uncounted; one already counted stays counted. Events without an
+// event_id are not tracked: the store cannot report their resend as a
+// duplicate, so the resend that succeeds is a new event anyway.
+func (s *server) noteSaveFailed(ev model.Event) {
 	if ev.EventID == "" {
-		return false
+		return
 	}
 	s.pendingMu.Lock()
 	defer s.pendingMu.Unlock()
 	k := pendingKey{ev.NodeID, ev.EventID}
-	if _, ok := s.uncounted[k]; !ok {
+	if s.countState[k] == countedState {
+		return
+	}
+	s.setCountState(k, uncountedState)
+}
+
+// claimCount is called after ev was saved and reports whether this delivery
+// must count it. A new event is counted; a duplicate only if it is marked
+// uncounted. Check and update are one step under the lock, so concurrent
+// resends count the event once.
+func (s *server) claimCount(ev model.Event, duplicate bool) bool {
+	if ev.EventID == "" {
+		return !duplicate
+	}
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	k := pendingKey{ev.NodeID, ev.EventID}
+	if duplicate && s.countState[k] != uncountedState {
 		return false
 	}
-	delete(s.uncounted, k)
-	for i, o := range s.uncountedOrder {
-		if o == k {
-			s.uncountedOrder = append(s.uncountedOrder[:i], s.uncountedOrder[i+1:]...)
-			break
-		}
-	}
+	s.setCountState(k, countedState)
 	return true
 }
 
@@ -891,11 +905,16 @@ func rejectEvent(stream pb.SentinelCollector_StreamEventsServer, reason pb.AckRe
 // evaluateAndNotify whether to feed the anomaly detector (#548).
 //
 // An event is counted once, on the delivery whose save succeeds:
-//   - save failed: not counted; remembered as uncounted.
-//   - saved as new: counted (any earlier failure mark is cleared).
+//   - save failed: not counted; remembered as uncounted, unless the event was
+//     already counted on an earlier delivery (that stays counted).
+//   - saved as new: counted.
 //   - reported as a duplicate: not counted, unless an earlier delivery failed
 //     and was never counted (its write landed after all, #325): then this
 //     delivery counts it. A missed count is worse than a late one.
+//
+// The state is in memory and bounded: after a restart or an eviction a failed
+// resend of an already counted event can be counted again, and an uncounted
+// event can stay uncounted.
 func (s *server) persistEvent(ctx context.Context, ev model.Event) (ok, skipCount bool) {
 	saveCtx, saveCancel := context.WithTimeout(ctx, storeOpTimeout)
 	// Note: ok=false does not prove the event is unsaved. On a store timeout the
@@ -908,12 +927,11 @@ func (s *server) persistEvent(ctx context.Context, ev model.Event) (ok, skipCoun
 		if s.metrics != nil {
 			s.metrics.RecordStoreWriteFailure("event")
 		}
-		s.markUncounted(ev)
+		s.noteSaveFailed(ev)
 		return false, true
 	}
 
-	wasUncounted := s.takeUncounted(ev)
-	if duplicate && !wasUncounted {
+	if !s.claimCount(ev, duplicate) {
 		return true, true
 	}
 

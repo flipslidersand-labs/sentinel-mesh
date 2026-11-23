@@ -189,21 +189,66 @@ func TestPendingAnomalyFor_EmptyEventIDNeverMatches(t *testing.T) {
 	}
 }
 
-// The uncounted set is bounded: at the cap the oldest entry is dropped (that
-// event is then not counted late), newer ones stay.
-func TestMarkUncounted_EvictsOldestFirst(t *testing.T) {
+// #548 review: an event already counted on its first delivery must not be
+// counted again when a resend's save fails (busy) and the next resend is then
+// reported as a duplicate. With and without a failed alert save (pending anomaly).
+func TestStreamEvents_CountedEventNotRecountedAfterFailedResend(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		node      string
+		alertErrs int
+		wantAlert int
+	}{
+		{"alert saved", "node-548-e", 0, 1},
+		{"alert save failed first", "node-548-f", 1, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := &fakeStorage{alertErrs: tc.alertErrs}
+			s, det := newAnomalyServer(fs, &countNotifier{})
+			s.metrics = countTestProvider(t)
+			before := eventsTotalFor(t, tc.node)
+
+			first := sendOne(t, s, countEvent(tc.node, "e1"))
+			if first != (tc.alertErrs == 0) {
+				t.Fatalf("first ack ok=%v", first)
+			}
+			fs.eventErrs = 1 // the resend's event save fails
+			if sendOne(t, s, countEvent(tc.node, "e1")) {
+				t.Fatal("second ack ok=true while the event save fails")
+			}
+			for i := 0; i < 2; i++ { // duplicate resends: saved before, counted before
+				if !sendOne(t, s, countEvent(tc.node, "e1")) {
+					t.Fatalf("resend %d ack ok=false", i)
+				}
+			}
+			if got := windowCount(det); got != 1 {
+				t.Fatalf("detector count = %d, want 1", got)
+			}
+			if got := eventsTotalFor(t, tc.node) - before; got != 1 {
+				t.Fatalf("events_total delta = %v, want 1", got)
+			}
+			if len(fs.alerts) != tc.wantAlert {
+				t.Fatalf("alerts = %d, want %d", len(fs.alerts), tc.wantAlert)
+			}
+		})
+	}
+}
+
+// The count-state set is bounded: at the cap the oldest entry is dropped
+// (an evicted uncounted event is then not counted late), newer ones stay.
+func TestCountState_EvictsOldestFirst(t *testing.T) {
 	s := &server{maxPending: 2}
 	ev := func(id string) model.Event { return model.Event{NodeID: "n", EventID: id} }
-	s.markUncounted(ev("a"))
-	s.markUncounted(ev("b"))
-	s.markUncounted(ev("c"))
-	if s.takeUncounted(ev("a")) {
+	s.noteSaveFailed(ev("a"))
+	s.noteSaveFailed(ev("b"))
+	s.noteSaveFailed(ev("c"))
+	if s.claimCount(ev("a"), true) {
 		t.Fatal("oldest entry survived the cap")
 	}
-	if !s.takeUncounted(ev("b")) || !s.takeUncounted(ev("c")) {
+	if !s.claimCount(ev("b"), true) || !s.claimCount(ev("c"), true) {
 		t.Fatal("newer entries were evicted")
 	}
-	if s.takeUncounted(ev("b")) {
-		t.Fatal("take did not clear the entry")
+	if s.claimCount(ev("b"), true) {
+		t.Fatal("claim did not mark the event counted")
 	}
 }
