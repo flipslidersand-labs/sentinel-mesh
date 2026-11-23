@@ -27,6 +27,11 @@ type fakeStorage struct {
 	// the real (node, event_id, rule) alert index (#465).
 	alertErrs  int
 	seenAlerts map[string]bool
+	// eventErrs makes the next N SaveEventDedup calls fail without storing the
+	// event; eventErrsSaved makes the next N fail after storing it (a store
+	// timeout whose background write still lands, #325). Set between sends.
+	eventErrs      int
+	eventErrsSaved int
 	// regions is the persisted node -> region map; regionLookupErr makes
 	// NodeRegion fail (#512).
 	regions         map[string]string
@@ -74,18 +79,32 @@ func (f *fakeStorage) NodeRegion(_ context.Context, nodeID string) (string, bool
 func (f *fakeStorage) SaveEventDedup(_ context.Context, e model.Event) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.eventErrs > 0 {
+		f.eventErrs--
+		return false, errors.New("injected event save failure")
+	}
+	if f.eventErrsSaved > 0 {
+		f.eventErrsSaved--
+		f.saveEventLocked(e)
+		return false, errors.New("injected event save failure (write landed)")
+	}
+	return f.saveEventLocked(e), nil
+}
+
+// saveEventLocked stores e and reports whether it was a duplicate.
+func (f *fakeStorage) saveEventLocked(e model.Event) (duplicate bool) {
 	if e.EventID != "" {
 		k := e.NodeID + "\x00" + e.EventID
 		if f.seen == nil {
 			f.seen = map[string]bool{}
 		}
 		if f.seen[k] {
-			return true, nil
+			return true
 		}
 		f.seen[k] = true
 	}
 	f.events = append(f.events, e)
-	return false, nil
+	return false
 }
 
 func (f *fakeStorage) SaveEvent(ctx context.Context, e model.Event) error {

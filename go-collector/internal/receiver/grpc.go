@@ -185,13 +185,33 @@ type server struct {
 	pendingAnomaly map[pendingKey]model.Alert
 	pendingOrder   []pendingKey // insertion order, oldest first (FIFO eviction)
 	maxPending     int          // zero means maxPendingAnomaly; tests lower it
+
+	// countState remembers, per (node, event_id), whether the event has been
+	// counted (event metric, anomaly detector) on this process: countedState
+	// after a successful save, uncountedState while only failed saves were
+	// seen. A failed resend never downgrades a counted event. A duplicate
+	// resend counts the event only if it is marked uncounted (its timed-out
+	// write landed after all, #325) (#548). Guarded by pendingMu; same cap as
+	// pendingAnomaly, FIFO eviction: an evicted entry is forgotten.
+	countState      map[pendingKey]countStateKind
+	countStateOrder []pendingKey // insertion order, oldest first
 }
 
 type pendingKey struct{ nodeID, eventID string }
 
+type countStateKind uint8
+
+const (
+	uncountedState countStateKind = iota + 1
+	countedState
+)
+
 const maxPendingAnomaly = 1024
 
 func (s *server) rememberAnomaly(a model.Alert) {
+	if a.EventID == "" {
+		return // a resend cannot be matched to an event without an id
+	}
 	s.pendingMu.Lock()
 	defer s.pendingMu.Unlock()
 	if s.pendingAnomaly == nil {
@@ -228,10 +248,68 @@ func (s *server) forgetAnomaly(a model.Alert) {
 }
 
 func (s *server) pendingAnomalyFor(ev model.Event) (model.Alert, bool) {
+	if ev.EventID == "" {
+		return model.Alert{}, false
+	}
 	s.pendingMu.Lock()
 	defer s.pendingMu.Unlock()
 	a, ok := s.pendingAnomaly[pendingKey{ev.NodeID, ev.EventID}]
 	return a, ok
+}
+
+// setCountState records st for ev (caller holds pendingMu), evicting the
+// oldest entry at the cap.
+func (s *server) setCountState(k pendingKey, st countStateKind) {
+	if s.countState == nil {
+		s.countState = make(map[pendingKey]countStateKind)
+	}
+	if _, ok := s.countState[k]; !ok {
+		limit := s.maxPending
+		if limit <= 0 {
+			limit = maxPendingAnomaly
+		}
+		if len(s.countState) >= limit {
+			delete(s.countState, s.countStateOrder[0])
+			s.countStateOrder = s.countStateOrder[1:]
+		}
+		s.countStateOrder = append(s.countStateOrder, k)
+	}
+	s.countState[k] = st
+}
+
+// noteSaveFailed records that ev's save failed. An event not counted before is
+// marked uncounted; one already counted stays counted. Events without an
+// event_id are not tracked: the store cannot report their resend as a
+// duplicate, so the resend that succeeds is a new event anyway.
+func (s *server) noteSaveFailed(ev model.Event) {
+	if ev.EventID == "" {
+		return
+	}
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	k := pendingKey{ev.NodeID, ev.EventID}
+	if s.countState[k] == countedState {
+		return
+	}
+	s.setCountState(k, uncountedState)
+}
+
+// claimCount is called after ev was saved and reports whether this delivery
+// must count it. A new event is counted; a duplicate only if it is marked
+// uncounted. Check and update are one step under the lock, so concurrent
+// resends count the event once.
+func (s *server) claimCount(ev model.Event, duplicate bool) bool {
+	if ev.EventID == "" {
+		return !duplicate
+	}
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	k := pendingKey{ev.NodeID, ev.EventID}
+	if duplicate && s.countState[k] != uncountedState {
+		return false
+	}
+	s.setCountState(k, countedState)
+	return true
 }
 
 // defaultLivenessInterval is a third of the registry's default heartbeat
@@ -812,12 +890,14 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 			storedEvent.Region = region
 		}
 
-		saveOk, duplicate := s.persistEvent(stream.Context(), storedEvent)
-		// A resent event already had its metrics and anomaly counting done on
-		// the first delivery, but its alerts may not have been saved (the event
-		// and alert writes are separate transactions), so rules are still
-		// evaluated; already-saved alerts are skipped by the store (#465).
-		if _, alertsOk := s.evaluateAndNotify(stream.Context(), storedEvent, duplicate); !alertsOk {
+		saveOk, skipCount := s.persistEvent(stream.Context(), storedEvent)
+		// An event is counted (event metric, anomaly detector) once, on the
+		// delivery whose save succeeds. A failed save and a resend already
+		// counted on an earlier delivery are not counted (skipCount), but the
+		// alerts of such an event may not have been saved (the event and alert
+		// writes are separate transactions), so rules are still evaluated;
+		// already-saved alerts are skipped by the store (#465, #548).
+		if _, alertsOk := s.evaluateAndNotify(stream.Context(), storedEvent, skipCount); !alertsOk {
 			saveOk = false
 		}
 
@@ -895,11 +975,23 @@ func rejectEvent(stream pb.SentinelCollector_StreamEventsServer, reason pb.AckRe
 }
 
 // persistEvent saves the event (bounded by storeOpTimeout) and records the
-// store-failure and event metrics. It reports whether the save succeeded and
-// whether the store skipped ev as a duplicate (no event metric is recorded
-// then).
-func (s *server) persistEvent(ctx context.Context, ev model.Event) (ok, duplicate bool) {
-	ok = true
+// store-failure metric. It reports whether the save succeeded and whether the
+// caller must skip counting the event (skipCount): the event metric is
+// recorded here only when the event is counted, and the same flag tells
+// evaluateAndNotify whether to feed the anomaly detector (#548).
+//
+// An event is counted once, on the delivery whose save succeeds:
+//   - save failed: not counted; remembered as uncounted, unless the event was
+//     already counted on an earlier delivery (that stays counted).
+//   - saved as new: counted.
+//   - reported as a duplicate: not counted, unless an earlier delivery failed
+//     and was never counted (its write landed after all, #325): then this
+//     delivery counts it. A missed count is worse than a late one.
+//
+// The state is in memory and bounded: after a restart or an eviction a failed
+// resend of an already counted event can be counted again, and an uncounted
+// event can stay uncounted.
+func (s *server) persistEvent(ctx context.Context, ev model.Event) (ok, skipCount bool) {
 	saveCtx, saveCancel := context.WithTimeout(ctx, storeOpTimeout)
 	// Note: ok=false does not prove the event is unsaved. On a store timeout the
 	// background write may still complete (#325). A retry with the same
@@ -908,21 +1000,22 @@ func (s *server) persistEvent(ctx context.Context, ev model.Event) (ok, duplicat
 	saveCancel()
 	if storeErr != nil {
 		s.log.Error("save event", zap.Error(storeErr))
-		ok = false
 		if s.metrics != nil {
 			s.metrics.RecordStoreWriteFailure("event")
 		}
+		s.noteSaveFailed(ev)
+		return false, true
 	}
 
-	if duplicate {
-		return ok, true
+	if !s.claimCount(ev, duplicate) {
+		return true, true
 	}
 
 	// Phase 6: record event metric
 	if s.metrics != nil {
 		s.metrics.RecordEvent(ev.Type, ev.NodeID)
 	}
-	return ok, false
+	return true, false
 }
 
 // evaluateAndNotify runs the alert engine and anomaly detector on ev, saves,
@@ -932,16 +1025,20 @@ func (s *server) persistEvent(ctx context.Context, ev model.Event) (ok, duplicat
 // engine and detector run independently so a nil engine never disables the
 // detector or vice versa (#150).
 //
-// For a duplicate (resent) event (#465):
-//   - the anomaly detector is skipped so the event is not counted twice. An
-//     anomaly alert that failed to save on the first delivery is kept in
-//     memory and saved again on the resend (#491); it is lost if the process
-//     restarts in between.
+// When skipCount is set (the event's save failed, or it was already counted on
+// an earlier delivery, see persistEvent) (#465, #548):
+//   - the anomaly detector is skipped so the event is not counted twice (or
+//     counted before it is saved).
+//   - an anomaly alert that failed to save on an earlier delivery is kept in
+//     memory and saved again on the next delivery of the same event, whether
+//     or not that delivery is a duplicate and whether or not its own event
+//     save succeeds (#491, #548); it is lost if the process restarts in
+//     between.
 //   - an alert the store already holds is neither recorded nor notified again.
 //   - notification is at-least-once: an alert is notified even when its save
 //     failed, so a resend that then saves it notifies a second time. A
 //     duplicate notification is preferred over a missing one.
-func (s *server) evaluateAndNotify(ctx context.Context, ev model.Event, duplicate bool) (alerts []alerting.Alert, saveOk bool) {
+func (s *server) evaluateAndNotify(ctx context.Context, ev model.Event, skipCount bool) (alerts []alerting.Alert, saveOk bool) {
 	saveOk = true
 	if s.engine == nil && s.detector == nil {
 		return nil, saveOk
@@ -961,13 +1058,12 @@ func (s *server) evaluateAndNotify(ctx context.Context, ev model.Event, duplicat
 	}
 	// Phase 7: frequency-based anomaly detection
 	anomalyIDs := map[string]bool{}
-	if s.detector != nil && !duplicate {
+	if a, ok := s.pendingAnomalyFor(ev); ok {
+		// Counted on an earlier delivery: only the alert save is outstanding.
+		anomalyIDs[a.AlertID] = true
+		alerts = append(alerts, a)
+	} else if s.detector != nil && !skipCount {
 		for _, a := range s.detector.Record(ev) {
-			anomalyIDs[a.AlertID] = true
-			alerts = append(alerts, a)
-		}
-	} else if duplicate {
-		if a, ok := s.pendingAnomalyFor(ev); ok {
 			anomalyIDs[a.AlertID] = true
 			alerts = append(alerts, a)
 		}
