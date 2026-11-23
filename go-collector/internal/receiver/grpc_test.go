@@ -23,6 +23,7 @@ import (
 
 	"github.com/flipslidersand/sentinel-mesh/internal/anomaly"
 	"github.com/flipslidersand/sentinel-mesh/internal/eventtype"
+	"github.com/flipslidersand/sentinel-mesh/internal/model"
 	"github.com/flipslidersand/sentinel-mesh/internal/notify"
 	"github.com/flipslidersand/sentinel-mesh/internal/pb"
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
@@ -287,7 +288,7 @@ func TestStreamEvents_RejectsInvalidEventWithoutPersisting(t *testing.T) {
 	if len(reg.List()) != 0 {
 		t.Fatal("invalid node_id must not reach the registry (no heartbeat)")
 	}
-	events, err := st.ListEventsWhere(context.Background(), func(id string) bool { return id == "node-1\x00evil" }, 10)
+	events, err := st.ListEventsMatching(context.Background(), func(e model.Event) bool { return e.NodeID == "node-1\x00evil" }, 10)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
@@ -321,7 +322,7 @@ func TestStreamEvents_RejectsUnknownEventTypeWithoutPersisting(t *testing.T) {
 		if len(reg.List()) != 0 {
 			t.Fatalf("type %d: must not reach the registry", typ)
 		}
-		events, err := st.ListEventsWhere(context.Background(), func(id string) bool { return id == "node-1" }, 10)
+		events, err := st.ListEventsMatching(context.Background(), func(e model.Event) bool { return e.NodeID == "node-1" }, 10)
 		if err != nil {
 			t.Fatalf("ListEvents: %v", err)
 		}
@@ -379,7 +380,7 @@ func TestStreamEvents_RejectsNodeIDNotMatchingAuthenticatedIdentity(t *testing.T
 	if len(reg.List()) != 0 {
 		t.Fatal("mismatched node_id must not reach the registry (no heartbeat)")
 	}
-	events, err := st.ListEventsWhere(context.Background(), func(id string) bool { return id == "node-b" }, 10)
+	events, err := st.ListEventsMatching(context.Background(), func(e model.Event) bool { return e.NodeID == "node-b" }, 10)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
@@ -418,7 +419,7 @@ func TestStreamEvents_AllowsMatchingAuthenticatedIdentity(t *testing.T) {
 	if len(stream.acks) != 1 || !stream.acks[0].Ok {
 		t.Fatalf("expected a single Ack.Ok=true, got %+v", stream.acks)
 	}
-	events, err := st.ListEventsWhere(context.Background(), func(id string) bool { return id == "node-a" }, 10)
+	events, err := st.ListEventsMatching(context.Background(), func(e model.Event) bool { return e.NodeID == "node-a" }, 10)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
@@ -498,7 +499,7 @@ func TestStreamEvents_InvalidEventsConsumeRateLimit(t *testing.T) {
 	if last.Reason != pb.AckReason_ACK_REASON_RATE_LIMITED {
 		t.Fatalf("throttled Ack.Reason = %v, want RATE_LIMITED", last.Reason)
 	}
-	got, err := st.ListEventsWhere(context.Background(), func(id string) bool { return id == "node-1" }, 10)
+	got, err := st.ListEventsMatching(context.Background(), func(e model.Event) bool { return e.NodeID == "node-1" }, 10)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
@@ -689,7 +690,7 @@ func TestStreamEvents_DetectorRunsWithoutEngine(t *testing.T) {
 		t.Fatalf("StreamEvents: %v", err)
 	}
 
-	alerts, err := st.ListAlertsWhere(context.Background(), func(id string) bool { return id == "node-1" }, 10)
+	alerts, err := st.ListAlertsMatching(context.Background(), func(a model.Alert) bool { return a.NodeID == "node-1" }, 10)
 	if err != nil {
 		t.Fatalf("ListAlerts: %v", err)
 	}
@@ -995,7 +996,7 @@ func TestStreamEvents_RejectsMissingOrMismatchedPayload(t *testing.T) {
 			if len(reg.List()) != 0 {
 				t.Fatal("must not reach the registry")
 			}
-			got, err := st.ListEventsWhere(context.Background(), func(string) bool { return true }, 10)
+			got, err := st.ListEventsMatching(context.Background(), func(model.Event) bool { return true }, 10)
 			if err != nil {
 				t.Fatalf("ListEvents: %v", err)
 			}
@@ -1122,7 +1123,7 @@ func TestStreamEvents_SanitizesFreeTextInsteadOfRejecting(t *testing.T) {
 			t.Fatalf("ack %d rejected: %+v", i, a)
 		}
 	}
-	events, err := st.ListEventsWhere(context.Background(), func(id string) bool { return id == "node-1" }, 10)
+	events, err := st.ListEventsMatching(context.Background(), func(e model.Event) bool { return e.NodeID == "node-1" }, 10)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}

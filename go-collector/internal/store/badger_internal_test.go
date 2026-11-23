@@ -111,7 +111,7 @@ func TestListEvents_NodeFilterScanCap(t *testing.T) {
 		}
 	}
 
-	got, err := st.ListEventsWhere(ctx, func(id string) bool { return id == "node-x" }, 100)
+	got, err := st.ListEventsMatching(ctx, func(e model.Event) bool { return e.NodeID == "node-x" }, 100)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestListEvents_NodeFilterScanCap(t *testing.T) {
 	if _, err := st.SaveEventDedup(ctx, e); err != nil {
 		t.Fatalf("SaveEvent: %v", err)
 	}
-	got, err = st.ListEventsWhere(ctx, func(id string) bool { return id == "node-x" }, 100)
+	got, err = st.ListEventsMatching(ctx, func(e model.Event) bool { return e.NodeID == "node-x" }, 100)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
@@ -269,11 +269,11 @@ func TestListAlerts_NewestFirstWithinOneSecond(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	for i, d := range []time.Duration{0, 100 * time.Millisecond, 500 * time.Millisecond} {
 		a := model.Alert{AlertID: "a" + strconv.Itoa(i), NodeID: "n1", Timestamp: base.Add(d)}
-		if err := st.SaveAlert(context.Background(), a); err != nil {
+		if _, err := st.SaveAlertDedup(context.Background(), a); err != nil {
 			t.Fatalf("SaveAlert: %v", err)
 		}
 	}
-	got, err := st.ListAlertsWhere(context.Background(), nil, 1)
+	got, err := st.ListAlertsMatching(context.Background(), nil, 1)
 	if err != nil {
 		t.Fatalf("ListAlerts: %v", err)
 	}
@@ -298,7 +298,7 @@ func TestList_CancelledContextReturnsNilWithoutRacing(t *testing.T) {
 		if _, err := st.SaveEventDedup(bg, model.Event{EventID: id, NodeID: "n"}); err != nil {
 			t.Fatalf("SaveEvent: %v", err)
 		}
-		if err := st.SaveAlert(bg, model.Alert{AlertID: id, NodeID: "n", Timestamp: time.Now()}); err != nil {
+		if _, err := st.SaveAlertDedup(bg, model.Alert{AlertID: id, NodeID: "n", Timestamp: time.Now()}); err != nil {
 			t.Fatalf("SaveAlert: %v", err)
 		}
 	}
@@ -306,14 +306,14 @@ func TestList_CancelledContextReturnsNilWithoutRacing(t *testing.T) {
 	ctx, cancel := context.WithCancel(bg)
 	cancel()
 	for i := 0; i < 50; i++ {
-		evs, err := st.ListEventsWhere(ctx, nil, 1000)
+		evs, err := st.ListEventsMatching(ctx, nil, 1000)
 		if err == nil {
 			continue // fn won the select; a complete result is fine
 		}
 		if evs != nil {
 			t.Fatalf("ListEvents: want nil slice on ctx error, got len %d", len(evs))
 		}
-		als, err := st.ListAlertsWhere(ctx, nil, 1000)
+		als, err := st.ListAlertsMatching(ctx, nil, 1000)
 		if err != nil && als != nil {
 			t.Fatalf("ListAlerts: want nil slice on ctx error, got len %d", len(als))
 		}
@@ -338,8 +338,8 @@ func TestClose_WaitsForAbandonedViewGoroutines(t *testing.T) {
 	ctx, cancel := context.WithCancel(bg)
 	cancel()
 	for i := 0; i < 200; i++ {
-		st.ListEventsWhere(ctx, nil, 100) //nolint:errcheck
-		st.ListAlertsWhere(ctx, nil, 100) //nolint:errcheck
+		st.ListEventsMatching(ctx, nil, 100) //nolint:errcheck
+		st.ListAlertsMatching(ctx, nil, 100) //nolint:errcheck
 	}
 	if err := st.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -376,7 +376,7 @@ func TestSaveEvent_CancelledMidWriteStillCountedInStats(t *testing.T) {
 	close(release)
 	st.inflight.Wait() // background write finished
 
-	stored, err := st.ListEventsWhere(context.Background(), nil, 10)
+	stored, err := st.ListEventsMatching(context.Background(), nil, 10)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
@@ -388,7 +388,7 @@ func TestSaveEvent_CancelledMidWriteStillCountedInStats(t *testing.T) {
 
 // #324: a predicate filter keeps scanning past non-matching records until
 // limit is reached, but still stops at maxNodeFilterScan.
-func TestListWhere_ScansUntilLimitAndHonoursCap(t *testing.T) {
+func TestListMatching_ScansUntilLimitAndHonoursCap(t *testing.T) {
 	st, err := New(t.TempDir())
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -407,28 +407,29 @@ func TestListWhere_ScansUntilLimitAndHonoursCap(t *testing.T) {
 			t.Fatal(err)
 		}
 		a := model.Alert{AlertID: strconv.Itoa(i), NodeID: node, Timestamp: time.Now()}
-		if err := st.SaveAlert(ctx, a); err != nil {
+		if _, err := st.SaveAlertDedup(ctx, a); err != nil {
 			t.Fatal(err)
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	keep := func(id string) bool { return id == "want" }
+	keepEv := func(e model.Event) bool { return e.NodeID == "want" }
+	keepAl := func(a model.Alert) bool { return a.NodeID == "want" }
 
-	evs, err := st.ListEventsWhere(ctx, keep, 2)
+	evs, err := st.ListEventsMatching(ctx, keepEv, 2)
 	if err != nil || len(evs) != 2 {
-		t.Fatalf("ListEventsWhere = %d, %v; want 2", len(evs), err)
+		t.Fatalf("ListEventsMatching = %d, %v; want 2", len(evs), err)
 	}
-	als, err := st.ListAlertsWhere(ctx, keep, 2)
+	als, err := st.ListAlertsMatching(ctx, keepAl, 2)
 	if err != nil || len(als) != 2 {
-		t.Fatalf("ListAlertsWhere = %d, %v; want 2", len(als), err)
+		t.Fatalf("ListAlertsMatching = %d, %v; want 2", len(als), err)
 	}
 
 	// Cap smaller than the distance to the matches: scan stops, fewer results.
 	orig := maxNodeFilterScan
 	maxNodeFilterScan = 4
 	t.Cleanup(func() { maxNodeFilterScan = orig })
-	evs, _ = st.ListEventsWhere(ctx, keep, 2)
-	als, _ = st.ListAlertsWhere(ctx, keep, 2)
+	evs, _ = st.ListEventsMatching(ctx, keepEv, 2)
+	als, _ = st.ListAlertsMatching(ctx, keepAl, 2)
 	if len(evs) != 0 || len(als) != 0 {
 		t.Errorf("past the scan cap: want 0/0, got %d/%d", len(evs), len(als))
 	}

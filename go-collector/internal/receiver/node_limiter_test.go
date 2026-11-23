@@ -10,6 +10,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/flipslidersand/sentinel-mesh/internal/model"
 	"github.com/flipslidersand/sentinel-mesh/internal/pb"
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
 	"github.com/flipslidersand/sentinel-mesh/internal/store"
@@ -66,7 +67,7 @@ func TestStreamEvents_RateLimitSharedAcrossStreamsOfSameNode(t *testing.T) {
 	if len(stream.acks) != 1 || stream.acks[0].Ok {
 		t.Fatalf("second stream of the same node must be throttled, acks=%v", stream.acks)
 	}
-	got, err := st.ListEventsWhere(context.Background(), func(id string) bool { return id == "node-1" }, 10)
+	got, err := st.ListEventsMatching(context.Background(), func(e model.Event) bool { return e.NodeID == "node-1" }, 10)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
@@ -86,7 +87,7 @@ func TestStreamEvents_RateLimitIndependentAcrossNodes(t *testing.T) {
 	if len(stream.acks) != 1 || !stream.acks[0].Ok {
 		t.Fatalf("node-2 must not be affected by node-1's flood, acks=%v", stream.acks)
 	}
-	got, _ := st.ListEventsWhere(context.Background(), func(id string) bool { return id == "node-2" }, 10)
+	got, _ := st.ListEventsMatching(context.Background(), func(e model.Event) bool { return e.NodeID == "node-2" }, 10)
 	if len(got) != 1 {
 		t.Fatalf("node-2 event should be stored, got %d", len(got))
 	}

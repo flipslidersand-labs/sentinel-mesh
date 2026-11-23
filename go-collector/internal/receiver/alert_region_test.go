@@ -39,7 +39,7 @@ func TestStreamEvents_AlertCarriesNodeRegion(t *testing.T) {
 	if err := s.StreamEvents(stream); err != nil {
 		t.Fatal(err)
 	}
-	alerts, err := st.ListAlertsWhere(context.Background(), nil, 10)
+	alerts, err := st.ListAlertsMatching(context.Background(), nil, 10)
 	if err != nil || len(alerts) == 0 {
 		t.Fatalf("alerts = %d, %v; want >0", len(alerts), err)
 	}

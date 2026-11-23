@@ -291,7 +291,7 @@ func TestAlerts_RegionFilter(t *testing.T) {
 			Message:   "test",
 			Severity:  "high",
 		}
-		if err := st.SaveAlert(context.Background(), alert); err != nil {
+		if _, err := st.SaveAlertDedup(context.Background(), alert); err != nil {
 			t.Fatalf("SaveAlert: %v", err)
 		}
 	}

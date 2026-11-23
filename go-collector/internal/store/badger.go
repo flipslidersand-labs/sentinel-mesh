@@ -31,9 +31,9 @@ var vlogGCInterval = 5 * time.Minute
 // rewritten if this fraction of it is estimated to be discardable.
 const vlogGCDiscardRatio = 0.5
 
-// maxNodeFilterScan bounds how many keys ListEventsWhere/ListAlertsWhere will read
-// while looking for matches to a node filter. Without this cap, a node
-// filter that matches few (or zero) records forces a full scan of the
+// maxNodeFilterScan bounds how many keys ListEventsMatching/ListAlertsMatching
+// will read while looking for matches to a record filter. Without this cap, a
+// node filter that matches few (or zero) records forces a full scan of the
 // retention window on every request — a client-controlled "limit=1" query
 // could otherwise force reading the store's entire contents (#153). This is
 // a short-term mitigation; the proper fix is a secondary index keyed by
@@ -330,7 +330,7 @@ const maxConflictRetries = 3
 func (s *Store) SaveEventDedup(ctx context.Context, e model.Event) (duplicate bool, err error) {
 	// Key by the collector's own receive time, not e.Timestamp — that field
 	// is agent-supplied and untrusted. Keying by it let a malicious agent
-	// pin its events to the front of ListEventsWhere forever with a far-future
+	// pin its events to the front of ListEventsMatching forever with a far-future
 	// timestamp, or overwrite unrelated events via a timestamp+EventID
 	// collision (#78). e.Timestamp is still stored in the record itself for
 	// display; it's just no longer trusted for ordering/storage identity.
@@ -405,27 +405,13 @@ func (s *Store) SaveEventDedup(ctx context.Context, e model.Event) (duplicate bo
 	return dup, nil
 }
 
-// ListEventsWhere returns up to limit events, newest first, whose node ID
-// passes keep (nil keeps everything). The scan continues until limit matches
-// are found, bounded by maxNodeFilterScan records when keep is non-nil, so
-// fewer than limit may be returned even if more matches exist (#153, #324).
-func (s *Store) ListEventsWhere(ctx context.Context, keep func(nodeID string) bool, limit int) ([]model.Event, error) {
-	return s.ListEventsMatching(ctx, byNode[model.Event](keep, func(e model.Event) string { return e.NodeID }), limit)
-}
-
-// ListEventsMatching is ListEventsWhere with a predicate over the whole event
-// (e.g. its Region, #512). The same scan cap applies when keep is non-nil.
+// ListEventsMatching returns up to limit events, newest first, that pass keep
+// (nil keeps everything). A predicate may look at the whole event (e.g. its
+// NodeID or Region, #512). The scan continues until limit matches are found,
+// bounded by maxNodeFilterScan records when keep is non-nil, so fewer than
+// limit may be returned even if more matches exist (#153, #324).
 func (s *Store) ListEventsMatching(ctx context.Context, keep func(model.Event) bool, limit int) ([]model.Event, error) {
 	return scanNewestFirst(ctx, s, "event:", "event", keep, limit)
-}
-
-// byNode adapts a node-ID predicate to a record predicate; nil stays nil so the
-// "no filter" scan-cap rule is unchanged.
-func byNode[T any](keep func(string) bool, nodeOf func(T) string) func(T) bool {
-	if keep == nil {
-		return nil
-	}
-	return func(r T) bool { return keep(nodeOf(r)) }
 }
 
 // scanNewestFirst walks the keys under prefix newest first, decoding each as T
@@ -509,13 +495,7 @@ func alertIDKey(nodeID, eventID, ruleID string) []byte {
 	return []byte(fmt.Sprintf("alertid:%d:%s:%d:%s:%s", len(nodeID), nodeID, len(eventID), eventID, ruleID))
 }
 
-// SaveAlert persists an alert to the store. See SaveAlertDedup.
-func (s *Store) SaveAlert(ctx context.Context, a model.Alert) error {
-	_, err := s.SaveAlertDedup(ctx, a)
-	return err
-}
-
-// SaveAlertDedup is SaveAlert that is idempotent per (node_id, event_id,
+// SaveAlertDedup persists an alert, idempotent per (node_id, event_id,
 // rule_id): if an alert with the same triple was already stored within the
 // retention window, a is not stored and duplicate is true (#465). The alert and
 // its index entry are written in one transaction with the same TTL. Alerts with
@@ -574,14 +554,9 @@ func (s *Store) SaveAlertDedup(ctx context.Context, a model.Alert) (duplicate bo
 	return dup, nil
 }
 
-// ListAlertsWhere is the alert counterpart of ListEventsWhere: newest first,
-// node predicate keep (nil keeps everything), same scan bound (#153, #324).
-func (s *Store) ListAlertsWhere(ctx context.Context, keep func(nodeID string) bool, limit int) ([]model.Alert, error) {
-	return s.ListAlertsMatching(ctx, byNode[model.Alert](keep, func(a model.Alert) string { return a.NodeID }), limit)
-}
-
-// ListAlertsMatching is ListAlertsWhere with a predicate over the whole alert
-// (e.g. its Region, #531). The same scan cap applies when keep is non-nil.
+// ListAlertsMatching is the alert counterpart of ListEventsMatching: newest
+// first, predicate over the whole alert (e.g. its NodeID or Region, #531),
+// same scan bound.
 func (s *Store) ListAlertsMatching(ctx context.Context, keep func(model.Alert) bool, limit int) ([]model.Alert, error) {
 	return scanNewestFirst(ctx, s, "alert:", "alert", keep, limit)
 }

@@ -22,7 +22,7 @@ func newInternalStore(t *testing.T) *Store {
 
 func countStored(t *testing.T, st *Store) (stored, execCount int) {
 	t.Helper()
-	events, err := st.ListEventsWhere(context.Background(), nil, 100)
+	events, err := st.ListEventsMatching(context.Background(), nil, 100)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestRun_StuckReadsDoNotBlockWrites(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
 		go func() {
-			_, err := st.ListEventsWhere(ctx, nil, 10)
+			_, err := st.ListEventsMatching(ctx, nil, 10)
 			done <- err
 		}()
 		select {
@@ -237,7 +237,7 @@ func TestSaveAlertDedup(t *testing.T) {
 			t.Fatalf("case %d: dup=%v err=%v, want dup=%v", i, dup, err, c.dup)
 		}
 	}
-	got, err := st.ListAlertsWhere(ctx, nil, 100)
+	got, err := st.ListAlertsMatching(ctx, nil, 100)
 	if err != nil || len(got) != 5 {
 		t.Fatalf("stored alerts = %d (err %v), want 5", len(got), err)
 	}

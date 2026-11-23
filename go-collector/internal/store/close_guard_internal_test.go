@@ -58,7 +58,7 @@ func TestClose_ConcurrentWithOperations(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; ; i++ {
-				if _, err := st.ListEventsWhere(ctx, nil, 5); err != nil && closed.Load() {
+				if _, err := st.ListEventsMatching(ctx, nil, 5); err != nil && closed.Load() {
 					return
 				}
 				if i == 0 {
@@ -91,7 +91,7 @@ func TestAfterClose_ReturnsErrClosed(t *testing.T) {
 	if _, err := st.SaveEventDedup(ctx, guardEvent("e")); !errors.Is(err, ErrClosed) {
 		t.Errorf("SaveEventDedup after Close: err=%v; want ErrClosed", err)
 	}
-	if _, err := st.ListEventsWhere(ctx, nil, 10); !errors.Is(err, ErrClosed) {
-		t.Errorf("ListEventsWhere after Close: err=%v; want ErrClosed", err)
+	if _, err := st.ListEventsMatching(ctx, nil, 10); !errors.Is(err, ErrClosed) {
+		t.Errorf("ListEventsMatching after Close: err=%v; want ErrClosed", err)
 	}
 }
