@@ -71,7 +71,14 @@ func Router(a *Aggregator, staticDir string, corsOrigins []string, apiToken stri
 			}
 			node := c.Query("node")
 			out := make([]model.Alert, 0)
-			for _, al := range a.AlertsIn(c.Query("region")) {
+			region := c.Query("region")
+			alerts := a.AlertsIn(region)
+			if node != "" || limit > eventLimit {
+				// Same as /api/events: the cache holds only the latest
+				// eventLimit alerts per region (#553).
+				alerts = a.FetchAlerts(c.Request.Context(), region, node, limit)
+			}
+			for _, al := range alerts {
 				if node != "" && al.NodeID != node {
 					continue
 				}
