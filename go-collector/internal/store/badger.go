@@ -53,10 +53,11 @@ type Store struct {
 	// it is left instead of on every event (#530). In memory only: after a
 	// restart the first touch of each node writes. nodeRegionWrites counts real
 	// writes (tests).
-	nodeRegionMu     sync.Mutex
-	nodeRegionAt     map[string]nodeRegionMark
-	nodeRegionPruned time.Time // last prune of nodeRegionAt
-	nodeRegionWrites atomic.Int64
+	nodeRegionMu       sync.Mutex
+	nodeRegionAt       map[string]nodeRegionMark
+	nodeRegionPruned   time.Time // last prune of nodeRegionAt
+	beforeRefreshWrite func()    // test hook
+	nodeRegionWrites   atomic.Int64
 
 	// inflight counts runWithContext goroutines still touching db, so Close
 	// can wait for them instead of closing the DB underneath a running View

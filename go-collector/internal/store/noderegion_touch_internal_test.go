@@ -250,3 +250,59 @@ func TestTouchNodeRegion_SurvivesReopenAfterLongConnection(t *testing.T) {
 		t.Fatalf("NodeRegion after long connection + reopen = %q, %v, %v; want eu-west", r, ok, err)
 	}
 }
+
+// #559: a stale touch (a stream that still carries the node's old region) must
+// extend the TTL only; it must not overwrite the region a newer Save stored.
+func TestTouchNodeRegion_StaleTouchDoesNotOverwriteNewerRegion(t *testing.T) {
+	ctx := context.Background()
+	st, clk := newTouchStore(t, 100*time.Hour)
+
+	if err := st.SaveNodeRegion(ctx, "node-a", "region-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveNodeRegion(ctx, "node-a", "region-b"); err != nil {
+		t.Fatal(err)
+	}
+	clk.Advance(51 * time.Hour) // a refresh is due
+	base := st.nodeRegionWrites.Load()
+	if err := st.TouchNodeRegion(ctx, "node-a", "region-a"); err != nil {
+		t.Fatal(err)
+	}
+	if got := st.nodeRegionWrites.Load() - base; got != 1 {
+		t.Fatalf("refresh writes = %d, want 1 (the TTL must still be extended)", got)
+	}
+	if r, ok, err := st.NodeRegion(ctx, "node-a"); err != nil || !ok || r != "region-b" {
+		t.Fatalf("NodeRegion = %q, %v, %v; want region-b, true, nil", r, ok, err)
+	}
+}
+
+// Same after a collector restart, when nothing is remembered about the node.
+func TestTouchNodeRegion_StaleTouchAfterRestartKeepsStoredRegion(t *testing.T) {
+	ctx := context.Background()
+	st, _ := reopenWithRecord(t, 100*time.Hour) // stored: eu-west
+	if err := st.TouchNodeRegion(ctx, "node-a", "us-east"); err != nil {
+		t.Fatal(err)
+	}
+	if r, ok, err := st.NodeRegion(ctx, "node-a"); err != nil || !ok || r != "eu-west" {
+		t.Fatalf("NodeRegion = %q, %v, %v; want eu-west, true, nil", r, ok, err)
+	}
+}
+
+// A Save that lands between a touch's claim and its write must win. The hook
+// runs after the touch has claimed the work and before it writes.
+func TestTouchNodeRegion_SaveDuringRefreshWins(t *testing.T) {
+	ctx := context.Background()
+	st, _ := reopenWithRecord(t, 100*time.Hour) // stored: eu-west, first touch is due
+	st.beforeRefreshWrite = func() {
+		st.beforeRefreshWrite = nil
+		if err := st.SaveNodeRegion(ctx, "node-a", "ap-south"); err != nil {
+			t.Error(err)
+		}
+	}
+	if err := st.TouchNodeRegion(ctx, "node-a", "eu-west"); err != nil {
+		t.Fatal(err)
+	}
+	if r, ok, err := st.NodeRegion(ctx, "node-a"); err != nil || !ok || r != "ap-south" {
+		t.Fatalf("NodeRegion = %q, %v, %v; want ap-south, true, nil", r, ok, err)
+	}
+}
