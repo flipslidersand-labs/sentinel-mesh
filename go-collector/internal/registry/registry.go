@@ -150,6 +150,9 @@ func (r *Registry) Region(nodeID string) (string, bool) {
 	return "", false
 }
 
+// SetInactive marks a registered node inactive; an unknown nodeID is ignored.
+// It is a test/ops helper: it does not set inactiveSince, so the heartbeat
+// checker never evicts a node that was marked this way.
 func (r *Registry) SetInactive(nodeID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
