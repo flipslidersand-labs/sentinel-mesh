@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **rust-agent (#554):** removed the `DropTracker` / `DropReport` / `to_drop_report` wrapper around `ThrottledCounter`; the dropped-event warning (first drop immediately, then at most once per 10 s, same message and values) now uses `ThrottledCounter` directly. Internal refactor, no behaviour change.
 - **go-collector (#552):** removed code with no production caller: `Store.ListEventsWhere`/`ListAlertsWhere` (use `ListEventsMatching`/`ListAlertsMatching`), `Store.SaveAlert` (use `SaveAlertDedup`) and `Registry.MarshalJSON`. No behaviour change; tests now call the remaining methods.
 - **rust-agent (#255):** removed the unused `MockEventLog` JSON wrapper (and its tests, and the now-unneeded `serde`/`serde_json` dependencies) from the agent. **The mock mode stdout is no longer JSON but the `Debug` form of each `KernelEvent`** (one line per event); nothing in the repo parses it.
 - **Web UI (#420):** the API token is now kept in `sessionStorage` instead of `localStorage`, so it is no longer persisted: closing the tab or browser clears it and you must re-enter it. A token left in `localStorage` by an older version is deleted on load (not migrated).
