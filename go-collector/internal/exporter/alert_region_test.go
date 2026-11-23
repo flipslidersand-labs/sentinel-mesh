@@ -31,7 +31,7 @@ func TestAlertsRegionFilter_UsesStoredAlertRegion(t *testing.T) {
 		{AlertID: "moved", NodeID: "legacy-node", Region: "ap-south"}, // stamped region wins over the registry
 	} {
 		a.Timestamp = time.Now().UTC()
-		if err := st.SaveAlert(ctx, a); err != nil {
+		if _, err := st.SaveAlertDedup(ctx, a); err != nil {
 			t.Fatal(err)
 		}
 	}

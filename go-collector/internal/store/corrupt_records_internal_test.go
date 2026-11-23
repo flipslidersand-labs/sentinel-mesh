@@ -49,7 +49,7 @@ func TestCorruptEventRecord_Skipped(t *testing.T) {
 	}
 
 	buf.Reset()
-	evs, err := st.ListEventsWhere(ctx, nil, 10)
+	evs, err := st.ListEventsMatching(ctx, nil, 10)
 	if err != nil || len(evs) != 1 || evs[0].EventID != "good" {
 		t.Fatalf("ListEvents = %v, %v; want only good", evs, err)
 	}
@@ -61,13 +61,13 @@ func TestCorruptEventRecord_Skipped(t *testing.T) {
 func TestCorruptAlertRecord_Skipped(t *testing.T) {
 	ctx := context.Background()
 	st := openTempStore(t, t.TempDir())
-	if err := st.SaveAlert(ctx, model.Alert{AlertID: "good", NodeID: "n1", Timestamp: time.Now()}); err != nil {
+	if _, err := st.SaveAlertDedup(ctx, model.Alert{AlertID: "good", NodeID: "n1", Timestamp: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	putRaw(t, st, "alert:2000-01-01T00:00:00.000000000Z:bad", `{"alert_id":`)
 
 	buf := captureLogs(t)
-	al, err := st.ListAlertsWhere(ctx, nil, 10)
+	al, err := st.ListAlertsMatching(ctx, nil, 10)
 	if err != nil || len(al) != 1 || al[0].AlertID != "good" {
 		t.Fatalf("ListAlerts = %v, %v; want only good", al, err)
 	}
