@@ -18,7 +18,7 @@ func sampleAlert() model.Alert {
 	return model.Alert{
 		AlertID:   "a1",
 		RuleID:    "suspicious-exec",
-		NodeID:    "yuki",
+		NodeID:    "node-b",
 		EventID:   "e42",
 		Timestamp: time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC),
 		Message:   "unexpected process",
@@ -44,7 +44,7 @@ func TestSlackNotifier_Send(t *testing.T) {
 	if gotContentType != "application/json" {
 		t.Errorf("content-type = %q", gotContentType)
 	}
-	for _, want := range []string{"critical", "unexpected process", "yuki", "suspicious-exec"} {
+	for _, want := range []string{"critical", "unexpected process", "node-b", "suspicious-exec"} {
 		if !strings.Contains(gotBody, want) {
 			t.Errorf("slack body missing %q: %s", want, gotBody)
 		}
@@ -75,7 +75,7 @@ func TestEmailNotifier_BuildMessage(t *testing.T) {
 		"From: alerts@example.com",
 		"To: ops@example.com, oncall@example.com",
 		"Subject: [SentinelMesh][critical] unexpected process",
-		"Node:     yuki",
+		"Node:     node-b",
 		"Rule:     suspicious-exec",
 	} {
 		if !strings.Contains(msg, want) {

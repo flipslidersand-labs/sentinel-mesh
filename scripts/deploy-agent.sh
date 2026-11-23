@@ -10,14 +10,14 @@
 #   ./scripts/deploy-agent.sh [OPTIONS] HOST...
 #
 # Examples:
-#   ./scripts/deploy-agent.sh --collector 192.0.2.10:50051 yuki-private ds1
-#   ./scripts/deploy-agent.sh --mock --collector 192.0.2.10:50051 minipc
-#   ./scripts/deploy-agent.sh --node-id web-01 --collector 192.0.2.10:50051 minipc
-#   ./scripts/deploy-agent.sh --region tokyo --collector 192.0.2.10:50051 yuki-private
+#   ./scripts/deploy-agent.sh --collector 192.0.2.10:50051 node-b node-c
+#   ./scripts/deploy-agent.sh --mock --collector 192.0.2.10:50051 node-a
+#   ./scripts/deploy-agent.sh --node-id web-01 --collector 192.0.2.10:50051 node-a
+#   ./scripts/deploy-agent.sh --region tokyo --collector 192.0.2.10:50051 node-b
 #
 #   # Per-agent gRPC auth (#183, per ADR-005: docs/adr/ADR-005-agent-auth-strategy.md):
 #   TOKEN=$(sentinel-collector token issue web-01 --data-dir /path/to/collector/data)
-#   ./scripts/deploy-agent.sh --tls --node-id web-01 --grpc-token "$TOKEN" --collector 192.0.2.10:50051 minipc
+#   ./scripts/deploy-agent.sh --tls --node-id web-01 --grpc-token "$TOKEN" --collector 192.0.2.10:50051 node-a
 #
 # TLS/auth options:
 #   --tls              connect via https:// (collector must have --grpc-tls-cert/--grpc-tls-key set)
