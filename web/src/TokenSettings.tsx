@@ -47,12 +47,13 @@ export function TokenSettings() {
           </button>
           {memoryOnly && (
             <p className="token-settings-hint" role="alert">
-              Could not save to localStorage; the token is valid for this tab
+              Could not save to sessionStorage; the token is valid for this tab
               only and will be lost on reload.
             </p>
           )}
           <p className="token-settings-hint">
-            Stored in this browser's localStorage only and sent as
+            Kept in this tab's sessionStorage only: it is cleared when the tab
+            or browser is closed, so you will need to enter it again. Sent as
             <code> Authorization: Bearer &lt;token&gt;</code> on every API
             request. Leave blank to clear it.
           </p>

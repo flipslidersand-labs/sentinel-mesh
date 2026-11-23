@@ -6,7 +6,10 @@ import { TokenSettings } from "./TokenSettings";
 
 const KEY = "sentinel-mesh:api-token";
 
-beforeEach(() => localStorage.clear());
+beforeEach(() => {
+  sessionStorage.clear();
+  localStorage.clear();
+});
 afterEach(cleanup);
 
 function openPanel() {
@@ -23,7 +26,7 @@ describe("TokenSettings", () => {
   });
 
   it("shows 'set' and prefills the input when a token is already stored", () => {
-    localStorage.setItem(KEY, "abc");
+    sessionStorage.setItem(KEY, "abc");
     render(<TokenSettings />);
     expect(screen.getByRole("button", { name: "API Token: set" })).toBeTruthy();
     expect(openPanel().value).toBe("abc");
@@ -45,7 +48,8 @@ describe("TokenSettings", () => {
     fireEvent.change(input, { target: { value: "  secret  " } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
-    expect(localStorage.getItem(KEY)).toBe("secret");
+    expect(sessionStorage.getItem(KEY)).toBe("secret");
+    expect(localStorage.getItem(KEY)).toBeNull();
     expect(getToken()).toBe("secret");
     expect(screen.getByRole("button", { name: "Saved" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "API Token: set" })).toBeTruthy();
@@ -56,21 +60,21 @@ describe("TokenSettings", () => {
     const input = openPanel();
     fireEvent.change(input, { target: { value: "via-enter" } });
     fireEvent.keyDown(input, { key: "Enter" });
-    expect(localStorage.getItem(KEY)).toBe("via-enter");
+    expect(sessionStorage.getItem(KEY)).toBe("via-enter");
   });
 
   it("clears the stored token when saved blank", () => {
-    localStorage.setItem(KEY, "old");
+    sessionStorage.setItem(KEY, "old");
     render(<TokenSettings />);
     const input = openPanel();
     fireEvent.change(input, { target: { value: "   " } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
-    expect(localStorage.getItem(KEY)).toBeNull();
+    expect(sessionStorage.getItem(KEY)).toBeNull();
     expect(screen.getByRole("button", { name: "API Token: not set" })).toBeTruthy();
   });
 
-  it("warns instead of 'Saved' when localStorage rejects the write", () => {
+  it("warns instead of 'Saved' when sessionStorage rejects the write", () => {
     const token = "x".repeat(32);
     const spy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new Error("QuotaExceededError");

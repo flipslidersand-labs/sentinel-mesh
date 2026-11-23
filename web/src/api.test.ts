@@ -1,28 +1,31 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "./api";
 
-// vitest's default "node" environment has no localStorage; auth.ts reads it
-// via getToken()/authHeaders(), so install a minimal in-memory stand-in.
-function installFakeLocalStorage() {
-  const store = new Map<string, string>();
-  Object.defineProperty(globalThis, "localStorage", {
-    value: {
-      getItem: (key: string) => store.get(key) ?? null,
-      setItem: (key: string, value: string) => {
-        store.set(key, value);
+// vitest's default "node" environment has no sessionStorage/localStorage;
+// auth.ts reads them via getToken()/authHeaders(), so install minimal
+// in-memory stand-ins.
+function installFakeStorage() {
+  for (const name of ["sessionStorage", "localStorage"]) {
+    const store = new Map<string, string>();
+    Object.defineProperty(globalThis, name, {
+      value: {
+        getItem: (key: string) => store.get(key) ?? null,
+        setItem: (key: string, value: string) => {
+          store.set(key, value);
+        },
+        removeItem: (key: string) => {
+          store.delete(key);
+        },
+        clear: () => store.clear(),
       },
-      removeItem: (key: string) => {
-        store.delete(key);
-      },
-      clear: () => store.clear(),
-    },
-    configurable: true,
-  });
+      configurable: true,
+    });
+  }
 }
 
 describe("api get() timeout", () => {
   beforeEach(() => {
-    installFakeLocalStorage();
+    installFakeStorage();
     vi.useFakeTimers();
   });
 
