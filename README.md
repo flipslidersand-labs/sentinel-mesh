@@ -216,9 +216,10 @@ A region whose collector is unreachable is **isolated**: it is reported with `"r
 
   **If you set `SENTINEL_API_TOKEN`, you must also enter it in the bundled UI**: open the
   "API Token" widget in the top-right corner of the dashboard header and paste the same value.
-  The UI stores it in the browser's `localStorage` and sends it as `Authorization: Bearer
+  The UI keeps it in the browser tab's `sessionStorage` (not persisted: closing the tab or
+  browser clears it, so you must enter it again next time) and sends it as `Authorization: Bearer
   <token>` on every `/api/*` request; without this step the dashboard itself gets `401`s from
-  every endpoint it calls.
+  every endpoint it calls. A token left in `localStorage` by an older UI version is deleted, not reused.
 
 - **Failed-auth throttling behind a reverse proxy**: failed authentication attempts are limited
   per source, keyed on the connection's remote IP (IPv4 /32, IPv6 /64); `X-Forwarded-For` is not
