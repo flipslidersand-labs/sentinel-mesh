@@ -268,8 +268,7 @@ async fn mock_source_counted(tx: Sender<KernelEvent>, rate: u64, dropped: Arc<At
             payload: Some(payload),
         };
 
-        let json = serde_json::to_string(&MockEventLog::from(&event)).unwrap_or_default();
-        println!("{json}");
+        println!("{event:?}");
 
         // try_send (not send().await): while stream_to_collector is
         // reconnecting (#73), the channel can fill up — dropping new mock
@@ -581,50 +580,6 @@ fn now_nanos() -> i64 {
         .unwrap_or(0)
 }
 
-#[derive(serde::Serialize)]
-struct MockEventLog {
-    event_id: String,
-    r#type: &'static str,
-    pid: u32,
-    comm: String,
-    detail: String,
-}
-
-impl From<&KernelEvent> for MockEventLog {
-    fn from(e: &KernelEvent) -> Self {
-        match &e.payload {
-            Some(Payload::Exec(ex)) => MockEventLog {
-                event_id: e.event_id.clone(),
-                r#type: "exec",
-                pid: ex.pid,
-                comm: ex.comm.clone(),
-                detail: ex.cmdline.clone(),
-            },
-            Some(Payload::Tcp(t)) => MockEventLog {
-                event_id: e.event_id.clone(),
-                r#type: "tcp",
-                pid: t.pid,
-                comm: t.comm.clone(),
-                detail: format!("{}:{} -> {}:{}", t.src_ip, t.src_port, t.dst_ip, t.dst_port),
-            },
-            Some(Payload::File(f)) => MockEventLog {
-                event_id: e.event_id.clone(),
-                r#type: "file",
-                pid: f.pid,
-                comm: f.comm.clone(),
-                detail: format!("{} {}", f.op, f.path),
-            },
-            None => MockEventLog {
-                event_id: e.event_id.clone(),
-                r#type: "unknown",
-                pid: 0,
-                comm: String::new(),
-                detail: String::new(),
-            },
-        }
-    }
-}
-
 /// Max bytes of `ExecEvent.cmdline`. Must not exceed the collector's
 /// `maxRegisterFieldLength` (go-collector/internal/receiver/grpc.go), which
 /// rejects longer values (the whole event is lost).
@@ -715,7 +670,7 @@ mod tests {
     }
 
     use super::*;
-    use crate::pb::{kernel_event::Payload, ExecEvent, FileEvent, KernelEvent, TcpEvent};
+    use crate::pb::{kernel_event::Payload, KernelEvent};
 
     fn ke(payload: Option<Payload>) -> KernelEvent {
         KernelEvent {
@@ -728,42 +683,6 @@ mod tests {
     }
 
     #[test]
-    fn mock_event_log_exec() {
-        let e = ke(Some(Payload::Exec(ExecEvent {
-            pid: 42,
-            ppid: 41,
-            comm: "bash".into(),
-            cmdline: "/usr/bin/bash -x".into(),
-            cwd: "/root".into(),
-            uid: 0,
-        })));
-        let log = MockEventLog::from(&e);
-        assert_eq!(log.r#type, "exec");
-        assert_eq!(log.pid, 42);
-        assert_eq!(log.comm, "bash");
-        assert_eq!(log.detail, "/usr/bin/bash -x");
-        assert_eq!(log.event_id, "id-1");
-    }
-
-    #[test]
-    fn mock_event_log_tcp() {
-        let e = ke(Some(Payload::Tcp(TcpEvent {
-            pid: 7,
-            comm: "curl".into(),
-            src_ip: "10.0.0.1".into(),
-            src_port: 40000,
-            dst_ip: "1.1.1.1".into(),
-            dst_port: 443,
-            direction: "outbound".into(),
-        })));
-        let log = MockEventLog::from(&e);
-        assert_eq!(log.r#type, "tcp");
-        assert_eq!(log.pid, 7);
-        assert_eq!(log.comm, "curl");
-        assert_eq!(log.detail, "10.0.0.1:40000 -> 1.1.1.1:443");
-    }
-
-    #[test]
     fn open_flags_map_to_op() {
         assert_eq!(open_flags_to_op(0), "open"); // O_RDONLY
         assert_eq!(open_flags_to_op(0o2000000), "open"); // O_RDONLY|O_CLOEXEC
@@ -773,31 +692,6 @@ mod tests {
         assert_eq!(open_flags_to_op(0o1000), "write"); // O_TRUNC
         assert_eq!(open_flags_to_op(0o101), "create"); // O_WRONLY|O_CREAT
         assert_eq!(open_flags_to_op(0o100), "create"); // O_CREAT
-    }
-
-    #[test]
-    fn mock_event_log_file() {
-        let e = ke(Some(Payload::File(FileEvent {
-            pid: 9,
-            comm: "python3".into(),
-            path: "/etc/passwd".into(),
-            op: "open".into(),
-            ret: 0,
-        })));
-        let log = MockEventLog::from(&e);
-        assert_eq!(log.r#type, "file");
-        assert_eq!(log.pid, 9);
-        assert_eq!(log.comm, "python3");
-        assert_eq!(log.detail, "open /etc/passwd");
-    }
-
-    #[test]
-    fn mock_event_log_none_is_unknown() {
-        let log = MockEventLog::from(&ke(None));
-        assert_eq!(log.r#type, "unknown");
-        assert_eq!(log.pid, 0);
-        assert!(log.comm.is_empty());
-        assert!(log.detail.is_empty());
     }
 
     #[test]
