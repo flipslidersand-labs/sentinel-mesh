@@ -1,6 +1,4 @@
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{error::TrySendError, Sender};
 use uuid::Uuid;
@@ -38,8 +36,9 @@ const DROP_REPORT_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Throttled cumulative counter: the first event is reported immediately;
 /// later ones are batched and reported at most once per `interval`. Reports
-/// are `(since_last, total)`. Shared by `DropTracker` and the gRPC reject
-/// tracker.
+/// are `(since_last, total)`. Used for the dropped-event warning here and the
+/// gRPC reject tracker. `total` is cumulative across reconnects (the counter
+/// lives as long as the source task).
 pub(crate) struct ThrottledCounter {
     total: u64,
     pub(crate) unreported: u64,
@@ -92,60 +91,10 @@ impl ThrottledCounter {
     }
 }
 
-/// Counts events dropped because the channel was full. `total` is cumulative
-/// across reconnects (the tracker lives as long as the source task).
-struct DropTracker {
-    /// Mirror of `total`, readable from outside the task (tests, metrics).
-    counter: Arc<AtomicU64>,
-    core: ThrottledCounter,
-}
-
-/// What to log: drops since the previous report, and the cumulative total.
-#[derive(Debug, PartialEq, Eq)]
-struct DropReport {
-    since_last: u64,
-    total: u64,
-}
-
-fn to_drop_report(r: Option<(u64, u64)>) -> Option<DropReport> {
-    r.map(|(since_last, total)| DropReport { since_last, total })
-}
-
-impl DropTracker {
-    #[cfg(test)]
-    fn new(interval: Duration) -> Self {
-        Self::with_counter(interval, Arc::new(AtomicU64::new(0)))
-    }
-
-    fn with_counter(interval: Duration, counter: Arc<AtomicU64>) -> Self {
-        Self {
-            counter,
-            core: ThrottledCounter::new(interval),
-        }
-    }
-
-    /// Record one dropped event; returns a report when it is time to log.
-    fn record(&mut self, now: Instant) -> Option<DropReport> {
-        self.counter.fetch_add(1, Ordering::Relaxed);
-        to_drop_report(self.core.record(now))
-    }
-
-    /// Call after a successful send: if drops are still unreported and the
-    /// interval has elapsed, report them so they never stay unlogged after
-    /// the channel recovers.
-    fn on_success(&mut self, now: Instant) -> Option<DropReport> {
-        to_drop_report(self.core.report_if_due(now))
-    }
-
-    /// Report any drops not yet logged (e.g. when the source stops).
-    fn flush(&mut self, now: Instant) -> Option<DropReport> {
-        to_drop_report(self.core.flush(now))
-    }
-}
-
 /// Non-blocking send. Returns `false` when the receiver is gone (Closed).
 /// A Full channel drops the event, counts it and logs (throttled).
-fn try_forward(tx: &Sender<KernelEvent>, event: KernelEvent, drops: &mut DropTracker) -> bool {
+#[cfg_attr(not(feature = "ebpf"), allow(dead_code))]
+fn try_forward(tx: &Sender<KernelEvent>, event: KernelEvent, drops: &mut ThrottledCounter) -> bool {
     try_forward_at(tx, event, drops, Instant::now(), &mut log_drops)
 }
 
@@ -153,60 +102,62 @@ fn try_forward(tx: &Sender<KernelEvent>, event: KernelEvent, drops: &mut DropTra
 fn try_forward_at(
     tx: &Sender<KernelEvent>,
     event: KernelEvent,
-    drops: &mut DropTracker,
+    drops: &mut ThrottledCounter,
     now: Instant,
-    sink: &mut impl FnMut(&DropReport),
+    sink: &mut impl FnMut((u64, u64)),
 ) -> bool {
     match tx.try_send(event) {
         Ok(()) => {
-            if let Some(r) = drops.on_success(now) {
-                sink(&r);
+            // Recovered: report drops still unlogged once the interval has
+            // elapsed, so they never stay unlogged after the channel recovers.
+            if let Some(r) = drops.report_if_due(now) {
+                sink(r);
             }
             true
         }
         Err(TrySendError::Full(_)) => {
             if let Some(r) = drops.record(now) {
-                sink(&r);
+                sink(r);
             }
             true
         }
         Err(TrySendError::Closed(_)) => {
             if let Some(r) = drops.flush(now) {
-                sink(&r);
+                sink(r);
             }
             false
         }
     }
 }
 
-fn log_drops(r: &DropReport) {
+fn log_drops((since_last, total): (u64, u64)) {
     eprintln!(
-        "warn: agent→collector channel full, dropped {} event(s) since last report ({} total)",
-        r.since_last, r.total
+        "warn: agent→collector channel full, dropped {since_last} event(s) since last report ({total} total)"
     );
 }
 
 /// Mock event generator — cycles Exec / TCP / File to exercise all event types.
 pub async fn mock_source(tx: Sender<KernelEvent>, rate: u64) {
-    mock_source_counted(tx, rate, mock_dropped_counter()).await
+    mock_source_with(
+        tx,
+        rate,
+        ThrottledCounter::new(DROP_REPORT_INTERVAL),
+        log_drops,
+    )
+    .await
 }
 
-/// Process-wide count of events `mock_source` dropped on a full channel
-/// (shared by all `mock_source` tasks; also lets tests observe that
-/// `mock_source` itself goes through `DropTracker`).
-fn mock_dropped_counter() -> Arc<AtomicU64> {
-    static COUNTER: std::sync::OnceLock<Arc<AtomicU64>> = std::sync::OnceLock::new();
-    COUNTER.get_or_init(|| Arc::new(AtomicU64::new(0))).clone()
-}
-
-/// Same as `mock_source`, exposing the number of events dropped on a full
-/// channel through `dropped`.
-async fn mock_source_counted(tx: Sender<KernelEvent>, rate: u64, dropped: Arc<AtomicU64>) {
+/// `mock_source` with an injectable drop counter and report sink (for tests).
+async fn mock_source_with(
+    tx: Sender<KernelEvent>,
+    rate: u64,
+    mut drops: ThrottledCounter,
+    mut sink: impl FnMut((u64, u64)),
+) {
     let interval = Duration::from_millis(1000 / rate.max(1));
     let mut ticker = tokio::time::interval(interval);
     let mut counter: u64 = 0;
     let mut pid: u32 = 1000;
-    let mut drops = DropTracker::with_counter(DROP_REPORT_INTERVAL, dropped);
 
     loop {
         ticker.tick().await;
@@ -273,8 +224,8 @@ async fn mock_source_counted(tx: Sender<KernelEvent>, rate: u64, dropped: Arc<At
         // try_send (not send().await): while stream_to_collector is
         // reconnecting (#73), the channel can fill up — dropping new mock
         // events here is preferable to blocking this generator indefinitely.
-        // Full drops are counted and logged (throttled), see DropTracker.
-        if !try_forward(&tx, event, &mut drops) {
+        // Full drops are counted and logged (throttled), see ThrottledCounter.
+        if !try_forward_at(&tx, event, &mut drops, Instant::now(), &mut sink) {
             break;
         }
     }
@@ -401,7 +352,7 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
     // Events dropped because the channel to grpc::stream_to_collector was
     // full (collector unreachable/slow) are counted and logged, throttled
     // (#70, #285).
-    let mut drops = DropTracker::with_counter(DROP_REPORT_INTERVAL, Arc::new(AtomicU64::new(0)));
+    let mut drops = ThrottledCounter::new(DROP_REPORT_INTERVAL);
 
     loop {
         let mut guard = match async_fd.readable_mut().await {
@@ -712,6 +663,8 @@ mod tests {
 
     use super::*;
     use crate::pb::{kernel_event::Payload, KernelEvent};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
 
     fn ke(payload: Option<Payload>) -> KernelEvent {
         KernelEvent {
@@ -764,63 +717,46 @@ mod tests {
     }
 
     #[test]
-    fn drop_tracker_reports_first_then_throttles() {
+    fn drop_counter_reports_first_then_throttles() {
         let t0 = Instant::now();
-        let mut d = DropTracker::new(Duration::from_secs(10));
-        assert_eq!(
-            d.record(t0),
-            Some(DropReport {
-                since_last: 1,
-                total: 1
-            })
-        );
+        let mut d = ThrottledCounter::new(Duration::from_secs(10));
+        assert_eq!(d.record(t0), Some((1, 1)));
         // Within the interval: counted but not reported.
         assert_eq!(d.record(t0 + Duration::from_secs(1)), None);
         assert_eq!(d.record(t0 + Duration::from_secs(9)), None);
-        assert_eq!(d.core.total, 3);
+        assert_eq!(d.total, 3);
         // Boundary: exactly at the interval reports the batch with the total.
-        assert_eq!(
-            d.record(t0 + Duration::from_secs(10)),
-            Some(DropReport {
-                since_last: 3,
-                total: 4
-            })
-        );
+        assert_eq!(d.record(t0 + Duration::from_secs(10)), Some((3, 4)));
         // Next window starts from the last report.
         assert_eq!(d.record(t0 + Duration::from_secs(19)), None);
-        assert_eq!(
-            d.record(t0 + Duration::from_secs(20)),
-            Some(DropReport {
-                since_last: 2,
-                total: 6
-            })
-        );
+        assert_eq!(d.record(t0 + Duration::from_secs(20)), Some((2, 6)));
     }
 
     #[test]
-    fn drop_tracker_success_flushes_pending_after_interval() {
+    fn drop_counter_success_flushes_pending_after_interval() {
         let t0 = Instant::now();
-        let mut d = DropTracker::new(Duration::from_secs(10));
+        let mut d = ThrottledCounter::new(Duration::from_secs(10));
         assert!(d.record(t0).is_some());
         assert!(d.record(t0 + Duration::from_secs(1)).is_none());
         // Recovered: success within the interval keeps it pending...
-        assert_eq!(d.on_success(t0 + Duration::from_secs(5)), None);
+        assert_eq!(d.report_if_due(t0 + Duration::from_secs(5)), None);
         // ...but once the interval passed, the next success reports it.
-        assert_eq!(
-            d.on_success(t0 + Duration::from_secs(10)),
-            Some(DropReport {
-                since_last: 1,
-                total: 2
-            })
-        );
-        assert_eq!(d.on_success(t0 + Duration::from_secs(30)), None);
+        assert_eq!(d.report_if_due(t0 + Duration::from_secs(10)), Some((1, 2)));
+        assert_eq!(d.report_if_due(t0 + Duration::from_secs(30)), None);
     }
 
     #[tokio::test]
     async fn mock_source_counts_drops_on_full_channel() {
         let (tx, rx) = tokio::sync::mpsc::channel(1); // never drained
         let dropped = Arc::new(AtomicU64::new(0));
-        let handle = tokio::spawn(mock_source_counted(tx, 1000, dropped.clone()));
+        let seen = dropped.clone();
+        // Zero interval: every drop is reported, so the sink sees the total.
+        let handle = tokio::spawn(mock_source_with(
+            tx,
+            1000,
+            ThrottledCounter::new(Duration::ZERO),
+            move |(_, total)| seen.store(total, Ordering::Relaxed),
+        ));
         tokio::time::timeout(Duration::from_secs(5), async {
             while dropped.load(Ordering::Relaxed) < 3 {
                 tokio::time::sleep(Duration::from_millis(5)).await;
@@ -833,63 +769,52 @@ mod tests {
     }
 
     #[test]
-    fn drop_tracker_flush_reports_pending_only() {
+    fn drop_counter_flush_reports_pending_only() {
         let t0 = Instant::now();
-        let mut d = DropTracker::new(Duration::from_secs(10));
+        let mut d = ThrottledCounter::new(Duration::from_secs(10));
         assert_eq!(d.flush(t0), None);
         d.record(t0);
         d.record(t0);
-        assert_eq!(
-            d.flush(t0),
-            Some(DropReport {
-                since_last: 1,
-                total: 2
-            })
-        );
+        assert_eq!(d.flush(t0), Some((1, 2)));
         assert_eq!(d.flush(t0), None);
     }
 
     #[tokio::test]
     async fn try_forward_counts_drops_on_full_channel() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let mut d = DropTracker::new(Duration::from_secs(3600));
+        let mut d = ThrottledCounter::new(Duration::from_secs(3600));
         assert!(try_forward(&tx, plain_event(), &mut d)); // fills the channel
         for _ in 0..5 {
             assert!(try_forward(&tx, plain_event(), &mut d)); // Full: dropped
         }
-        assert_eq!(d.core.total, 5);
+        assert_eq!(d.total, 5);
         // Draining then sending works again; count is cumulative.
         rx.recv().await.unwrap();
         assert!(try_forward(&tx, plain_event(), &mut d));
-        assert_eq!(d.core.total, 5);
+        assert_eq!(d.total, 5);
     }
 
     #[tokio::test]
     async fn try_forward_closed_returns_false_and_flushes() {
         let (tx, rx) = tokio::sync::mpsc::channel(1);
-        let mut d = DropTracker::new(Duration::from_secs(3600));
+        let mut d = ThrottledCounter::new(Duration::from_secs(3600));
         assert!(try_forward(&tx, plain_event(), &mut d));
         assert!(try_forward(&tx, plain_event(), &mut d)); // Full, reported
         assert!(try_forward(&tx, plain_event(), &mut d)); // Full, pending
-        assert_eq!(d.core.unreported, 1);
+        assert_eq!(d.unreported, 1);
         drop(rx);
         assert!(!try_forward(&tx, plain_event(), &mut d));
-        assert_eq!(d.core.unreported, 0);
-        assert_eq!(d.core.total, 2); // Closed is not counted as a drop
+        assert_eq!(d.unreported, 0);
+        assert_eq!(d.total, 2); // Closed is not counted as a drop
     }
 
     #[test]
     fn try_forward_success_reports_pending_drops_after_interval() {
         let t0 = Instant::now();
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let mut d = DropTracker::new(Duration::from_secs(10));
-        let mut reports: Vec<DropReport> = Vec::new();
-        let mut sink = |r: &DropReport| {
-            reports.push(DropReport {
-                since_last: r.since_last,
-                total: r.total,
-            })
-        };
+        let mut d = ThrottledCounter::new(Duration::from_secs(10));
+        let mut reports: Vec<(u64, u64)> = Vec::new();
+        let mut sink = |r: (u64, u64)| reports.push(r);
         assert!(try_forward_at(&tx, plain_event(), &mut d, t0, &mut sink)); // fills
         assert!(try_forward_at(&tx, plain_event(), &mut d, t0, &mut sink)); // Full, reported
         assert!(try_forward_at(
@@ -909,7 +834,7 @@ mod tests {
             &mut sink
         ));
         rx.try_recv().unwrap();
-        // Success after the interval: pending drop is reported by on_success.
+        // Success after the interval: pending drop is reported on success.
         assert!(try_forward_at(
             &tx,
             plain_event(),
@@ -917,19 +842,7 @@ mod tests {
             t0 + Duration::from_secs(10),
             &mut sink
         ));
-        assert_eq!(
-            reports,
-            vec![
-                DropReport {
-                    since_last: 1,
-                    total: 1
-                },
-                DropReport {
-                    since_last: 1,
-                    total: 2
-                },
-            ]
-        );
+        assert_eq!(reports, vec![(1, 1), (1, 2)]);
     }
 
     #[tokio::test]
@@ -938,12 +851,18 @@ mod tests {
         // the 2nd event, so after the pause the next event would be pid 1002.
         // With try_send the generator keeps running and drops in between.
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let before = mock_dropped_counter().load(Ordering::Relaxed);
-        let handle = tokio::spawn(mock_source(tx, 1000));
+        let dropped = Arc::new(AtomicU64::new(0));
+        let seen = dropped.clone();
+        let handle = tokio::spawn(mock_source_with(
+            tx,
+            1000,
+            ThrottledCounter::new(Duration::ZERO),
+            move |(_, total)| seen.store(total, Ordering::Relaxed),
+        ));
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(
-            mock_dropped_counter().load(Ordering::Relaxed) > before,
-            "drops via mock_source must be counted by DropTracker"
+            dropped.load(Ordering::Relaxed) > 0,
+            "drops via mock_source must be counted by ThrottledCounter"
         );
         let first = rx.recv().await.unwrap();
         assert_eq!(pid_of(&first), 1001);
