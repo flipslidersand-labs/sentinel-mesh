@@ -270,3 +270,45 @@ func TestRegisterFillsAttributesOfRecreatedNode(t *testing.T) {
 		t.Fatalf("empty values must not erase: %+v", got)
 	}
 }
+
+func TestSetInactive_MarksOnlyTargetNode(t *testing.T) {
+	reg := registry.New()
+	if err := reg.Register("node-a", "host-a", "192.0.2.1", "v1", "us-east"); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Register("node-b", "host-b", "192.0.2.2", "v1", "us-east"); err != nil {
+		t.Fatal(err)
+	}
+
+	reg.SetInactive("node-a")
+
+	assertStatus(t, reg, "node-a", "inactive")
+	assertStatus(t, reg, "node-b", "active")
+}
+
+func TestSetInactive_UnknownNodeIsNoop(t *testing.T) {
+	reg := registry.New()
+	if err := reg.Register("node-a", "host-a", "192.0.2.1", "v1", "us-east"); err != nil {
+		t.Fatal(err)
+	}
+
+	reg.SetInactive("missing")
+
+	if got := reg.List(); len(got) != 1 {
+		t.Fatalf("List() has %d nodes, want 1 (unknown ID must not create a node)", len(got))
+	}
+	assertStatus(t, reg, "node-a", "active")
+}
+
+func TestHeartbeat_RestoresActiveAfterSetInactive(t *testing.T) {
+	reg := registry.New()
+	if err := reg.Register("node-a", "host-a", "192.0.2.1", "v1", "us-east"); err != nil {
+		t.Fatal(err)
+	}
+	reg.SetInactive("node-a")
+	assertStatus(t, reg, "node-a", "inactive")
+
+	reg.Heartbeat("node-a")
+
+	assertStatus(t, reg, "node-a", "active")
+}
