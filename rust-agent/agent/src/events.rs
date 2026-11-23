@@ -614,43 +614,28 @@ fn parse_cmdline(raw: &[u8]) -> String {
 /// Max bytes the collector accepts for a free-text field (`maxRegisterFieldLength`).
 const FREE_TEXT_MAX_BYTES: usize = 256;
 
-/// Conservative stand-in for Go's `unicode.IsPrint` (the collector's rule for
+/// Allow-list stand-in for Go's `unicode.IsPrint` (the collector's rule for
 /// `comm`/`cmdline`/`cwd`/`path`, #251). Rust's std has no general-category
-/// table, so this rejects (returns false for) everything that is certainly
-/// non-printable: control chars, every whitespace except ASCII space, and the
-/// known format (Cf), line/paragraph separator, private-use and noncharacter
-/// ranges. Unassigned code points cannot be detected and are passed through.
+/// table, so instead of listing what to reject (which misses unassigned code
+/// points and newer format characters) only two things are kept: printable
+/// ASCII (0x20-0x7E, space included) and non-ASCII `char::is_alphanumeric`
+/// (assigned letters, digits and most combining marks, all of which Go treats
+/// as printable). Everything else (controls, unassigned, Cf, Zs other than
+/// ASCII space, private use, noncharacters) is replaced.
+///
+/// Trade-off: non-ASCII symbols and punctuation (em dash, euro sign, katakana
+/// middle dot, ...) also become '?'. That is deliberate: a '?' in a file name
+/// is better than the collector rejecting the whole event as INVALID, which
+/// would let a crafted name evade detection. Residual risk: a character that
+/// Rust's Unicode version knows but Go's does not (very new assignments) would
+/// still pass here and could be rejected by the collector.
 fn is_printable_char(c: char) -> bool {
-    if c == ' ' {
-        return true;
-    }
-    if c.is_control() || c.is_whitespace() {
-        return false;
-    }
-    let u = c as u32;
-    !(matches!(
-        u,
-        0x00AD                  // soft hyphen
-        | 0x0600..=0x0605 | 0x061C | 0x06DD | 0x070F | 0x0890..=0x0891 | 0x08E2
-        | 0x180E
-        | 0x200B..=0x200F       // zero-width, LRM/RLM
-        | 0x202A..=0x202E       // bidi embeddings/overrides
-        | 0x2060..=0x2064 | 0x2066..=0x206F
-        | 0xE000..=0xF8FF       // private use (BMP)
-        | 0xFDD0..=0xFDEF       // noncharacters
-        | 0xFEFF
-        | 0xFFF9..=0xFFFB       // interlinear annotation
-        | 0x110BD | 0x110CD
-        | 0x1BCA0..=0x1BCA3
-        | 0x1D173..=0x1D17A
-        | 0xE0001 | 0xE0020..=0xE007F // tag characters
-        | 0xF0000..=0x10FFFF    // private use planes 15-16
-    ) || (u & 0xFFFE) == 0xFFFE) // U+xFFFE / U+xFFFF noncharacters in every plane
+    matches!(c, ' '..='~') || (!c.is_ascii() && c.is_alphanumeric())
 }
 
-/// Make `s` something the collector never rejects as INVALID (it does not
-/// retry INVALID, so the whole event would be lost): non-printable characters
-/// become '?', printable non-ASCII is kept, and the result is cut to
+/// Make `s` something the collector should accept (it does not retry INVALID,
+/// so a rejected value loses the whole event): characters failing
+/// `is_printable_char` become '?' and the result is cut to
 /// `FREE_TEXT_MAX_BYTES` bytes on a character boundary.
 fn sanitize_free_text(s: &str) -> String {
     let mut out = String::with_capacity(s.len().min(FREE_TEXT_MAX_BYTES));
@@ -759,7 +744,8 @@ mod tests {
         assert!(!s.is_empty());
         assert!(s.starts_with("evil"));
         assert!(s.ends_with("name"));
-        assert!(s.contains('\u{FFFD}'));
+        // invalid UTF-8 decodes to U+FFFD, which the allow-list turns into '?'
+        assert_eq!(s, "evil?name");
     }
 
     #[test]
@@ -1060,33 +1046,51 @@ mod tests {
         assert_eq!(parse_cmdline(&vec![b'x'; 5000]).len(), 256);
     }
 
-    /// Mirror of the collector's free-text rule (#251): at most 256 bytes and
-    /// no control/format characters (valid UTF-8 is guaranteed by `String`).
-    fn assert_collector_safe_text(out: &str) {
+    /// Collector length cap (bytes) for free-text fields; the character rule
+    /// is checked with literal expectations in each test instead.
+    fn assert_within_cap(out: &str) {
         assert!(out.len() <= 256, "too long: {}", out.len());
-        assert!(
-            out.chars()
-                .all(|c| c == ' ' || !(c.is_control() || c.is_whitespace())),
-            "non-printable char in {out:?}"
-        );
     }
 
     #[test]
     fn bytes_to_str_is_collector_safe() {
         // comm/path with control characters, a newline, and invalid UTF-8.
         let s = bytes_to_str(b"/tmp/a\tb\nc\x1b[0m\xffz\0\0");
-        assert_collector_safe_text(&s);
-        assert!(s.starts_with("/tmp/a?b?c?[0m"), "{s:?}");
-        assert!(s.ends_with('z'), "{s:?}");
-        // path buffer is 256 bytes; U+FFFD (3 bytes) expansion must not exceed the cap.
+        assert_within_cap(&s);
+        assert_eq!(s, "/tmp/a?b?c?[0m?z");
+        // a full 256-byte invalid-UTF-8 buffer stays within the cap
         let s = bytes_to_str(&[0xffu8; 256]);
-        assert_collector_safe_text(&s);
-        assert!(s.len() > 240, "should keep as much as fits: {}", s.len());
+        assert_eq!(s, "?".repeat(256));
         // printable non-ASCII is kept (#251).
         assert_eq!(
             bytes_to_str("caf\u{e9}\u{65e5}\u{672c}\0".as_bytes()),
             "caf\u{e9}\u{65e5}\u{672c}"
         );
+    }
+
+    #[test]
+    fn non_printable_non_ascii_becomes_question_mark() {
+        // unassigned U+0378, Cf U+13430, zero-width U+200B, NBSP U+00A0,
+        // private use U+E000, noncharacter U+FFFE: all rejected by Go's IsPrint.
+        let raw = "a\u{378}b\u{13430}c\u{200b}d\u{a0}e\u{e000}f\u{fffe}g";
+        assert_eq!(sanitize_free_text(raw), "a?b?c?d?e?f?g");
+        // same through the comm/path buffer helper and the cwd symlink reader
+        assert_eq!(bytes_to_str(raw.as_bytes()), "a?b?c?d?e?f?g");
+        let root = std::env::temp_dir().join(format!("sentinel-proc-test-{}", Uuid::new_v4()));
+        let dir = root.join("7");
+        std::fs::create_dir_all(&dir).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(format!("/srv/{raw}"), dir.join("cwd")).unwrap();
+        let (_, _, cwd) = read_proc_exec_info(&root, 7);
+        assert_eq!(cwd, "/srv/a?b?c?d?e?f?g");
+        std::fs::remove_dir_all(&root).unwrap();
+        // printable letters/digits outside ASCII are kept (#251)
+        assert_eq!(
+            sanitize_free_text("\u{e9}\u{65e5}\u{672c}"),
+            "\u{e9}\u{65e5}\u{672c}"
+        );
+        // non-ASCII symbols/punctuation are replaced (allow-list is conservative)
+        assert_eq!(sanitize_free_text("a\u{2014}b\u{20ac}"), "a?b?");
     }
 
     #[test]
@@ -1123,7 +1127,7 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(&long, dir.join("cwd")).unwrap();
         let (_, _, cwd) = read_proc_exec_info(&root, 1);
-        assert_collector_safe_text(&cwd);
+        assert_within_cap(&cwd);
         assert_eq!(cwd.len(), 256);
         std::fs::remove_file(dir.join("cwd")).unwrap();
         // cwd containing a tab and a newline
