@@ -281,6 +281,103 @@ func TestAggregator_NodesRegionFollowsUpstreamKey(t *testing.T) {
 	}
 }
 
+// TestAggregator_EventsAlertsRegionFollowsUpstreamKey: like /api/nodes, the
+// records returned by /api/events and /api/alerts carry the --upstreams key as
+// their region, not the one the upstream stamped on them, so the returned value
+// agrees with the ?region= filter. Covers the cached path, the direct-fetch path
+// (node filter) and that the cache itself is not rewritten (#540, #468).
+func TestAggregator_EventsAlertsRegionFollowsUpstreamKey(t *testing.T) {
+	ts := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	up := fakeCollector(t,
+		[]registry.AgentNode{{NodeID: "a1", Region: "default", Status: "active"}},
+		[]model.Event{{EventID: "e1", NodeID: "a1", Region: "default", Timestamp: ts}},
+		[]model.Alert{{AlertID: "al1", NodeID: "a1", Region: "default", Timestamp: ts}},
+	)
+	agg := New([]Upstream{{Region: "tokyo", URL: up.URL}}, 0, "", nil)
+	agg.PollOnce(context.Background())
+	r := Router(agg, t.TempDir(), nil, "")
+
+	get := func(path string, out any) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s code = %d", path, w.Code)
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), out); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, path := range []string{
+		"/api/events?region=tokyo",         // cached (EventsIn)
+		"/api/events?region=tokyo&node=a1", // direct fetch (FetchEvents)
+		"/api/events",                      // all regions
+	} {
+		var evs []model.Event
+		get(path, &evs)
+		if len(evs) != 1 || evs[0].Region != "tokyo" {
+			t.Errorf("%s = %+v, want 1 event with region tokyo", path, evs)
+		}
+	}
+	for _, path := range []string{"/api/alerts?region=tokyo", "/api/alerts"} {
+		var als []model.Alert
+		get(path, &als)
+		if len(als) != 1 || als[0].Region != "tokyo" {
+			t.Errorf("%s = %+v, want 1 alert with region tokyo", path, als)
+		}
+	}
+
+	// The cache must not be rewritten: only the returned copies are.
+	agg.mu.RLock()
+	defer agg.mu.RUnlock()
+	if got := agg.state["tokyo"].events[0].Region; got != "default" {
+		t.Errorf("cached event region = %q, want unchanged %q", got, "default")
+	}
+	if got := agg.state["tokyo"].alerts[0].Region; got != "default" {
+		t.Errorf("cached alert region = %q, want unchanged %q", got, "default")
+	}
+}
+
+// TestAggregator_FetchEventsFallbackRegionFollowsUpstreamKey: when the direct
+// upstream fetch fails and FetchEvents falls back to the cache, the returned
+// events still carry the --upstreams key as region and the cache is untouched
+// (#540).
+func TestAggregator_FetchEventsFallbackRegionFollowsUpstreamKey(t *testing.T) {
+	ts := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	evs := []model.Event{{EventID: "e1", NodeID: "a1", Region: "default", Timestamp: ts}}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/nodes", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode([]registry.AgentNode{{NodeID: "a1", Region: "default", Status: "active"}})
+	})
+	mux.HandleFunc("/api/events", func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Query().Get("node") != "" { // the direct fetch FetchEvents makes
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(evs)
+	})
+	mux.HandleFunc("/api/alerts", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode([]model.Alert{})
+	})
+	up := httptest.NewServer(mux)
+	t.Cleanup(up.Close)
+
+	agg := New([]Upstream{{Region: "tokyo", URL: up.URL}}, 0, "", nil)
+	agg.PollOnce(context.Background())
+
+	got := agg.FetchEvents(context.Background(), "tokyo", "a1", 10)
+	if len(got) != 1 || got[0].EventID != "e1" || got[0].Region != "tokyo" {
+		t.Fatalf("FetchEvents fallback = %+v, want e1 with region tokyo", got)
+	}
+
+	agg.mu.RLock()
+	defer agg.mu.RUnlock()
+	if c := agg.state["tokyo"].events; len(c) != 1 || c[0].Region != "default" {
+		t.Errorf("cached events = %+v, want region unchanged (default)", c)
+	}
+}
+
 // eventually polls cond until it returns true or timeout elapses.
 func eventually(t *testing.T, timeout time.Duration, cond func() bool, msg string) {
 	t.Helper()

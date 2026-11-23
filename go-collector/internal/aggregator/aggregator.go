@@ -343,15 +343,27 @@ func (a *Aggregator) cachedEvents(region, node string) []model.Event {
 	return out
 }
 
+// withEventRegion returns a copy of evs with Region set to the --upstreams key.
+// The cached slice is never modified.
+func withEventRegion(evs []model.Event, region string) []model.Event {
+	out := make([]model.Event, len(evs))
+	for i, e := range evs {
+		e.Region = region
+		out[i] = e
+	}
+	return out
+}
+
 // EventsIn returns merged events across reachable regions, newest first,
-// restricted to one region (empty = all regions).
+// restricted to one region (empty = all regions). Each event's Region is the
+// --upstreams key it came from, not the upstream's own value (#540).
 func (a *Aggregator) EventsIn(region string) []model.Event {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	lists := make([][]model.Event, 0, len(a.upstreams))
 	for _, u := range a.upstreams {
 		if s := a.state[u.Region]; s != nil && s.reachable && (region == "" || u.Region == region) {
-			lists = append(lists, s.events)
+			lists = append(lists, withEventRegion(s.events, u.Region))
 		}
 	}
 	return mergeEvents(lists)
@@ -429,10 +441,10 @@ func (a *Aggregator) FetchEvents(ctx context.Context, region, node string, limit
 			if err := a.fetchJSON(ctx, u.URL+api.PathEvents+"?"+q.Encode(), &evs); err != nil {
 				a.log.Warn("upstream events fetch failed, falling back to cache",
 					zap.String("region", u.Region), zap.String("url", u.URL), zap.Error(err))
-				lists[i] = a.cachedEvents(u.Region, node)
+				lists[i] = withEventRegion(a.cachedEvents(u.Region, node), u.Region)
 				return
 			}
-			lists[i] = evs
+			lists[i] = withEventRegion(evs, u.Region)
 		}(i, u)
 	}
 	wg.Wait()
@@ -440,14 +452,18 @@ func (a *Aggregator) FetchEvents(ctx context.Context, region, node string, limit
 }
 
 // AlertsIn returns merged alerts across reachable regions, newest first,
-// restricted to one region (empty = all regions).
+// restricted to one region (empty = all regions). Each alert's Region is the
+// --upstreams key it came from, not the upstream's own value (#540).
 func (a *Aggregator) AlertsIn(region string) []model.Alert {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	out := make([]model.Alert, 0)
 	for r, s := range a.state {
 		if s.reachable && (region == "" || r == region) {
-			out = append(out, s.alerts...)
+			for _, al := range s.alerts {
+				al.Region = r
+				out = append(out, al)
+			}
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool {
