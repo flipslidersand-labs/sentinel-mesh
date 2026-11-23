@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/flipslidersand-labs/sentinel-mesh/actions/workflows/ci.yml/badge.svg)](https://github.com/flipslidersand-labs/sentinel-mesh/actions/workflows/ci.yml)
 
+Release type: `service`
+
 > 日本語の概要は [下の「日本語」節](#日本語) にあります。
 
 **Version:** v0.1.0 (latest tag). Changes since then: [CHANGELOG — Unreleased](CHANGELOG.md#unreleased).
