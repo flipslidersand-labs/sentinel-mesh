@@ -44,7 +44,7 @@ func TestListEvents_NoFilter(t *testing.T) {
 		}
 	}
 
-	got, err := st.ListEventsWhere(context.Background(), nil, 100)
+	got, err := st.ListEventsMatching(context.Background(), nil, 100)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestListEvents_NodeFilter(t *testing.T) {
 		}
 	}
 
-	gotA, err := st.ListEventsWhere(context.Background(), func(id string) bool { return id == "node-a" }, 100)
+	gotA, err := st.ListEventsMatching(context.Background(), func(e model.Event) bool { return e.NodeID == "node-a" }, 100)
 	if err != nil {
 		t.Fatalf("ListEvents node-a: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestListEvents_NodeFilter(t *testing.T) {
 		}
 	}
 
-	gotB, err := st.ListEventsWhere(context.Background(), func(id string) bool { return id == "node-b" }, 100)
+	gotB, err := st.ListEventsMatching(context.Background(), func(e model.Event) bool { return e.NodeID == "node-b" }, 100)
 	if err != nil {
 		t.Fatalf("ListEvents node-b: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestListEvents_NodeFilter_Unknown(t *testing.T) {
 		t.Fatalf("SaveEvent: %v", err)
 	}
 
-	got, err := st.ListEventsWhere(context.Background(), func(id string) bool { return id == "node-x" }, 100)
+	got, err := st.ListEventsMatching(context.Background(), func(e model.Event) bool { return e.NodeID == "node-x" }, 100)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestSaveEvent_AgentTimestampCannotPinOrdering(t *testing.T) {
 		t.Fatalf("SaveEvent(malicious): %v", err)
 	}
 
-	got, err := st.ListEventsWhere(context.Background(), nil, 100)
+	got, err := st.ListEventsMatching(context.Background(), nil, 100)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestListEvents_Limit_WithFilter(t *testing.T) {
 		}
 	}
 
-	got, err := st.ListEventsWhere(context.Background(), func(id string) bool { return id == "node-a" }, 3)
+	got, err := st.ListEventsMatching(context.Background(), func(e model.Event) bool { return e.NodeID == "node-a" }, 3)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
@@ -238,12 +238,12 @@ func makeAlert(nodeID string, idx int) model.Alert {
 func TestListAlerts_NoFilter(t *testing.T) {
 	st := newTempStore(t)
 	for i, node := range []string{"node-a", "node-b", "node-a"} {
-		if err := st.SaveAlert(context.Background(), makeAlert(node, i)); err != nil {
+		if _, err := st.SaveAlertDedup(context.Background(), makeAlert(node, i)); err != nil {
 			t.Fatalf("SaveAlert: %v", err)
 		}
 	}
 
-	got, err := st.ListAlertsWhere(context.Background(), nil, 100)
+	got, err := st.ListAlertsMatching(context.Background(), nil, 100)
 	if err != nil {
 		t.Fatalf("ListAlerts: %v", err)
 	}
@@ -255,12 +255,12 @@ func TestListAlerts_NoFilter(t *testing.T) {
 func TestListAlerts_NodeFilter(t *testing.T) {
 	st := newTempStore(t)
 	for i, node := range []string{"node-a", "node-a", "node-b"} {
-		if err := st.SaveAlert(context.Background(), makeAlert(node, i)); err != nil {
+		if _, err := st.SaveAlertDedup(context.Background(), makeAlert(node, i)); err != nil {
 			t.Fatalf("SaveAlert: %v", err)
 		}
 	}
 
-	gotA, err := st.ListAlertsWhere(context.Background(), func(id string) bool { return id == "node-a" }, 100)
+	gotA, err := st.ListAlertsMatching(context.Background(), func(a model.Alert) bool { return a.NodeID == "node-a" }, 100)
 	if err != nil {
 		t.Fatalf("ListAlerts node-a: %v", err)
 	}
@@ -276,11 +276,11 @@ func TestListAlerts_NodeFilter(t *testing.T) {
 
 func TestListAlerts_NodeFilter_Unknown(t *testing.T) {
 	st := newTempStore(t)
-	if err := st.SaveAlert(context.Background(), makeAlert("node-a", 0)); err != nil {
+	if _, err := st.SaveAlertDedup(context.Background(), makeAlert("node-a", 0)); err != nil {
 		t.Fatalf("SaveAlert: %v", err)
 	}
 
-	got, err := st.ListAlertsWhere(context.Background(), func(id string) bool { return id == "node-x" }, 100)
+	got, err := st.ListAlertsMatching(context.Background(), func(a model.Alert) bool { return a.NodeID == "node-x" }, 100)
 	if err != nil {
 		t.Fatalf("ListAlerts: %v", err)
 	}
@@ -292,12 +292,12 @@ func TestListAlerts_NodeFilter_Unknown(t *testing.T) {
 func TestListAlerts_Limit(t *testing.T) {
 	st := newTempStore(t)
 	for i := 0; i < 5; i++ {
-		if err := st.SaveAlert(context.Background(), makeAlert("node-a", i)); err != nil {
+		if _, err := st.SaveAlertDedup(context.Background(), makeAlert("node-a", i)); err != nil {
 			t.Fatalf("SaveAlert: %v", err)
 		}
 	}
 
-	got, err := st.ListAlertsWhere(context.Background(), func(id string) bool { return id == "node-a" }, 3)
+	got, err := st.ListAlertsMatching(context.Background(), func(a model.Alert) bool { return a.NodeID == "node-a" }, 3)
 	if err != nil {
 		t.Fatalf("ListAlerts: %v", err)
 	}
@@ -312,7 +312,7 @@ func TestListAlerts_Limit(t *testing.T) {
 // "null" instead of "[]", which can break clients that assume an array.
 func TestListEvents_EmptyStore_ReturnsNonNilSlice(t *testing.T) {
 	st := newTempStore(t)
-	got, err := st.ListEventsWhere(context.Background(), nil, 100)
+	got, err := st.ListEventsMatching(context.Background(), nil, 100)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
@@ -323,7 +323,7 @@ func TestListEvents_EmptyStore_ReturnsNonNilSlice(t *testing.T) {
 
 func TestListAlerts_EmptyStore_ReturnsNonNilSlice(t *testing.T) {
 	st := newTempStore(t)
-	got, err := st.ListAlertsWhere(context.Background(), nil, 100)
+	got, err := st.ListAlertsMatching(context.Background(), nil, 100)
 	if err != nil {
 		t.Fatalf("ListAlerts: %v", err)
 	}
@@ -343,7 +343,7 @@ func TestSaveEvent_StampsReceivedAt(t *testing.T) {
 	if _, err := st.SaveEventDedup(context.Background(), e); err != nil {
 		t.Fatal(err)
 	}
-	got, err := st.ListEventsWhere(context.Background(), nil, 10)
+	got, err := st.ListEventsMatching(context.Background(), nil, 10)
 	if err != nil || len(got) != 1 {
 		t.Fatalf("ListEvents = %v, %v", got, err)
 	}

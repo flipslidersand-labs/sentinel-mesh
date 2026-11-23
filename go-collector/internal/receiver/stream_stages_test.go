@@ -48,7 +48,7 @@ func TestPersistEvent(t *testing.T) {
 		if ok, _ := s.persistEvent(context.Background(), ev); !ok {
 			t.Fatal("want ok=true")
 		}
-		got, _ := st.ListEventsWhere(context.Background(), func(id string) bool { return id == "n" }, 10)
+		got, _ := st.ListEventsMatching(context.Background(), func(e model.Event) bool { return e.NodeID == "n" }, 10)
 		if len(got) != 1 {
 			t.Fatalf("persisted %d events, want 1", len(got))
 		}
@@ -82,7 +82,7 @@ func TestEvaluateAndNotify(t *testing.T) {
 		if len(alerts) == 0 || !ok {
 			t.Fatalf("got %d alerts, ok=%v; want >0, true", len(alerts), ok)
 		}
-		saved, _ := st.ListAlertsWhere(context.Background(), func(id string) bool { return id == "n" }, 10)
+		saved, _ := st.ListAlertsMatching(context.Background(), func(a model.Alert) bool { return a.NodeID == "n" }, 10)
 		if len(saved) == 0 {
 			t.Fatal("alert not persisted")
 		}

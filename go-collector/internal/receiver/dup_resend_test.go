@@ -10,6 +10,7 @@ import (
 
 	"github.com/flipslidersand/sentinel-mesh/internal/alerting"
 	"github.com/flipslidersand/sentinel-mesh/internal/anomaly"
+	"github.com/flipslidersand/sentinel-mesh/internal/model"
 	"github.com/flipslidersand/sentinel-mesh/internal/notify"
 	"github.com/flipslidersand/sentinel-mesh/internal/pb"
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
@@ -71,7 +72,7 @@ func TestStreamEvents_DuplicateResendFiresAlertOnce_RealStore(t *testing.T) {
 	if len(resend.acks) != 1 || !resend.acks[0].Ok {
 		t.Fatalf("resend ack = %v, want ok", resend.acks)
 	}
-	alerts, err := st.ListAlertsWhere(context.Background(), func(id string) bool { return id == "node-1" }, 10)
+	alerts, err := st.ListAlertsMatching(context.Background(), func(a model.Alert) bool { return a.NodeID == "node-1" }, 10)
 	if err != nil {
 		t.Fatalf("ListAlerts: %v", err)
 	}
