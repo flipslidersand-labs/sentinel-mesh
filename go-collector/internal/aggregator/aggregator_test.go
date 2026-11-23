@@ -339,6 +339,45 @@ func TestAggregator_EventsAlertsRegionFollowsUpstreamKey(t *testing.T) {
 	}
 }
 
+// TestAggregator_FetchEventsFallbackRegionFollowsUpstreamKey: when the direct
+// upstream fetch fails and FetchEvents falls back to the cache, the returned
+// events still carry the --upstreams key as region and the cache is untouched
+// (#540).
+func TestAggregator_FetchEventsFallbackRegionFollowsUpstreamKey(t *testing.T) {
+	ts := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	evs := []model.Event{{EventID: "e1", NodeID: "a1", Region: "default", Timestamp: ts}}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/nodes", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode([]registry.AgentNode{{NodeID: "a1", Region: "default", Status: "active"}})
+	})
+	mux.HandleFunc("/api/events", func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Query().Get("node") != "" { // the direct fetch FetchEvents makes
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(evs)
+	})
+	mux.HandleFunc("/api/alerts", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode([]model.Alert{})
+	})
+	up := httptest.NewServer(mux)
+	t.Cleanup(up.Close)
+
+	agg := New([]Upstream{{Region: "tokyo", URL: up.URL}}, 0, "", nil)
+	agg.PollOnce(context.Background())
+
+	got := agg.FetchEvents(context.Background(), "tokyo", "a1", 10)
+	if len(got) != 1 || got[0].EventID != "e1" || got[0].Region != "tokyo" {
+		t.Fatalf("FetchEvents fallback = %+v, want e1 with region tokyo", got)
+	}
+
+	agg.mu.RLock()
+	defer agg.mu.RUnlock()
+	if c := agg.state["tokyo"].events; len(c) != 1 || c[0].Region != "default" {
+		t.Errorf("cached events = %+v, want region unchanged (default)", c)
+	}
+}
+
 // eventually polls cond until it returns true or timeout elapses.
 func eventually(t *testing.T, timeout time.Duration, cond func() bool, msg string) {
 	t.Helper()
