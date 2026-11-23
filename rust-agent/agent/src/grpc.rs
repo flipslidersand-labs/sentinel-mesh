@@ -166,7 +166,7 @@ async fn stream_to_collector_with(
             Ok(()) => return Ok(()),
             Err(e) if e.downcast_ref::<RegistrationRejected>().is_some() => {
                 // Retrying can't help; surface the reason and exit non-zero.
-                eprintln!("{e}");
+                eprintln!("{e:#}");
                 return Err(e);
             }
             Err(e) => {
@@ -174,7 +174,7 @@ async fn stream_to_collector_with(
                 let (base, next) = next_backoff(backoff, connected_for);
                 backoff = next;
                 let wait = jittered(base);
-                eprintln!("collector connection lost/failed: {e} — reconnecting in {wait:.1?}");
+                eprintln!("collector connection lost/failed: {e:#} — reconnecting in {wait:.1?}");
                 eprintln!("{}", pending.summary());
                 tokio::time::sleep(wait).await;
             }
@@ -263,7 +263,9 @@ async fn run_once_tracked(
     res.map_err(|e| {
         let n = pending.q.len();
         if n > 0 {
-            anyhow::anyhow!("{e}; {n} events queued for resend")
+            // `context` keeps the original error type downcastable (the
+            // reconnect loop needs `RegistrationRejected`, #545).
+            e.context(format!("{n} events queued for resend"))
         } else {
             e
         }
@@ -740,7 +742,7 @@ mod tests {
 
     mod half_open {
         use std::pin::Pin;
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
         use std::sync::Arc;
 
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -761,7 +763,15 @@ mod tests {
             seen: Arc<std::sync::Mutex<Vec<String>>>,
             /// Ack for the nth (0-based) receipt of an event_id.
             reply: Reply,
+            /// Register behaviour: `REG_OK`, `REG_NOT_OK` or `REG_UNAUTH`.
+            register_mode: Arc<AtomicU8>,
         }
+
+        const REG_OK: u8 = 0;
+        /// Answers `ok=false` + message.
+        const REG_NOT_OK: u8 = 1;
+        /// Answers gRPC `Unauthenticated`.
+        const REG_UNAUTH: u8 = 2;
 
         type Reply = Arc<dyn Fn(&str, usize) -> EventAck + Send + Sync>;
 
@@ -779,10 +789,17 @@ mod tests {
                 _: Request<RegisterRequest>,
             ) -> std::result::Result<Response<RegisterResponse>, Status> {
                 let _ = self.registered.try_send(());
-                Ok(Response::new(RegisterResponse {
-                    ok: true,
-                    message: String::new(),
-                }))
+                match self.register_mode.load(Ordering::SeqCst) {
+                    REG_NOT_OK => Ok(Response::new(RegisterResponse {
+                        ok: false,
+                        message: "node rejected".into(),
+                    })),
+                    REG_UNAUTH => Err(Status::unauthenticated("bad credentials")),
+                    _ => Ok(Response::new(RegisterResponse {
+                        ok: true,
+                        message: String::new(),
+                    })),
+                }
             }
 
             type StreamEventsStream =
@@ -889,6 +906,7 @@ mod tests {
             got_event: tokio::sync::mpsc::Receiver<()>,
             registered: tokio::sync::mpsc::Receiver<()>,
             seen: Arc<std::sync::Mutex<Vec<String>>>,
+            register_mode: Arc<AtomicU8>,
         }
 
         /// Real tonic collector behind a proxy that can go silent.
@@ -902,6 +920,7 @@ mod tests {
             let (got_tx, got_event) = tokio::sync::mpsc::channel(1);
             let (reg_tx, registered) = tokio::sync::mpsc::channel(8);
             let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let register_mode = Arc::new(AtomicU8::new(REG_OK));
             tokio::spawn(
                 tonic::transport::Server::builder()
                     .add_service(SentinelCollectorServer::new(FakeCollector {
@@ -909,6 +928,7 @@ mod tests {
                         registered: reg_tx,
                         seen: seen.clone(),
                         reply,
+                        register_mode: register_mode.clone(),
                     }))
                     .serve_with_incoming(tokio_stream_from(srv_listener)),
             );
@@ -919,6 +939,7 @@ mod tests {
                 got_event,
                 registered,
                 seen,
+                register_mode,
             }
         }
 
@@ -1203,6 +1224,76 @@ mod tests {
         #[tokio::test]
         async fn no_events_lost_when_acks_are_lost() {
             resend_case(true).await;
+        }
+
+        /// #545: a registration refusal on reconnect must stay a
+        /// `RegistrationRejected` (so the agent exits instead of looping) even
+        /// when un-acked events are queued and the error gets the
+        /// "N events queued for resend" context.
+        async fn rejected_reconnect_with_pending(mode: u8) {
+            let mut h = harness().await;
+            let (ev_tx, ev_rx) = tokio::sync::mpsc::channel::<KernelEvent>(16);
+            let agent = tokio::spawn(stream_to_collector_with(
+                h.endpoint.clone(),
+                "n1".into(),
+                String::new(),
+                None,
+                None,
+                fast_tuning(),
+                ev_rx,
+            ));
+
+            within(5, "first register", h.registered.recv()).await;
+            ev_tx.send(KernelEvent::default()).await.unwrap();
+            within(5, "stream never got established", h.got_event.recv()).await;
+
+            // From here on: acks are lost and the next Register is refused.
+            h.conns.freeze_acks();
+            h.register_mode.store(mode, Ordering::SeqCst);
+            // Arrives after the freeze, so it is stored but never acked and
+            // stays in `pending` when keepalive kills the connection.
+            ev_tx
+                .send(KernelEvent {
+                    event_id: "unacked".into(),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            within(
+                5,
+                "unacked event never reached the collector",
+                h.got_event.recv(),
+            )
+            .await;
+
+            let res = within(10, "agent kept reconnecting instead of exiting", agent)
+                .await
+                .unwrap();
+            let err = res.expect_err("rejected registration must end the agent with Err");
+            assert!(
+                err.downcast_ref::<RegistrationRejected>().is_some(),
+                "RegistrationRejected downcast lost: {err:#}"
+            );
+            let shown = format!("{err:#}");
+            assert!(
+                shown.contains("events queued for resend"),
+                "queued-for-resend context missing: {shown}"
+            );
+            assert!(
+                shown.contains("registration rejected by collector"),
+                "rejection reason missing: {shown}"
+            );
+            drop(ev_tx);
+        }
+
+        #[tokio::test]
+        async fn rejected_register_ok_false_with_pending_events_exits() {
+            rejected_reconnect_with_pending(REG_NOT_OK).await;
+        }
+
+        #[tokio::test]
+        async fn rejected_register_unauthenticated_with_pending_events_exits() {
+            rejected_reconnect_with_pending(REG_UNAUTH).await;
         }
 
         /// Sends `ids` through an agent against a collector answering with
