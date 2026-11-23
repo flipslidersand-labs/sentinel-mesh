@@ -226,6 +226,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **go-collector (#324):** the REST `region` filter is now applied inside the store scan, so `limit` counts matching records, and an unregistered region returns `[]` without scanning the store. If matches lie beyond the scan cap (`maxNodeFilterScan`), fewer than `limit` results are returned. The aggregator's upstream fetch is a separate path and is unchanged.
 - **go-collector (#494):** `token issue/revoke/list` now return flag lookup errors (via `flagReader`) instead of silently using an empty `--data-dir` or `--yes` value.
 - **web:** the Events table no longer produces duplicate React keys when events share an `event_id` (across nodes or before server-side dedup); rows are keyed by `node_id`, `event_id` and row index (#422, partial).
+- **go-collector (#549, #544):** free-text fields (`comm`, `cmdline`, `cwd`, `path`) with non-printable runes or over 256 bytes no longer cause the whole event to be rejected as INVALID (which let a file name with a Rust/Go Unicode-version-skewed character evade storage and rules). Non-printable runes and invalid UTF-8 become `?`, over-long values are cut at a rune boundary, and the event is stored and evaluated; identifier fields (`node_id`, `event_id`, `op`, `direction`, IPs) are still rejected. A `Warn` log (first, then every 1000th event, without the value) reports the rewriting.
 
 ### Security
 

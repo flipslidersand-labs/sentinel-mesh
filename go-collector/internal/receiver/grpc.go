@@ -424,6 +424,67 @@ func isPrintableText(s string) bool {
 	return true
 }
 
+// sanitizeFreeText makes a free-text value safe to store: every rune that is
+// not printable (unicode.IsPrint) and every invalid UTF-8 byte becomes '?',
+// and a value over maxRegisterFieldLength bytes is cut at a rune boundary.
+// '?' is one byte, so replacement never grows the value. Rejecting such
+// events outright let a file name with a character that Rust and Go disagree
+// on (Unicode version skew) drop the event unevaluated (#549); the goal of
+// #154/#251 (no control/bidi/oversized data stored) is met by rewriting.
+// It reports whether the value changed.
+func sanitizeFreeText(s string) (string, bool) {
+	if len(s) <= maxRegisterFieldLength && isPrintableText(s) {
+		return s, false
+	}
+	var b strings.Builder
+	b.Grow(min(len(s), maxRegisterFieldLength))
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size <= 1 || !unicode.IsPrint(r) {
+			r, size = '?', max(size, 1)
+		}
+		if b.Len()+utf8.RuneLen(r) > maxRegisterFieldLength {
+			break
+		}
+		b.WriteRune(r)
+		i += size
+	}
+	return b.String(), true
+}
+
+// sanitizeKernelEvent rewrites the free-text payload fields (freeTextFields:
+// comm, cmdline, cwd, path) of e in place with sanitizeFreeText and returns
+// how many fields changed. It must run before validateKernelEvent and before
+// the event is stored or evaluated. Identifier fields are left alone so
+// validateKernelEvent still rejects them.
+func sanitizeKernelEvent(e *pb.KernelEvent) int {
+	changed := 0
+	fix := func(p *string) {
+		if v, ok := sanitizeFreeText(*p); ok {
+			*p = v
+			changed++
+		}
+	}
+	switch x := e.Payload.(type) {
+	case *pb.KernelEvent_Exec:
+		if x.Exec != nil {
+			fix(&x.Exec.Comm)
+			fix(&x.Exec.Cmdline)
+			fix(&x.Exec.Cwd)
+		}
+	case *pb.KernelEvent_Tcp:
+		if x.Tcp != nil {
+			fix(&x.Tcp.Comm)
+		}
+	case *pb.KernelEvent_File:
+		if x.File != nil {
+			fix(&x.File.Comm)
+			fix(&x.File.Path)
+		}
+	}
+	return changed
+}
+
 // validateFields enforces a length cap and an ASCII-printable charset on
 // each field in order, returning the first violation found. It is the
 // common validation core for both Register and StreamEvents (#106, #154).
@@ -616,7 +677,7 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 	} else {
 		limiter = newTokenBucket(streamEventsRateLimit, streamEventsRateBurst)
 	}
-	var throttled uint64
+	var throttled, sanitized uint64
 
 	// Flush response headers before the first Recv (auth already passed in
 	// the interceptor). The agent's client awaits headers before it starts
@@ -695,6 +756,11 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 		// agent must not be able to persist or heartbeat under a
 		// control-character or oversized identifier (#154). The rejected
 		// value itself is never logged, since it is by definition unvalidated.
+		//
+		// Free-text fields (comm/cmdline/cwd/path) are rewritten first instead of
+		// rejected (#549): non-printable runes become '?' and over-long values
+		// are cut, so the stored value is safe and the event is not lost.
+		sanitizedFields := sanitizeKernelEvent(event)
 		if err := validateKernelEvent(event); err != nil {
 			if sendErr := rejectEvent(stream, pb.AckReason_ACK_REASON_INVALID, func() {
 				s.log.Warn("StreamEvents rejected invalid event", zap.Error(err))
@@ -702,6 +768,16 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 				return sendErr
 			}
 			continue
+		}
+		if sanitizedFields > 0 {
+			// Only the counts are logged: the original value is unvalidated.
+			sanitized++
+			if sanitized == 1 || sanitized%1000 == 0 {
+				s.log.Warn("StreamEvents sanitized free-text fields of event",
+					zap.String("node_id", safeLogNodeID(authedNodeID, event.NodeId)),
+					zap.Int("fields", sanitizedFields),
+					zap.Uint64("sanitized_events_total", sanitized))
+			}
 		}
 
 		// When auth is enabled, trust the node_id the token store resolved
