@@ -19,6 +19,11 @@ type Event struct {
 	// trusting the agent clock (#473). Zero (omitted) on events stored before
 	// this field existed; consumers then fall back to Timestamp.
 	ReceivedAt time.Time `json:"received_at,omitzero"`
+	// Region is the node's region when the collector saved the event (#512), so
+	// /api/events?region= still matches after the node left the registry.
+	// Empty (omitted) on events stored before this field existed; consumers
+	// then fall back to the registry.
+	Region string `json:"region,omitempty"`
 }
 
 // Alert represents a triggered alert.
@@ -30,4 +35,9 @@ type Alert struct {
 	Timestamp time.Time `json:"timestamp"`
 	Message   string    `json:"message"`
 	Severity  string    `json:"severity"`
+	// Region is the region of the node when the alert was raised. It lets
+	// /api/alerts?region= keep matching after the node left the registry
+	// (eviction, restart). Alerts stored before this field existed have it
+	// empty; readers fall back to the registry for those (#531).
+	Region string `json:"region,omitempty"`
 }

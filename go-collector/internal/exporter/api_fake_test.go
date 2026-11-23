@@ -14,21 +14,21 @@ import (
 
 type fakeData struct{}
 
-func (fakeData) ListEventsWhere(_ context.Context, keep func(string) bool, _ int) ([]model.Event, error) {
+func (fakeData) ListEventsMatching(_ context.Context, keep func(model.Event) bool, _ int) ([]model.Event, error) {
 	out := []model.Event{}
 	for _, n := range []string{"n1", "n2"} {
-		if keep == nil || keep(n) {
-			out = append(out, model.Event{NodeID: n})
+		if e := (model.Event{NodeID: n}); keep == nil || keep(e) {
+			out = append(out, e)
 		}
 	}
 	return out, nil
 }
 
-func (fakeData) ListAlertsWhere(_ context.Context, keep func(string) bool, _ int) ([]model.Alert, error) {
+func (fakeData) ListAlertsMatching(_ context.Context, keep func(model.Alert) bool, _ int) ([]model.Alert, error) {
 	out := []model.Alert{}
 	for _, n := range []string{"n1", "n2"} {
-		if keep == nil || keep(n) {
-			out = append(out, model.Alert{NodeID: n})
+		if a := (model.Alert{NodeID: n}); keep == nil || keep(a) {
+			out = append(out, a)
 		}
 	}
 	return out, nil

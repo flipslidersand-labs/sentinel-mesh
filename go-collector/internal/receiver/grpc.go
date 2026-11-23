@@ -144,6 +144,18 @@ type TokenResolver interface {
 type Storage interface {
 	EventSaver
 	TokenResolver
+	NodeRegions
+}
+
+// NodeRegions persists each node's region so it survives registry eviction and
+// restarts (#512).
+type NodeRegions interface {
+	SaveNodeRegion(ctx context.Context, nodeID, region string) error
+	// TouchNodeRegion keeps the existing record of an active node from expiring
+	// (#530). It is called on every event; the store writes only when half of
+	// the TTL is used, and never creates a missing record.
+	TouchNodeRegion(ctx context.Context, nodeID, region string) error
+	NodeRegion(ctx context.Context, nodeID string) (region string, ok bool, err error)
 }
 
 var _ Storage = (*store.Store)(nil)
@@ -230,7 +242,8 @@ const defaultLivenessInterval = registry.DefaultHeartbeatTimeout / 3
 // startLiveness refreshes nodeID's registry entry every interval until the
 // returned stop function is called (which also waits for the goroutine to
 // exit) or ctx is done. Heartbeat is a no-op for unknown nodes, so this never
-// registers anything by itself.
+// registers anything by itself. It also keeps the node's persisted region
+// record from expiring while the node is connected but sends no events (#537).
 //
 // If valid is non-nil it is consulted on every tick before the heartbeat
 // (#482). When it reports false the goroutine closes the returned revoked
@@ -261,6 +274,7 @@ func (s *server) startLiveness(ctx context.Context, nodeID string, valid func(co
 					return
 				}
 				s.reg.Heartbeat(nodeID)
+				s.refreshNodeRegion(ctx, nodeID)
 			}
 		}
 	}()
@@ -543,6 +557,17 @@ func (s *server) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.Reg
 	if err := s.reg.Register(req.NodeId, req.Hostname, peerIP(ctx), req.Version, region); err != nil {
 		return &pb.RegisterResponse{Ok: false, Message: err.Error()}, nil
 	}
+	// Persist the region the registry settled on (normalised) so a node
+	// re-created after eviction or restart keeps it (#512). Not fatal on
+	// failure: the node is registered, only the durable copy is missing.
+	if stored, ok := s.reg.Region(req.NodeId); ok {
+		region = stored
+		saveCtx, cancel := context.WithTimeout(ctx, storeOpTimeout)
+		if err := s.st.SaveNodeRegion(saveCtx, req.NodeId, region); err != nil {
+			s.log.Error("persist node region", zap.String("node_id", req.NodeId), zap.Error(err))
+		}
+		cancel()
+	}
 	s.log.Info("agent registered",
 		zap.String("node_id", req.NodeId),
 		zap.String("host", req.Hostname),
@@ -694,7 +719,7 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 			continue
 		}
 
-		s.reg.HeartbeatOrRegister(event.NodeId, peerIP(stream.Context()), s.defaultRegion)
+		region, regionOK := s.touchNode(stream.Context(), event.NodeId)
 		if stopLiveness == nil {
 			// No trusted identity here, so there is no token to re-check.
 			stopLiveness, _ = s.startLiveness(stream.Context(), event.NodeId, nil)
@@ -706,6 +731,9 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 			Timestamp: time.Unix(0, event.Timestamp).UTC(),
 			Type:      s.eventTypeName(event),
 			Payload:   s.eventPayload(event),
+		}
+		if regionOK {
+			storedEvent.Region = region
 		}
 
 		saveOk, duplicate := s.persistEvent(stream.Context(), storedEvent)
@@ -725,6 +753,58 @@ func (s *server) StreamEvents(stream pb.SentinelCollector_StreamEventsServer) er
 		if err := stream.Send(ack); err != nil {
 			return err
 		}
+	}
+}
+
+// touchNode heartbeats nodeID, re-creating it in the registry if needed, and
+// returns its region. A node the registry does not know (evicted, or the
+// collector restarted) gets its persisted region back instead of the default
+// (#512); the lookup runs outside the registry lock and only in that rare case.
+// regionOK is false when the lookup failed: the node is then left unregistered
+// (the next event retries) and the event is saved without a region, so a guessed
+// default is never written permanently.
+func (s *server) touchNode(ctx context.Context, nodeID string) (region string, regionOK bool) {
+	fallback := s.defaultRegion
+	if _, known := s.reg.Region(nodeID); !known {
+		lookupCtx, cancel := context.WithTimeout(ctx, storeOpTimeout)
+		stored, ok, err := s.st.NodeRegion(lookupCtx, nodeID)
+		cancel()
+		if err != nil {
+			s.log.Warn("node region lookup failed; not re-registering node", zap.String("node_id", safeLogNodeID(nodeID, nodeID)), zap.Error(err))
+			return "", false
+		}
+		if ok {
+			fallback = stored
+		}
+	}
+	region = s.reg.HeartbeatOrRegister(nodeID, peerIP(ctx), fallback)
+	s.touchStoredRegion(ctx, nodeID, region)
+	return region, true
+}
+
+// refreshNodeRegion keeps the durable region record of a connected node from
+// expiring when it sends no events (#537). The region comes from the registry
+// (read under its lock, released before any I/O); a node the registry does not
+// know has no confirmed region, so nothing is touched and no default is guessed.
+func (s *server) refreshNodeRegion(ctx context.Context, nodeID string) {
+	if s.st == nil {
+		return
+	}
+	if region, ok := s.reg.Region(nodeID); ok {
+		s.touchStoredRegion(ctx, nodeID, region)
+	}
+}
+
+// touchStoredRegion keeps the durable record from expiring while the node stays
+// connected (#530). The store writes only when less than half of the TTL is left
+// (and on the first touch after a collector restart), so this is cheap per call.
+// It runs outside the registry lock; a failure (including a busy or closed
+// store) is logged only and never fails the event or stops liveness.
+func (s *server) touchStoredRegion(ctx context.Context, nodeID, region string) {
+	touchCtx, cancel := context.WithTimeout(ctx, storeOpTimeout)
+	defer cancel()
+	if err := s.st.TouchNodeRegion(touchCtx, nodeID, region); err != nil && ctx.Err() == nil {
+		s.log.Warn("refresh node region failed", zap.String("node_id", safeLogNodeID(nodeID, nodeID)), zap.Error(err))
 	}
 }
 
@@ -817,7 +897,13 @@ func (s *server) evaluateAndNotify(ctx context.Context, ev model.Event, duplicat
 		}
 	}
 
-	for _, alert := range alerts {
+	for i := range alerts {
+		// Stamp the node's region (as on the event) so the alert stays
+		// reachable by /api/alerts?region= after the node leaves the registry.
+		if alerts[i].Region == "" {
+			alerts[i].Region = ev.Region
+		}
+		alert := alerts[i]
 		alertCtx, alertCancel := context.WithTimeout(ctx, storeOpTimeout)
 		alertDup, alertErr := s.st.SaveAlertDedup(alertCtx, alert)
 		alertCancel()
@@ -1051,6 +1137,10 @@ func checkAuthLimited(ctx context.Context, st TokenResolver, authEnabled bool, l
 	// rest. Only failed attempts are counted against the source.
 	nodeID, ok, err = st.LookupNodeID(ctx, got)
 	if err != nil {
+		if store.IsTransient(err) {
+			// Busy or closing: the agent should reconnect and retry (#533).
+			return "", status.Error(codes.Unavailable, "auth lookup temporarily unavailable")
+		}
 		return "", status.Error(codes.Internal, "auth lookup failed") // store error is not the caller's failure
 	}
 	if ok {

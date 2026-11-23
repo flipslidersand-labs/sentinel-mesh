@@ -115,9 +115,10 @@ func (r *Registry) Heartbeat(nodeID string) {
 // re-created from the given identity so it reappears in List/ListByRegion.
 // Hostname and version are unknown here and are left empty; region falls back
 // to DefaultRegion when empty. A later Register fills in hostname, version and IP (non-empty values only) and sets the region.
-func (r *Registry) HeartbeatOrRegister(nodeID, ip, region string) {
+// It returns the region the node has after the call ("" for an empty nodeID).
+func (r *Registry) HeartbeatOrRegister(nodeID, ip, region string) string {
 	if nodeID == "" {
-		return
+		return ""
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -126,16 +127,28 @@ func (r *Registry) HeartbeatOrRegister(nodeID, ip, region string) {
 		n.LastSeen = now
 		n.Status = StatusActive
 		n.inactiveSince = time.Time{}
-		return
+		return n.Region
 	}
+	region = normalizeRegion(region)
 	r.nodes[nodeID] = &AgentNode{
 		NodeID:     nodeID,
 		IP:         ip,
-		Region:     normalizeRegion(region),
+		Region:     region,
 		Registered: now,
 		LastSeen:   now,
 		Status:     StatusActive,
 	}
+	return region
+}
+
+// Region returns the region of a registered node and whether it is registered.
+func (r *Registry) Region(nodeID string) (string, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if n, ok := r.nodes[nodeID]; ok {
+		return n.Region, true
+	}
+	return "", false
 }
 
 func (r *Registry) SetInactive(nodeID string) {

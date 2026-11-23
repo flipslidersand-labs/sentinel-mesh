@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **docs (#420):** README has a Monitoring section describing `sentinel_events_throttled_total` / `sentinel_auth_failures_total` and an example Prometheus alert rule for sustained per-node rate-limit drops (rules themselves are not shipped; evaluate them in your own Prometheus).
 - **go-collector:** `token revoke --force <record key>` deletes a token record that cannot be decoded (and so cannot be revoked by node_id), using the key shown in the `token list` warning. `token list` still exits 0 when it skips such records (#276).
 - **Agent / eBPF:** IPv6 TCP connections and IPv4 connections made through dual-stack
   AF_INET6 sockets (v4-mapped) are now emitted as TCP events; `TcpEvent` carries a family
@@ -40,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **rust-agent (#255):** the self-made `include_bytes_aligned!` macro in `events.rs` is replaced by `aya::include_bytes_aligned!` (aya 0.13). The only difference is the embedded object's alignment (4096 → 32, which is what aya requires for ELF parsing); the eBPF object is still embedded at compile time ( `clippy --features ebpf` with the placeholder object passes).
 - **go-collector (#500):** the pending-anomaly map (cap 1024) now evicts the oldest entry first instead of an arbitrary one; added tests for eviction, failed re-save and concurrent resend.
 - **go-collector (#469):** removed test-only/unused code (`Store.SaveEvent`/`ListEvents`/`ListAlerts`, `runHTTPServerUntilDone`, `sendMailContext`, `Aggregator.Events`/`Alerts`, `authlimit.Limiter.Tracked`, the `receiver` authfail alias file); tests use the `*Dedup`/`*Where`/`*In` APIs. No behavior change.
 - **go-collector:** `serve` now builds and starts the server in `run(ctx, cfg, logger)`; the logger and the signal-aware ctx are created in `RunE`, so `run` returns when ctx is cancelled. The `--grpc-addr` flag name is now a shared constant (no behavior change) (#265).
@@ -121,6 +123,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **go-collector (#468):** in aggregate mode `/api/nodes` now treats the `--upstreams` key as the region (as `/api/regions` and `/api/events` already do): `?region=` filters by that key and each returned node's `region` field is overwritten with the key of the upstream it came from, instead of the region the upstream node reported (behavior change; previously upstream `default` + `tokyo=...` gave `/api/regions` 1 node but `/api/nodes?region=tokyo` `[]`). Non-aggregate `/api/nodes` is unchanged (Refs #468).
+- **go-collector (#537):** a node that stays connected but sends no events no longer loses its persisted region after the retention window: the liveness loop now also refreshes the `node:<id>` record (only for nodes the registry knows; a busy or closed store is logged and liveness continues).
+- **go-collector (#530):** a node that stays connected longer than the retention window no longer loses its persisted region (and falls back to the default after a collector restart): events now refresh the `node:<id>` record once less than half of its TTL is left (at most one write per half retention per node; a missing record is never created) (Refs #512, #468).
+- **go-collector:** a store that is busy (`ErrBusy`) or closed (`ErrClosed`) now makes the REST events/alerts endpoints answer 503 and the gRPC token lookup return `Unavailable` (previously 500 / `Internal`), so clients retry; other store errors are unchanged (#533).
+- **go-collector (#531):** `Alert` now carries the node `region` (`omitempty`, stamped when the alert is saved), so `/api/alerts?region=` keeps matching alerts of nodes that were evicted or restarted; alerts stored without a region still fall back to the registry. An unregistered `region` on `/api/alerts` no longer short-circuits to `[]`: the store is scanned, because evicted nodes' alerts can match.
+- **go-collector:** `store.Store` operations started after `Close` now fail fast with `ErrClosed` instead of racing the close-time wait (a `sync.WaitGroup` reuse panic under concurrent `Close`), and `Close` is safe to call more than once (it used to panic on the second call) (#422). REST/gRPC now map `ErrClosed` and `ErrBusy` to 503 / `Unavailable` (#533).
+- **go-collector:** the node's region is now persisted (`node:<id>` in Badger, retention TTL) and stamped on stored events (`region`, omitted when empty), so a node re-created after eviction or a restart keeps its region and `/api/events?region=` still returns the events of evicted nodes; events stored before this change still match through the registry (#512, #468).
 - **go-collector:** FILE/EXEC payload text (comm, cmdline, cwd, path) may now contain printable non-ASCII characters instead of the whole event being rejected, which let a single non-ASCII character in a file name evade detection; control characters, NUL, bidi/format characters and invalid UTF-8 are still rejected, and node_id/event_id/op stay ASCII-only (#251, #154).
 - **go-collector:** aggregate mode now serves `/api/stats` (event counts summed over upstream regions) so the UI Stats page no longer 404s, and `/api/nodes` merges in a deterministic node_id order (#251).
 - **go-collector/notify:** each notifier now gets its own send timeout instead of sharing one, so a slow notifier no longer causes the others to time out (#251).

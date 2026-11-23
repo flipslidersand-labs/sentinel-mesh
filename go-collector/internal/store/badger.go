@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	badger "github.com/dgraph-io/badger/v4"
@@ -45,6 +46,17 @@ var maxNodeFilterScan = 10000
 type Store struct {
 	db        *badger.DB
 	retention time.Duration
+	now       func() time.Time // clock for node-region write bookkeeping; tests replace it
+
+	// nodeRegionMu/nodeRegionAt remember when each node's region record was last
+	// written, so TouchNodeRegion refreshes the TTL only once less than half of
+	// it is left instead of on every event (#530). In memory only: after a
+	// restart the first touch of each node writes. nodeRegionWrites counts real
+	// writes (tests).
+	nodeRegionMu     sync.Mutex
+	nodeRegionAt     map[string]nodeRegionMark
+	nodeRegionPruned time.Time // last prune of nodeRegionAt
+	nodeRegionWrites atomic.Int64
 
 	// inflight counts runWithContext goroutines still touching db, so Close
 	// can wait for them instead of closing the DB underneath a running View
@@ -91,6 +103,14 @@ type Store struct {
 
 	gcStop chan struct{}
 	gcDone chan struct{}
+
+	// closeMu/closed make Close and runOn mutually ordered: runOn registers
+	// itself in inflight under RLock, Close sets closed under Lock, so no
+	// inflight.Add can race inflight.Wait and nothing starts after Close (#422).
+	closeMu   sync.RWMutex
+	closed    bool
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func New(dir string) (*Store, error) {
@@ -100,13 +120,15 @@ func New(dir string) (*Store, error) {
 		return nil, err
 	}
 	s := &Store{
-		db:        db,
-		retention: DefaultRetention,
-		counters:  zeroCounters(),
-		sem:       make(chan struct{}, maxInflight),
-		readSem:   make(chan struct{}, maxReadInflight),
-		gcStop:    make(chan struct{}),
-		gcDone:    make(chan struct{}),
+		db:           db,
+		retention:    DefaultRetention,
+		now:          time.Now,
+		nodeRegionAt: map[string]nodeRegionMark{},
+		counters:     zeroCounters(),
+		sem:          make(chan struct{}, maxInflight),
+		readSem:      make(chan struct{}, maxReadInflight),
+		gcStop:       make(chan struct{}),
+		gcDone:       make(chan struct{}),
 	}
 	if err := s.loadCounters(); err != nil {
 		db.Close() //nolint:errcheck
@@ -229,13 +251,32 @@ func (s *Store) runRead(ctx context.Context, fn func() error) error {
 	return s.runOn(ctx, s.readSem, fn)
 }
 
+// ErrClosed is returned without touching the db once Close has been called.
+var ErrClosed = errors.New("store: closed")
+
+// IsTransient reports whether err means the store cannot serve the call right
+// now (all slots busy, or already closed) rather than that the call failed.
+// Callers map it to 503 / codes.Unavailable so clients retry (#533).
+func IsTransient(err error) bool {
+	return errors.Is(err, ErrBusy) || errors.Is(err, ErrClosed)
+}
+
 func (s *Store) runOn(ctx context.Context, sem chan struct{}, fn func() error) error {
+	// The closed check and inflight.Add share one RLock section so Close
+	// (which takes the write Lock before waiting) never sees a late Add.
+	s.closeMu.RLock()
+	if s.closed {
+		s.closeMu.RUnlock()
+		return ErrClosed
+	}
 	select {
 	case sem <- struct{}{}:
 	default:
+		s.closeMu.RUnlock()
 		return ErrBusy
 	}
 	s.inflight.Add(1)
+	s.closeMu.RUnlock()
 	return runWithContext(ctx, func() error {
 		defer func() {
 			<-sem
@@ -369,14 +410,29 @@ func (s *Store) SaveEventDedup(ctx context.Context, e model.Event) (duplicate bo
 // are found, bounded by maxNodeFilterScan records when keep is non-nil, so
 // fewer than limit may be returned even if more matches exist (#153, #324).
 func (s *Store) ListEventsWhere(ctx context.Context, keep func(nodeID string) bool, limit int) ([]model.Event, error) {
-	return scanNewestFirst(ctx, s, "event:", "event", func(e model.Event) string { return e.NodeID }, keep, limit)
+	return s.ListEventsMatching(ctx, byNode[model.Event](keep, func(e model.Event) string { return e.NodeID }), limit)
+}
+
+// ListEventsMatching is ListEventsWhere with a predicate over the whole event
+// (e.g. its Region, #512). The same scan cap applies when keep is non-nil.
+func (s *Store) ListEventsMatching(ctx context.Context, keep func(model.Event) bool, limit int) ([]model.Event, error) {
+	return scanNewestFirst(ctx, s, "event:", "event", keep, limit)
+}
+
+// byNode adapts a node-ID predicate to a record predicate; nil stays nil so the
+// "no filter" scan-cap rule is unchanged.
+func byNode[T any](keep func(string) bool, nodeOf func(T) string) func(T) bool {
+	if keep == nil {
+		return nil
+	}
+	return func(r T) bool { return keep(nodeOf(r)) }
 }
 
 // scanNewestFirst walks the keys under prefix newest first, decoding each as T
-// and collecting up to limit records whose node passes keep. With a non-nil
+// and collecting up to limit records that pass keep. With a non-nil
 // keep the scan reads at most maxNodeFilterScan records (#153), so a rarely
 // matching filter cannot force a full walk of the retention window.
-func scanNewestFirst[T any](ctx context.Context, s *Store, prefixStr, label string, nodeOf func(T) string, keep func(string) bool, limit int) ([]T, error) {
+func scanNewestFirst[T any](ctx context.Context, s *Store, prefixStr, label string, keep func(T) bool, limit int) ([]T, error) {
 	// Non-nil so callers that JSON-marshal the result return "[]" not "null".
 	out := make([]T, 0)
 	err := s.runRead(ctx, func() error {
@@ -413,7 +469,7 @@ func scanNewestFirst[T any](ctx context.Context, s *Store, prefixStr, label stri
 					skipped++
 					continue
 				}
-				if keep != nil && !keep(nodeOf(rec)) {
+				if keep != nil && !keep(rec) {
 					continue
 				}
 				out = append(out, rec)
@@ -521,7 +577,13 @@ func (s *Store) SaveAlertDedup(ctx context.Context, a model.Alert) (duplicate bo
 // ListAlertsWhere is the alert counterpart of ListEventsWhere: newest first,
 // node predicate keep (nil keeps everything), same scan bound (#153, #324).
 func (s *Store) ListAlertsWhere(ctx context.Context, keep func(nodeID string) bool, limit int) ([]model.Alert, error) {
-	return scanNewestFirst(ctx, s, "alert:", "alert", func(a model.Alert) string { return a.NodeID }, keep, limit)
+	return s.ListAlertsMatching(ctx, byNode[model.Alert](keep, func(a model.Alert) string { return a.NodeID }), limit)
+}
+
+// ListAlertsMatching is ListAlertsWhere with a predicate over the whole alert
+// (e.g. its Region, #531). The same scan cap applies when keep is non-nil.
+func (s *Store) ListAlertsMatching(ctx context.Context, keep func(model.Alert) bool, limit int) ([]model.Alert, error) {
+	return scanNewestFirst(ctx, s, "alert:", "alert", keep, limit)
 }
 
 // closeWaitTimeout bounds how long Close waits for the GC goroutine and
@@ -529,7 +591,18 @@ func (s *Store) ListAlertsWhere(ctx context.Context, keep func(nodeID string) bo
 // can shrink it.
 var closeWaitTimeout = 10 * time.Second
 
+// Close stops background work and closes the DB. It is safe to call more than
+// once; later calls return the first call's result. Operations started after
+// Close fail with ErrClosed.
 func (s *Store) Close() error {
+	s.closeOnce.Do(func() { s.closeErr = s.close() })
+	return s.closeErr
+}
+
+func (s *Store) close() error {
+	s.closeMu.Lock()
+	s.closed = true
+	s.closeMu.Unlock()
 	close(s.gcStop)
 	drained := make(chan struct{})
 	go func() {

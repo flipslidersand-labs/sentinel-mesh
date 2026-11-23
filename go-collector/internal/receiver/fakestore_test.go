@@ -27,6 +27,48 @@ type fakeStorage struct {
 	// the real (node, event_id, rule) alert index (#465).
 	alertErrs  int
 	seenAlerts map[string]bool
+	// regions is the persisted node -> region map; regionLookupErr makes
+	// NodeRegion fail (#512).
+	regions         map[string]string
+	regionLookupErr error
+	// touches counts TouchNodeRegion calls per node; touchErr makes them fail (#530).
+	touches  map[string]int
+	touchErr error
+}
+
+// TouchNodeRegion records the call; the real store decides whether to write.
+func (f *fakeStorage) TouchNodeRegion(_ context.Context, nodeID, region string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.touches == nil {
+		f.touches = map[string]int{}
+	}
+	f.touches[nodeID]++
+	if f.touchErr != nil {
+		return f.touchErr
+	}
+	if f.regions == nil {
+		f.regions = map[string]string{}
+	}
+	f.regions[nodeID] = region
+	return nil
+}
+
+func (f *fakeStorage) SaveNodeRegion(_ context.Context, nodeID, region string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.regions == nil {
+		f.regions = map[string]string{}
+	}
+	f.regions[nodeID] = region
+	return nil
+}
+
+func (f *fakeStorage) NodeRegion(_ context.Context, nodeID string) (string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	r, ok := f.regions[nodeID]
+	return r, ok, f.regionLookupErr
 }
 
 func (f *fakeStorage) SaveEventDedup(_ context.Context, e model.Event) (bool, error) {
