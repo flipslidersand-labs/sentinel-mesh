@@ -226,6 +226,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **go-collector (#324):** the REST `region` filter is now applied inside the store scan, so `limit` counts matching records, and an unregistered region returns `[]` without scanning the store. If matches lie beyond the scan cap (`maxNodeFilterScan`), fewer than `limit` results are returned. The aggregator's upstream fetch is a separate path and is unchanged.
 - **go-collector (#494):** `token issue/revoke/list` now return flag lookup errors (via `flagReader`) instead of silently using an empty `--data-dir` or `--yes` value.
 - **web:** the Events table no longer produces duplicate React keys when events share an `event_id` (across nodes or before server-side dedup); rows are keyed by `node_id`, `event_id` and row index (#422, partial).
+- **rust-agent (#544):** exec `cwd` and file/tcp `comm`/`path` are now sanitized like `cmdline`: non-printable characters become `?` (printable non-ASCII is kept) and the value is cut to 256 bytes on a character boundary, so the collector no longer rejects the whole event as INVALID (which the agent does not retry).
 
 ### Security
 

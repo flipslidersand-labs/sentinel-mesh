@@ -500,11 +500,9 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
     }
 }
 
-#[cfg(feature = "ebpf")]
+#[cfg_attr(not(feature = "ebpf"), allow(dead_code))]
 fn bytes_to_str(b: &[u8]) -> String {
-    String::from_utf8_lossy(b)
-        .trim_end_matches('\0')
-        .to_string()
+    sanitize_free_text(String::from_utf8_lossy(b).trim_end_matches('\0'))
 }
 
 // Shared C structs mirroring agent-ebpf layout — must stay in sync with kernel side.
@@ -613,6 +611,59 @@ fn parse_cmdline(raw: &[u8]) -> String {
         .collect()
 }
 
+/// Max bytes the collector accepts for a free-text field (`maxRegisterFieldLength`).
+const FREE_TEXT_MAX_BYTES: usize = 256;
+
+/// Conservative stand-in for Go's `unicode.IsPrint` (the collector's rule for
+/// `comm`/`cmdline`/`cwd`/`path`, #251). Rust's std has no general-category
+/// table, so this rejects (returns false for) everything that is certainly
+/// non-printable: control chars, every whitespace except ASCII space, and the
+/// known format (Cf), line/paragraph separator, private-use and noncharacter
+/// ranges. Unassigned code points cannot be detected and are passed through.
+fn is_printable_char(c: char) -> bool {
+    if c == ' ' {
+        return true;
+    }
+    if c.is_control() || c.is_whitespace() {
+        return false;
+    }
+    let u = c as u32;
+    !(matches!(
+        u,
+        0x00AD                  // soft hyphen
+        | 0x0600..=0x0605 | 0x061C | 0x06DD | 0x070F | 0x0890..=0x0891 | 0x08E2
+        | 0x180E
+        | 0x200B..=0x200F       // zero-width, LRM/RLM
+        | 0x202A..=0x202E       // bidi embeddings/overrides
+        | 0x2060..=0x2064 | 0x2066..=0x206F
+        | 0xE000..=0xF8FF       // private use (BMP)
+        | 0xFDD0..=0xFDEF       // noncharacters
+        | 0xFEFF
+        | 0xFFF9..=0xFFFB       // interlinear annotation
+        | 0x110BD | 0x110CD
+        | 0x1BCA0..=0x1BCA3
+        | 0x1D173..=0x1D17A
+        | 0xE0001 | 0xE0020..=0xE007F // tag characters
+        | 0xF0000..=0x10FFFF    // private use planes 15-16
+    ) || (u & 0xFFFE) == 0xFFFE) // U+xFFFE / U+xFFFF noncharacters in every plane
+}
+
+/// Make `s` something the collector never rejects as INVALID (it does not
+/// retry INVALID, so the whole event would be lost): non-printable characters
+/// become '?', printable non-ASCII is kept, and the result is cut to
+/// `FREE_TEXT_MAX_BYTES` bytes on a character boundary.
+fn sanitize_free_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len().min(FREE_TEXT_MAX_BYTES));
+    for c in s.chars() {
+        let c = if is_printable_char(c) { c } else { '?' };
+        if out.len() + c.len_utf8() > FREE_TEXT_MAX_BYTES {
+            break;
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// Read (ppid, cmdline, cwd) for `pid` under `proc_root` (normally /proc).
 ///
 /// Known limitation: this runs after the kernel event is queued, so a very
@@ -631,7 +682,7 @@ fn read_proc_exec_info(proc_root: &Path, pid: u32) -> (u32, String, String) {
         .map(|b| parse_cmdline(&b))
         .unwrap_or_default();
     let cwd = std::fs::read_link(dir.join("cwd"))
-        .map(|p| p.to_string_lossy().into_owned())
+        .map(|p| sanitize_free_text(&p.to_string_lossy()))
         .unwrap_or_default();
     (ppid, cmdline, cwd)
 }
@@ -699,7 +750,6 @@ mod tests {
         assert!(now_nanos() > 0);
     }
 
-    #[cfg(feature = "ebpf")]
     #[test]
     fn bytes_to_str_preserves_non_utf8_content() {
         // 0xFF is not valid UTF-8 on its own; a naive from_utf8().unwrap_or("")
@@ -712,7 +762,6 @@ mod tests {
         assert!(s.contains('\u{FFFD}'));
     }
 
-    #[cfg(feature = "ebpf")]
     #[test]
     fn bytes_to_str_trims_nul_terminator() {
         let raw = b"bash\0\0\0\0\0\0\0\0\0\0\0\0";
@@ -1009,6 +1058,80 @@ mod tests {
             assert!(out.bytes().all(|b| (0x20..=0x7e).contains(&b)), "{out:?}");
         }
         assert_eq!(parse_cmdline(&vec![b'x'; 5000]).len(), 256);
+    }
+
+    /// Mirror of the collector's free-text rule (#251): at most 256 bytes and
+    /// no control/format characters (valid UTF-8 is guaranteed by `String`).
+    fn assert_collector_safe_text(out: &str) {
+        assert!(out.len() <= 256, "too long: {}", out.len());
+        assert!(
+            out.chars()
+                .all(|c| c == ' ' || !(c.is_control() || c.is_whitespace())),
+            "non-printable char in {out:?}"
+        );
+    }
+
+    #[test]
+    fn bytes_to_str_is_collector_safe() {
+        // comm/path with control characters, a newline, and invalid UTF-8.
+        let s = bytes_to_str(b"/tmp/a\tb\nc\x1b[0m\xffz\0\0");
+        assert_collector_safe_text(&s);
+        assert!(s.starts_with("/tmp/a?b?c?[0m"), "{s:?}");
+        assert!(s.ends_with('z'), "{s:?}");
+        // path buffer is 256 bytes; U+FFFD (3 bytes) expansion must not exceed the cap.
+        let s = bytes_to_str(&[0xffu8; 256]);
+        assert_collector_safe_text(&s);
+        assert!(s.len() > 240, "should keep as much as fits: {}", s.len());
+        // printable non-ASCII is kept (#251).
+        assert_eq!(
+            bytes_to_str("caf\u{e9}\u{65e5}\u{672c}\0".as_bytes()),
+            "caf\u{e9}\u{65e5}\u{672c}"
+        );
+    }
+
+    #[test]
+    fn sanitize_free_text_cases() {
+        assert_eq!(sanitize_free_text("plain /usr/bin"), "plain /usr/bin");
+        assert_eq!(sanitize_free_text("a\tb\nc\x7f"), "a?b?c?");
+        assert_eq!(sanitize_free_text("\u{e9}\u{65e5}"), "\u{e9}\u{65e5}");
+        // format / bidi / zero-width / non-space whitespace / private use
+        assert_eq!(
+            sanitize_free_text("a\u{200b}b\u{202e}c\u{feff}d\u{a0}e\u{3000}f\u{e000}g\u{2028}h"),
+            "a?b?c?d?e?f?g?h"
+        );
+        // truncation lands on a char boundary and never exceeds 256 bytes
+        let two = "\u{e9}".repeat(200); // 400 bytes
+        let out = sanitize_free_text(&two);
+        assert_eq!(out.len(), 256);
+        assert_eq!(out.chars().count(), 128);
+        let three = format!("xx{}", "\u{65e5}".repeat(100)); // 2 + 300 bytes
+        let out = sanitize_free_text(&three);
+        assert_eq!(out.len(), 254); // 2 + 84*3; an 85th char would reach 257
+        assert!(out.is_char_boundary(out.len()));
+        assert_eq!(sanitize_free_text(&"x".repeat(5000)).len(), 256);
+        assert_eq!(sanitize_free_text(""), "");
+    }
+
+    #[test]
+    fn read_proc_exec_info_cwd_is_collector_safe() {
+        let root = std::env::temp_dir().join(format!("sentinel-proc-test-{}", Uuid::new_v4()));
+        let dir = root.join("1");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Over-long cwd (symlink targets need not exist; keep each component < NAME_MAX).
+        let long = format!("/{}", vec!["d".repeat(50); 8].join("/")); // > 256 bytes
+        assert!(long.len() > 256);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&long, dir.join("cwd")).unwrap();
+        let (_, _, cwd) = read_proc_exec_info(&root, 1);
+        assert_collector_safe_text(&cwd);
+        assert_eq!(cwd.len(), 256);
+        std::fs::remove_file(dir.join("cwd")).unwrap();
+        // cwd containing a tab and a newline
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("/srv/a\tb\nc", dir.join("cwd")).unwrap();
+        let (_, _, cwd) = read_proc_exec_info(&root, 1);
+        assert_eq!(cwd, "/srv/a?b?c");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
