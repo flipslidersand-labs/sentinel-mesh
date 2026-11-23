@@ -500,11 +500,9 @@ pub async fn ebpf_source(tx: Sender<KernelEvent>) {
     }
 }
 
-#[cfg(feature = "ebpf")]
+#[cfg_attr(not(feature = "ebpf"), allow(dead_code))]
 fn bytes_to_str(b: &[u8]) -> String {
-    String::from_utf8_lossy(b)
-        .trim_end_matches('\0')
-        .to_string()
+    sanitize_free_text(String::from_utf8_lossy(b).trim_end_matches('\0'))
 }
 
 // Shared C structs mirroring agent-ebpf layout — must stay in sync with kernel side.
@@ -613,6 +611,49 @@ fn parse_cmdline(raw: &[u8]) -> String {
         .collect()
 }
 
+/// Max bytes the collector accepts for a free-text field (`maxRegisterFieldLength`).
+const FREE_TEXT_MAX_BYTES: usize = 256;
+
+/// Allow-list stand-in for Go's `unicode.IsPrint` (the collector's rule for
+/// `comm`/`cmdline`/`cwd`/`path`, #251). Rust's std has no general-category
+/// table, so instead of listing what to reject (which misses unassigned code
+/// points and newer format characters) only two things are kept: printable
+/// ASCII (0x20-0x7E, space included) and non-ASCII `char::is_alphanumeric`
+/// (assigned letters, digits and most combining marks, all of which Go treats
+/// as printable). Everything else (controls, unassigned, Cf, Zs other than
+/// ASCII space, private use, noncharacters) is replaced.
+///
+/// Trade-off: non-ASCII symbols and punctuation (em dash, euro sign, katakana
+/// middle dot, ...) also become '?'. That is deliberate: a '?' in a file name
+/// is better than the collector rejecting the whole event as INVALID, which
+/// would let a crafted name evade detection.
+///
+/// Known gap: this is defense in depth on the agent side, not a guarantee.
+/// Measured against Go 1.23 (Unicode 15.0) and rustc 1.94: of the ~149k
+/// non-ASCII code points for which `is_alphanumeric` is true, ~9.7k are
+/// letters/digits added in Unicode 16/17 that Go's tables do not know, so the
+/// collector can still reject them. The full fix is to sanitize on the
+/// collector side (tracked as a separate issue).
+fn is_printable_char(c: char) -> bool {
+    matches!(c, ' '..='~') || (!c.is_ascii() && c.is_alphanumeric())
+}
+
+/// Make `s` less likely to be rejected by the collector (it does not retry
+/// INVALID, so a rejected value loses the whole event): characters failing
+/// `is_printable_char` become '?' and the result is cut to
+/// `FREE_TEXT_MAX_BYTES` bytes on a character boundary.
+fn sanitize_free_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len().min(FREE_TEXT_MAX_BYTES));
+    for c in s.chars() {
+        let c = if is_printable_char(c) { c } else { '?' };
+        if out.len() + c.len_utf8() > FREE_TEXT_MAX_BYTES {
+            break;
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// Read (ppid, cmdline, cwd) for `pid` under `proc_root` (normally /proc).
 ///
 /// Known limitation: this runs after the kernel event is queued, so a very
@@ -631,7 +672,7 @@ fn read_proc_exec_info(proc_root: &Path, pid: u32) -> (u32, String, String) {
         .map(|b| parse_cmdline(&b))
         .unwrap_or_default();
     let cwd = std::fs::read_link(dir.join("cwd"))
-        .map(|p| p.to_string_lossy().into_owned())
+        .map(|p| sanitize_free_text(&p.to_string_lossy()))
         .unwrap_or_default();
     (ppid, cmdline, cwd)
 }
@@ -699,7 +740,6 @@ mod tests {
         assert!(now_nanos() > 0);
     }
 
-    #[cfg(feature = "ebpf")]
     #[test]
     fn bytes_to_str_preserves_non_utf8_content() {
         // 0xFF is not valid UTF-8 on its own; a naive from_utf8().unwrap_or("")
@@ -709,10 +749,10 @@ mod tests {
         assert!(!s.is_empty());
         assert!(s.starts_with("evil"));
         assert!(s.ends_with("name"));
-        assert!(s.contains('\u{FFFD}'));
+        // invalid UTF-8 decodes to U+FFFD, which the allow-list turns into '?'
+        assert_eq!(s, "evil?name");
     }
 
-    #[cfg(feature = "ebpf")]
     #[test]
     fn bytes_to_str_trims_nul_terminator() {
         let raw = b"bash\0\0\0\0\0\0\0\0\0\0\0\0";
@@ -1009,6 +1049,98 @@ mod tests {
             assert!(out.bytes().all(|b| (0x20..=0x7e).contains(&b)), "{out:?}");
         }
         assert_eq!(parse_cmdline(&vec![b'x'; 5000]).len(), 256);
+    }
+
+    /// Collector length cap (bytes) for free-text fields; the character rule
+    /// is checked with literal expectations in each test instead.
+    fn assert_within_cap(out: &str) {
+        assert!(out.len() <= 256, "too long: {}", out.len());
+    }
+
+    #[test]
+    fn bytes_to_str_is_collector_safe() {
+        // comm/path with control characters, a newline, and invalid UTF-8.
+        let s = bytes_to_str(b"/tmp/a\tb\nc\x1b[0m\xffz\0\0");
+        assert_within_cap(&s);
+        assert_eq!(s, "/tmp/a?b?c?[0m?z");
+        // a full 256-byte invalid-UTF-8 buffer stays within the cap
+        let s = bytes_to_str(&[0xffu8; 256]);
+        assert_eq!(s, "?".repeat(256));
+        // printable non-ASCII is kept (#251).
+        assert_eq!(
+            bytes_to_str("caf\u{e9}\u{65e5}\u{672c}\0".as_bytes()),
+            "caf\u{e9}\u{65e5}\u{672c}"
+        );
+    }
+
+    #[test]
+    fn non_printable_non_ascii_becomes_question_mark() {
+        // unassigned U+0378, Cf U+13430, zero-width U+200B, NBSP U+00A0,
+        // private use U+E000, noncharacter U+FFFE: all rejected by Go's IsPrint.
+        let raw = "a\u{378}b\u{13430}c\u{200b}d\u{a0}e\u{e000}f\u{fffe}g";
+        assert_eq!(sanitize_free_text(raw), "a?b?c?d?e?f?g");
+        // same through the comm/path buffer helper and the cwd symlink reader
+        assert_eq!(bytes_to_str(raw.as_bytes()), "a?b?c?d?e?f?g");
+        let root = std::env::temp_dir().join(format!("sentinel-proc-test-{}", Uuid::new_v4()));
+        let dir = root.join("7");
+        std::fs::create_dir_all(&dir).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(format!("/srv/{raw}"), dir.join("cwd")).unwrap();
+        let (_, _, cwd) = read_proc_exec_info(&root, 7);
+        assert_eq!(cwd, "/srv/a?b?c?d?e?f?g");
+        std::fs::remove_dir_all(&root).unwrap();
+        // printable letters/digits outside ASCII are kept (#251)
+        assert_eq!(
+            sanitize_free_text("\u{e9}\u{65e5}\u{672c}"),
+            "\u{e9}\u{65e5}\u{672c}"
+        );
+        // non-ASCII symbols/punctuation are replaced (allow-list is conservative)
+        assert_eq!(sanitize_free_text("a\u{2014}b\u{20ac}"), "a?b?");
+    }
+
+    #[test]
+    fn sanitize_free_text_cases() {
+        assert_eq!(sanitize_free_text("plain /usr/bin"), "plain /usr/bin");
+        assert_eq!(sanitize_free_text("a\tb\nc\x7f"), "a?b?c?");
+        assert_eq!(sanitize_free_text("\u{e9}\u{65e5}"), "\u{e9}\u{65e5}");
+        // format / bidi / zero-width / non-space whitespace / private use
+        assert_eq!(
+            sanitize_free_text("a\u{200b}b\u{202e}c\u{feff}d\u{a0}e\u{3000}f\u{e000}g\u{2028}h"),
+            "a?b?c?d?e?f?g?h"
+        );
+        // truncation lands on a char boundary and never exceeds 256 bytes
+        let two = "\u{e9}".repeat(200); // 400 bytes
+        let out = sanitize_free_text(&two);
+        assert_eq!(out.len(), 256);
+        assert_eq!(out.chars().count(), 128);
+        let three = format!("xx{}", "\u{65e5}".repeat(100)); // 2 + 300 bytes
+        let out = sanitize_free_text(&three);
+        assert_eq!(out.len(), 254); // 2 + 84*3; an 85th char would reach 257
+        assert!(out.is_char_boundary(out.len()));
+        assert_eq!(sanitize_free_text(&"x".repeat(5000)).len(), 256);
+        assert_eq!(sanitize_free_text(""), "");
+    }
+
+    #[test]
+    fn read_proc_exec_info_cwd_is_collector_safe() {
+        let root = std::env::temp_dir().join(format!("sentinel-proc-test-{}", Uuid::new_v4()));
+        let dir = root.join("1");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Over-long cwd (symlink targets need not exist; keep each component < NAME_MAX).
+        let long = format!("/{}", vec!["d".repeat(50); 8].join("/")); // > 256 bytes
+        assert!(long.len() > 256);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&long, dir.join("cwd")).unwrap();
+        let (_, _, cwd) = read_proc_exec_info(&root, 1);
+        assert_within_cap(&cwd);
+        assert_eq!(cwd.len(), 256);
+        std::fs::remove_file(dir.join("cwd")).unwrap();
+        // cwd containing a tab and a newline
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("/srv/a\tb\nc", dir.join("cwd")).unwrap();
+        let (_, _, cwd) = read_proc_exec_info(&root, 1);
+        assert_eq!(cwd, "/srv/a?b?c");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
