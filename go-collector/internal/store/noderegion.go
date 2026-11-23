@@ -60,7 +60,9 @@ type nodeRegionMark struct {
 // (the remaining TTL is unknown). It only refreshes a record that exists: a
 // missing one (never saved, or expired) is not created, so a guessed default
 // region is never made permanent (#512); the absence is re-checked after half a
-// retention. Concurrent callers claim the work under a lock, so one due
+// retention. It extends the TTL only: the stored region is kept, and region is
+// just required to be non-empty, so a stale stream cannot overwrite the region
+// of a newer Save (#559). Concurrent callers claim the work under a lock, so one due
 // refresh is written once; a failed attempt releases the claim so the next call
 // retries. No I/O happens under the lock.
 func (s *Store) TouchNodeRegion(ctx context.Context, nodeID, region string) error {
@@ -82,7 +84,7 @@ func (s *Store) TouchNodeRegion(ctx context.Context, nodeID, region string) erro
 	}
 	s.nodeRegionMu.Unlock()
 
-	err := s.refreshNodeRegion(ctx, nodeID, region, now, !known || prev.absent || now.Sub(prev.at) >= s.retention)
+	err := s.refreshNodeRegion(ctx, nodeID, now)
 	if err != nil {
 		s.nodeRegionMu.Lock()
 		if s.nodeRegionAt[nodeID] == claim { // still our claim
@@ -93,25 +95,61 @@ func (s *Store) TouchNodeRegion(ctx context.Context, nodeID, region string) erro
 	return err
 }
 
-// refreshNodeRegion writes the record. When checkExists is set it first looks
-// the record up and, if it is missing, leaves it missing and marks the node
-// absent instead.
-func (s *Store) refreshNodeRegion(ctx context.Context, nodeID, region string, now time.Time, checkExists bool) error {
-	if checkExists {
-		_, ok, err := s.NodeRegion(ctx, nodeID)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			s.nodeRegionMu.Lock()
-			if cur := s.nodeRegionAt[nodeID]; cur.at.Equal(now) { // not replaced by a Save meanwhile
-				s.nodeRegionAt[nodeID] = nodeRegionMark{at: now, absent: true}
+// refreshNodeRegion extends the TTL of the stored record and keeps the region
+// that is stored. The read and the rewrite share one transaction, so a Save
+// that lands meanwhile is never overwritten: badger reports a conflict, and the
+// Save has refreshed the TTL itself (#559). The region the caller passed to
+// TouchNodeRegion is deliberately not written: a stream may still carry a
+// region from before the node re-registered elsewhere. A missing record is left
+// missing and the node is marked absent instead.
+func (s *Store) refreshNodeRegion(ctx context.Context, nodeID string, now time.Time) error {
+	key := []byte(nodeRegionPrefix + nodeID)
+	var found, conflict bool
+	err := s.run(ctx, func() error {
+		found, conflict = false, false
+		err := s.db.Update(func(tx *badger.Txn) error {
+			item, err := tx.Get(key)
+			if errors.Is(err, badger.ErrKeyNotFound) {
+				return nil
 			}
-			s.nodeRegionMu.Unlock()
+			if err != nil {
+				return err
+			}
+			val, err := item.ValueCopy(nil)
+			if err != nil {
+				return err
+			}
+			if s.beforeRefreshWrite != nil {
+				s.beforeRefreshWrite()
+			}
+			found = true
+			return tx.SetEntry(badger.NewEntry(key, val).WithTTL(s.retention))
+		})
+		if errors.Is(err, badger.ErrConflict) {
+			conflict = true // a concurrent Save wrote the record and its TTL
 			return nil
 		}
+		return err
+	})
+	if err != nil {
+		return err
 	}
-	return s.writeNodeRegion(ctx, nodeID, region, now)
+	if conflict {
+		return nil // the Save keeps its own mark
+	}
+	s.nodeRegionMu.Lock()
+	defer s.nodeRegionMu.Unlock()
+	cur := s.nodeRegionAt[nodeID]
+	if !cur.at.Equal(now) { // replaced by a Save meanwhile
+		return nil
+	}
+	if found {
+		s.nodeRegionWrites.Add(1)
+		s.nodeRegionAt[nodeID] = nodeRegionMark{at: now}
+	} else {
+		s.nodeRegionAt[nodeID] = nodeRegionMark{at: now, absent: true}
+	}
+	return nil
 }
 
 // pruneNodeRegionAtLocked drops bookkeeping of nodes not written for a whole
