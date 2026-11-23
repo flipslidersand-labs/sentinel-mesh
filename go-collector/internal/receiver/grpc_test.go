@@ -2,6 +2,7 @@ package receiver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -21,6 +22,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/flipslidersand/sentinel-mesh/internal/anomaly"
+	"github.com/flipslidersand/sentinel-mesh/internal/eventtype"
 	"github.com/flipslidersand/sentinel-mesh/internal/notify"
 	"github.com/flipslidersand/sentinel-mesh/internal/pb"
 	"github.com/flipslidersand/sentinel-mesh/internal/registry"
@@ -203,19 +205,38 @@ func TestValidateKernelEvent_RejectsControlCharInEventId(t *testing.T) {
 	}
 }
 
-func TestValidateKernelEvent_RejectsControlCharInExecCmdline(t *testing.T) {
+// #154 originally rejected a control character in cmdline; #549 rewrites
+// free-text fields instead (Rust/Go Unicode-version skew made rejection a
+// detection-evasion hole). The "no control character is stored" intent holds:
+// the value is sanitized before validation, and validateKernelEvent itself
+// still rejects an unsanitized one (defense in depth).
+func TestValidateKernelEvent_SanitizesControlCharInExecCmdline(t *testing.T) {
 	e := &pb.KernelEvent{NodeId: "node-1", EventId: "evt-1", Type: pb.EventType_EXEC,
 		Payload: &pb.KernelEvent_Exec{Exec: &pb.ExecEvent{Comm: "sh", Cmdline: "sh -c \x00rm -rf /", Cwd: "/tmp"}}}
 	if err := validateKernelEvent(e); err == nil {
-		t.Fatal("expected control character in exec cmdline to be rejected")
+		t.Fatal("validateKernelEvent must still reject an unsanitized control character")
+	}
+	if n := sanitizeKernelEvent(e); n != 1 {
+		t.Fatalf("sanitized fields = %d, want 1", n)
+	}
+	if err := validateKernelEvent(e); err != nil {
+		t.Fatalf("sanitized exec event must pass, got %v", err)
+	}
+	if got := e.GetExec().Cmdline; got != "sh -c ?rm -rf /" {
+		t.Fatalf("cmdline = %q", got)
 	}
 }
 
-func TestValidateKernelEvent_RejectsInvalidPathInFileEvent(t *testing.T) {
+// #154's newline-in-path case, updated for #549: sanitized, not rejected.
+func TestValidateKernelEvent_SanitizesInvalidPathInFileEvent(t *testing.T) {
 	e := &pb.KernelEvent{NodeId: "node-1", EventId: "evt-1", Type: pb.EventType_FILE,
 		Payload: &pb.KernelEvent_File{File: &pb.FileEvent{Comm: "sh", Path: "/etc/passwd\nInjected: 1", Op: "open"}}}
-	if err := validateKernelEvent(e); err == nil {
-		t.Fatal("expected newline in file path to be rejected")
+	sanitizeKernelEvent(e)
+	if err := validateKernelEvent(e); err != nil {
+		t.Fatalf("sanitized file event must pass, got %v", err)
+	}
+	if got := e.GetFile().Path; got != "/etc/passwd?Injected: 1" {
+		t.Fatalf("path = %q", got)
 	}
 }
 
@@ -998,16 +1019,153 @@ func TestValidateKernelEvent_AllowsPrintableNonASCIIPath(t *testing.T) {
 	}
 }
 
-func TestValidateKernelEvent_RejectsUnsafePathRunes(t *testing.T) {
-	for name, p := range map[string]string{
-		"newline":      "/tmp/a\nb",
-		"nul":          "/tmp/a\x00b",
-		"bidi":         "/tmp/evil‮gpj.exe",
-		"invalid utf8": "/tmp/\xff\xfe",
-		"too long":     "/tmp/" + strings.Repeat("日", maxRegisterFieldLength),
+// #251's unsafe-rune cases, updated for #549: each is rewritten to a safe
+// value (and then validates) instead of the event being rejected.
+func TestValidateKernelEvent_SanitizesUnsafePathRunes(t *testing.T) {
+	longWant := "/tmp/" + strings.Repeat("日", (maxRegisterFieldLength-len("/tmp/"))/3)
+	for name, c := range map[string]struct{ in, want string }{
+		"newline":      {"/tmp/a\nb", "/tmp/a?b"},
+		"nul":          {"/tmp/a\x00b", "/tmp/a?b"},
+		"bidi":         {"/tmp/evil\u202egpj.exe", "/tmp/evil?gpj.exe"},
+		"zero width":   {"/tmp/a\u200bb", "/tmp/a?b"},
+		"unassigned":   {"/tmp/a\u0378b", "/tmp/a?b"},
+		"tab":          {"/tmp/a\tb", "/tmp/a?b"},
+		"invalid utf8": {"/tmp/\xff\xfe", "/tmp/??"},
+		"too long":     {"/tmp/" + strings.Repeat("日", maxRegisterFieldLength), longWant},
 	} {
-		if err := validateKernelEvent(fileEventWithPath(p)); err == nil {
-			t.Errorf("%s: expected rejection", name)
+		e := fileEventWithPath(c.in)
+		if sanitizeKernelEvent(e) != 1 {
+			t.Errorf("%s: expected one sanitized field", name)
+		}
+		if err := validateKernelEvent(e); err != nil {
+			t.Errorf("%s: sanitized event must pass, got %v", name, err)
+		}
+		if got := e.GetFile().Path; got != c.want {
+			t.Errorf("%s: path = %q, want %q", name, got, c.want)
+		}
+	}
+}
+
+func TestSanitizeFreeText_KeepsSafeValuesUnchanged(t *testing.T) {
+	for _, v := range []string{"", "/tmp/café", "/home/u/日本語.txt", "/tmp/📁/x", "a\uFFFDb", strings.Repeat("a", maxRegisterFieldLength)} {
+		if got, changed := sanitizeFreeText(v); changed || got != v {
+			t.Errorf("%q: got %q changed=%v", v, got, changed)
+		}
+	}
+}
+
+func TestSanitizeFreeText_TruncatesAtRuneBoundary(t *testing.T) {
+	// 255 ASCII bytes then a 3-byte rune: the rune does not fit, so it is dropped whole.
+	got, changed := sanitizeFreeText(strings.Repeat("a", maxRegisterFieldLength-1) + "日")
+	if !changed || got != strings.Repeat("a", maxRegisterFieldLength-1) {
+		t.Fatalf("got len %d changed=%v", len(got), changed)
+	}
+}
+
+// Every free-text field of every payload type must be rewritten, so the set
+// sanitizeKernelEvent covers stays in step with freeTextFields.
+func TestSanitizeKernelEvent_CoversAllFreeTextFields(t *testing.T) {
+	bad := "x\x00\u202e" + strings.Repeat("y", 2*maxRegisterFieldLength)
+	events := []*pb.KernelEvent{
+		{Type: pb.EventType_EXEC, Payload: &pb.KernelEvent_Exec{Exec: &pb.ExecEvent{Comm: bad, Cmdline: bad, Cwd: bad}}},
+		{Type: pb.EventType_TCP, Payload: &pb.KernelEvent_Tcp{Tcp: &pb.TcpEvent{Comm: bad}}},
+		{Type: pb.EventType_FILE, Payload: &pb.KernelEvent_File{File: &pb.FileEvent{Comm: bad, Path: bad}}},
+	}
+	for _, e := range events {
+		e.NodeId, e.EventId = "node-1", "evt-1"
+		info, _ := eventtype.Lookup(e.Type)
+		want := 0
+		for _, f := range info.Strings(e) {
+			if freeTextFields[f.Name] {
+				want++
+			}
+		}
+		if got := sanitizeKernelEvent(e); got != want {
+			t.Errorf("%s: sanitized %d fields, want %d", info.Name, got, want)
+		}
+		if err := validateKernelEvent(e); err != nil {
+			t.Errorf("%s: sanitized event must validate: %v", info.Name, err)
+		}
+	}
+}
+
+// #549: free-text fields with non-printable runes or over-long values are
+// stored sanitized (Ack ok=true) rather than dropped, and the log never
+// carries the original value.
+func TestStreamEvents_SanitizesFreeTextInsteadOfRejecting(t *testing.T) {
+	st, err := store.New(filepath.Join(t.TempDir(), "badger"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	core, logs := observer.New(zap.WarnLevel)
+	s := &server{st: st, reg: registry.New(), log: zap.New(core)}
+
+	long := strings.Repeat("z", 3*maxRegisterFieldLength)
+	now := time.Now().UnixNano()
+	stream := &fakeStream{events: []*pb.KernelEvent{
+		{NodeId: "node-1", EventId: "e-exec", Type: pb.EventType_EXEC, Timestamp: now,
+			Payload: &pb.KernelEvent_Exec{Exec: &pb.ExecEvent{Comm: "a\u202eb", Cmdline: "x\x00" + long, Cwd: "/t\u0378p"}}},
+		{NodeId: "node-1", EventId: "e-tcp", Type: pb.EventType_TCP, Timestamp: now,
+			Payload: &pb.KernelEvent_Tcp{Tcp: &pb.TcpEvent{Comm: "a\nb", SrcIp: "10.0.0.1", DstIp: "10.0.0.2", Direction: "out"}}},
+		{NodeId: "node-1", EventId: "e-file", Type: pb.EventType_FILE, Timestamp: now,
+			Payload: &pb.KernelEvent_File{File: &pb.FileEvent{Comm: "sh", Path: "/tmp/a\u200bb\xff\t" + long, Op: "open"}}},
+	}}
+	if err := s.StreamEvents(stream); err != nil {
+		t.Fatalf("StreamEvents: %v", err)
+	}
+	if len(stream.acks) != 3 {
+		t.Fatalf("acks = %d, want 3", len(stream.acks))
+	}
+	for i, a := range stream.acks {
+		if !a.Ok {
+			t.Fatalf("ack %d rejected: %+v", i, a)
+		}
+	}
+	events, err := st.ListEventsWhere(context.Background(), func(id string) bool { return id == "node-1" }, 10)
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("stored %d events, want 3", len(events))
+	}
+	for _, ev := range events {
+		var p map[string]any
+		if err := json.Unmarshal(ev.Payload, &p); err != nil {
+			t.Fatalf("payload: %v", err)
+		}
+		for _, k := range []string{"comm", "cmdline", "cwd", "path"} {
+			v, ok := p[k].(string)
+			if !ok {
+				continue
+			}
+			if !isPrintableText(v) || len(v) > maxRegisterFieldLength {
+				t.Errorf("%s: stored %s is unsafe (len %d)", ev.EventID, k, len(v))
+			}
+		}
+		switch ev.EventID {
+		case "e-exec":
+			if p["comm"] != "a?b" || p["cwd"] != "/t?p" {
+				t.Errorf("exec payload not rewritten: %v", p)
+			}
+		case "e-tcp":
+			if p["comm"] != "a?b" {
+				t.Errorf("tcp comm = %v", p["comm"])
+			}
+		case "e-file":
+			if !strings.HasPrefix(p["path"].(string), "/tmp/a?b??zzz") {
+				t.Errorf("file path not rewritten: %v", p["path"])
+			}
+		}
+	}
+	// Throttled log: one Warn for the first sanitized event, then every 1000th.
+	warns := logs.FilterMessage("StreamEvents sanitized free-text fields of event").All()
+	if len(warns) != 1 {
+		t.Fatalf("sanitize warnings = %d, want 1", len(warns))
+	}
+	for _, f := range warns[0].Context {
+		if strings.Contains(f.String, "zzz") || strings.ContainsAny(f.String, "\x00\u202e") {
+			t.Errorf("log field %s leaks the value", f.Key)
 		}
 	}
 }
