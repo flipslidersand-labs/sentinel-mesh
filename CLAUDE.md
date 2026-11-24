@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Rules shared across repositories: see [AGENTS.md](AGENTS.md) (points to repo-compass). Do not copy them here.
+Rules shared across repositories: see [AGENTS.md](AGENTS.md). Do not copy them here.
 
 ## Build / test (same commands as CI, `.github/workflows/ci.yml`)
 
