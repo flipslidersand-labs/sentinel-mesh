@@ -47,15 +47,15 @@ func TestRecord_AlertAtThresholdBreach(t *testing.T) {
 
 func TestRecord_AlertContainsNodeAndType(t *testing.T) {
 	d := New([]WindowConfig{{Duration: time.Minute, Threshold: 1}})
-	ev := makeEvent("minipc", "tcp")
+	ev := makeEvent("node-a", "tcp")
 	d.Record(ev)
 	alerts := d.Record(ev)
 	if len(alerts) == 0 {
 		t.Fatal("expected alert")
 	}
 	a := alerts[0]
-	if a.NodeID != "minipc" {
-		t.Errorf("NodeID = %q, want 'minipc'", a.NodeID)
+	if a.NodeID != "node-a" {
+		t.Errorf("NodeID = %q, want 'node-a'", a.NodeID)
 	}
 	if a.RuleID != "anomaly_tcp" {
 		t.Errorf("RuleID = %q, want 'anomaly_tcp'", a.RuleID)
