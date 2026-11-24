@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# One-shot: build + deploy collector to MINIPC + deploy agents to available nodes.
+# One-shot: build + deploy collector to node-a + deploy agents to available nodes.
 # Skips unreachable nodes automatically.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPTS="$REPO_ROOT/scripts"
 
-COLLECTOR_HOST="${SENTINEL_COLLECTOR_HOST:-minipc}"
+COLLECTOR_HOST="${SENTINEL_COLLECTOR_HOST:-node-a}"
 COLLECTOR_IP="${SENTINEL_COLLECTOR_IP:-192.0.2.10}"
 COLLECTOR_ADDR="$COLLECTOR_IP:50051"
 
 declare -A AGENTS=(
-  ["minipc"]="minipc"          # collector node's own self-agent for local events
-  ["yuki-private"]="yuki"      # (skipped if offline)
-  ["ds1"]="ds1"                # (skipped if offline)
+  ["node-a"]="node-a"          # collector node's own self-agent for local events
+  ["node-b"]="node-b"          # (skipped if offline)
+  ["node-c"]="node-c"          # (skipped if offline)
 )
 
 echo "==> Step 1: Build binaries"
