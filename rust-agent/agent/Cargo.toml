@@ -12,6 +12,7 @@ repository = "https://github.com/flipslidersand-labs/sentinel-mesh"
 #   3. cargo +nightly build -p sentinel-agent-ebpf \
 #          --target bpfel-unknown-none -Z build-std=core \
 #          --manifest-path ../agent-ebpf/Cargo.toml
+#      (agent-ebpf's dev profile is optimized, as the verifier rejected the unoptimized object; #569)
 #   4. Run as root or with CAP_BPF
 ebpf = ["dep:aya"]
 

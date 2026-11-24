@@ -8,6 +8,16 @@ repository = "https://github.com/flipslidersand-labs/sentinel-mesh"
 # Build with:
 #   cargo +nightly build --target bpfel-unknown-none -Z build-std=core
 # Requires: bpf-linker, LLVM dev headers (sudo apt install llvm-18-dev)
+# The dev (debug) profile below is optimized on purpose (see the profile comment).
+
+[profile.dev]
+# An unoptimized debug object was rejected by the kernel verifier (#569). It had
+# 14 bpf-to-bpf call relocations (8 memset, 6 panic paths); this profile leaves 4
+# memset (release: 5). The agent embeds the debug path, so optimize this profile.
+# Dropping debug / overflow-checks / panic = "abort" from these settings left the
+# program code unchanged in an objdump comparison, so they are not set.
+opt-level = 3
+debug-assertions = false
 
 [dependencies]
 aya-ebpf = "0.2"
