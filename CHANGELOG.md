@@ -124,6 +124,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **refactor (#353):** new `internal/eventtype` package is the single source for event kinds and payload schemas; the receiver and alerting use it, and the known alert fields now come from the payload structs' `json` tags instead of the pb descriptor. Payload JSON and error messages are unchanged; `validateKernelEvent` is not yet table-driven.
 - **rust-agent (#331):** `tonic`/`tonic-build`/`prost` updated to the 0.14 series (`tonic-prost-build`, native roots enabled explicitly to keep the OS root certificates); `cargo deny check advisories` is clean afterwards. `aya` is unchanged. Not verified against a real TLS connection (in-process fake collector tests only).
 - **refactor (#437):** removed the internal `store.Event`/`store.Alert` compatibility aliases; all code uses `model.Event`/`model.Alert` (no behavior or data-format change).
+- **scripts / docs (#384):** the demo and deploy scripts, README and tests use generic node names (`node-a`/`node-b`/`node-c`) instead of home-lab host names; the `SENTINEL_*_IP` variables of `scripts/demo-multi-region.sh` are renamed to `SENTINEL_NODE_A_IP` / `SENTINEL_NODE_B_IP` (no fallback to the old names; update any environment that sets them).
 
 ### Fixed
 
@@ -296,7 +297,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.0] - 2026-08-17
 
 First tagged release. End-to-end eBPF-based host monitoring mesh, verified on
-real hardware (YUKI WSL2 #57, DS1 WSL2 #59).
+real hardware (node-b WSL2 #57, node-c WSL2 #59).
 
 ### Added
 
@@ -325,11 +326,11 @@ real hardware (YUKI WSL2 #57, DS1 WSL2 #59).
 
 #### Deployment
 - Multi-node deploy scripts (`build.sh`, `deploy-agent.sh`) targeting
-  MINIPC / YUKI / DS1 with real-eBPF mode, multi-host and region flags.
+  node-a / node-b / node-c with real-eBPF mode, multi-host and region flags.
 - `demo-multi-region.sh` demo.
 
 ### Verified
-- Real eBPF load/attach confirmed on two hosts (YUKI, DS1), kernel 6.6.x WSL2,
+- Real eBPF load/attach confirmed on two hosts (node-b, node-c), kernel 6.6.x WSL2,
   via `/proc/<pid>/fd` BPF prog/map/link inspection.
 
 [0.1.0]: https://github.com/flipslidersand-labs/sentinel-mesh/releases/tag/v0.1.0

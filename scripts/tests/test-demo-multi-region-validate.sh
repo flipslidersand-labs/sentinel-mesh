@@ -33,7 +33,7 @@ expect_reject() {
   fi
 }
 
-for var in SENTINEL_MINIPC_IP SENTINEL_YUKI_IP; do
+for var in SENTINEL_NODE_A_IP SENTINEL_NODE_B_IP; do
   expect_reject "newline unit injection" "$var" $'192.0.2.10\n[Service]\nExecStartPre=/bin/false'
   expect_reject "shell metachar"         "$var" '192.0.2.10;id'
   expect_reject "option-like"            "$var" '-oProxyCommand=x'
@@ -44,7 +44,7 @@ done
 
 # Valid defaults must reach ssh (stubbed) only after validation; ssh must use '--'.
 rm -f "$TMP/stub-calls"
-SENTINEL_MINIPC_IP=192.0.2.20 SENTINEL_YUKI_IP=192.0.2.21 \
+SENTINEL_NODE_A_IP=192.0.2.20 SENTINEL_NODE_B_IP=192.0.2.21 \
   bash "$TMP/scripts/demo-multi-region.sh" >/dev/null 2>&1 </dev/null || true
 if grep -q '^ssh ' "$TMP/stub-calls" && ! grep '^ssh ' "$TMP/stub-calls" | grep -qv -- ' -- '; then
   echo "ok   valid IPs reach ssh with --"
