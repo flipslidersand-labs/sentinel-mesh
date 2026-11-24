@@ -31,7 +31,7 @@ jobs:
   go-mod-tidy:
     name: Go mod tidy check
     # 注: 公開リポのため self-hosted runner に切り替えない。fork PR のコードが常駐 runner で
-    #     動いてしまう (repo-compass ADR-010 補足)。GATE_RUNNER は GitHub-hosted のラベルのみ指定する。
+    #     動いてしまう (org の runner 方針の補足)。GATE_RUNNER は GitHub-hosted のラベルのみ指定する。
     # go-collector は再利用 workflow 呼び出しのため step を足せず、別ジョブで整合を検査する (#330)。
     # 公開リポのため runner はリポ変数 GATE_RUNNER で指定する（ADR-010。既定値なし）。
     runs-on: ${{ vars.GATE_RUNNER }}
