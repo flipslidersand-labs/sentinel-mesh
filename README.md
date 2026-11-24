@@ -448,15 +448,15 @@ Deploy Collector on one node and Agents on multiple nodes in a local network.
 # 1. Build all binaries (cross-compiled for Linux/amd64)
 bash scripts/build.sh
 
-# 2. Deploy Collector to MINIPC (systemd service)
+# 2. Deploy Collector to node-a (systemd service)
 #    --grpc-auth disabled: demo with mock agents that have no per-agent token.
 #    For production keep the default `required` and issue tokens (see "gRPC TLS & Authentication").
-bash scripts/install-collector.sh minipc --grpc-auth disabled
+bash scripts/install-collector.sh node-a --grpc-auth disabled
 
 # 3. Deploy Agents to each node (mock mode)
-bash scripts/deploy-agent.sh --mock --collector 192.0.2.10:50051 minipc
-bash scripts/deploy-agent.sh --mock --collector 192.0.2.10:50051 yuki-private
-bash scripts/deploy-agent.sh --mock --collector 192.0.2.10:50051 ds1
+bash scripts/deploy-agent.sh --mock --collector 192.0.2.10:50051 node-a
+bash scripts/deploy-agent.sh --mock --collector 192.0.2.10:50051 node-b
+bash scripts/deploy-agent.sh --mock --collector 192.0.2.10:50051 node-c
 
 # Or run everything at once (skips unreachable nodes automatically)
 bash scripts/demo-multi-node.sh
@@ -469,7 +469,7 @@ bash scripts/demo-multi-node.sh
 curl http://192.0.2.10:8081/api/nodes
 
 # Events from a specific node
-curl "http://192.0.2.10:8081/api/events?node=yuki&limit=20"
+curl "http://192.0.2.10:8081/api/events?node=node-b&limit=20"
 
 # Dashboard
 open http://192.0.2.10:8081
@@ -481,9 +481,9 @@ Example layout for a 3-node home-lab deployment (substitute your own hosts/IPs):
 
 | Role      | Host            | IP           | SSH alias      |
 | --------- | --------------- | ------------ | -------------- |
-| Collector | collector-node  | 192.0.2.10   | `minipc`       |
-| Agent     | agent-node-1    | 192.0.2.11   | `yuki-private` |
-| Agent     | agent-node-2    | 192.0.2.12   | `ds1`          |
+| Collector | collector-node  | 192.0.2.10   | `node-a`       |
+| Agent     | agent-node-1    | 192.0.2.11   | `node-b`       |
+| Agent     | agent-node-2    | 192.0.2.12   | `node-c`       |
 
 ### Deploy Scripts
 
@@ -506,7 +506,7 @@ must be readable by `sentinel` and not under `/home`).
 bash scripts/install-collector.sh <SSH_HOST> [OPTIONS]
 # Options: --region, --grpc-addr, --http-addr, --data-dir, --grpc-tls-cert, --grpc-tls-key, --http-tls-cert, --http-tls-key, --grpc-auth, --http-auth
 # Example (demo; --http-auth defaults to required and the unit crash-loops without SENTINEL_API_TOKEN):
-bash scripts/install-collector.sh minipc --grpc-addr :50051 --http-addr :8081 --http-auth disabled
+bash scripts/install-collector.sh node-a --grpc-addr :50051 --http-addr :8081 --http-auth disabled
 # Production: keep --http-auth required and put SENTINEL_API_TOKEN in a mode-600 EnvironmentFile
 # via a systemd drop-in on the host (the script never writes the token), then restart the unit.
 ```
@@ -520,9 +520,9 @@ without `CAP_BPF`. See `bash scripts/deploy-agent.sh --help` for the full option
 ```bash
 bash scripts/deploy-agent.sh [OPTIONS] HOST...
 # Example (real eBPF mode, node_id defaults to each host's own `hostname -s`):
-bash scripts/deploy-agent.sh --collector 192.0.2.10:50051 yuki-private ds1
+bash scripts/deploy-agent.sh --collector 192.0.2.10:50051 node-b node-c
 # Example (mock mode, explicit node_id — requires a single host):
-bash scripts/deploy-agent.sh --mock --node-id web-01 --collector 192.0.2.10:50051 minipc
+bash scripts/deploy-agent.sh --mock --node-id web-01 --collector 192.0.2.10:50051 node-a
 ```
 
 ### Switching to real eBPF mode
