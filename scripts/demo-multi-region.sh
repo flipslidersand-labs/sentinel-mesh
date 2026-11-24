@@ -2,9 +2,9 @@
 # Multi-region demo: two region collectors + a cross-region aggregator.
 #
 # Topology:
-#   minipc  — region collector "asia-west"  :50051 gRPC  :8081 HTTP
-#   yuki    — region collector "asia-east"  :50052 gRPC  :8082 HTTP
-#   minipc  — aggregator (polls both)       :8083 HTTP   (no gRPC)
+#   node-a  — region collector "asia-west"  :50051 gRPC  :8081 HTTP
+#   node-b  — region collector "asia-east"  :50052 gRPC  :8082 HTTP
+#   node-a  — aggregator (polls both)       :8083 HTTP   (no gRPC)
 #
 # Each region collector receives agents in its own region.
 # The aggregator merges /api/nodes,events,alerts,regions from both collectors.
@@ -16,11 +16,11 @@
 # interfaces (the aggregator polls the collectors across hosts, so loopback-only
 # is not possible). Use only on an isolated demo network, and remove afterwards:
 #   sudo systemctl disable --now sentinel-aggregator sentinel-collector
-# SENTINEL_MINIPC_IP / SENTINEL_YUKI_IP must be IPv4 addresses (#367).
+# SENTINEL_NODE_A_IP / SENTINEL_NODE_B_IP must be IPv4 addresses (#367).
 #
 # Requirements:
 #   - scripts/build.sh already run
-#   - SSH key access to minipc and yuki-private
+#   - SSH key access to node-a and node-b
 #   - sudo on both hosts
 set -euo pipefail
 
@@ -41,23 +41,23 @@ MOCK_FLAG=""
 if $MOCK; then MOCK_FLAG="--mock"; fi
 
 # ── Host / address config ──────────────────────────────────────────────────────
-MINIPC_HOST="minipc"
-MINIPC_IP="${SENTINEL_MINIPC_IP:-192.0.2.10}"
-YUKI_HOST="yuki-private"
-YUKI_IP="${SENTINEL_YUKI_IP:-192.0.2.11}"
+NODE_A_HOST="node-a"
+NODE_A_IP="${SENTINEL_NODE_A_IP:-192.0.2.10}"
+NODE_B_HOST="node-b"
+NODE_B_IP="${SENTINEL_NODE_B_IP:-192.0.2.11}"
 
 # These values are interpolated into a root systemd unit and ssh arguments:
 # validate before any use (#65, #367). Fail closed.
-validate_host "MINIPC_HOST" "$MINIPC_HOST"
-validate_host "YUKI_HOST" "$YUKI_HOST"
-validate_ip "SENTINEL_MINIPC_IP" "$MINIPC_IP"
-validate_ip "SENTINEL_YUKI_IP" "$YUKI_IP"
+validate_host "NODE_A_HOST" "$NODE_A_HOST"
+validate_host "NODE_B_HOST" "$NODE_B_HOST"
+validate_ip "SENTINEL_NODE_A_IP" "$NODE_A_IP"
+validate_ip "SENTINEL_NODE_B_IP" "$NODE_B_IP"
 
-WEST_GRPC="${MINIPC_IP}:50051"
-WEST_HTTP="http://${MINIPC_IP}:8081"
-EAST_GRPC="${YUKI_IP}:50052"
-EAST_HTTP="http://${YUKI_IP}:8082"
-AGG_HTTP="http://${MINIPC_IP}:8083"
+WEST_GRPC="${NODE_A_IP}:50051"
+WEST_HTTP="http://${NODE_A_IP}:8081"
+EAST_GRPC="${NODE_B_IP}:50052"
+EAST_HTTP="http://${NODE_B_IP}:8082"
+AGG_HTTP="http://${NODE_A_IP}:8083"
 
 # ── Step 1: build ──────────────────────────────────────────────────────────────
 echo "==> Step 1: Build binaries"
@@ -65,23 +65,23 @@ bash "$SCRIPTS/build.sh"
 
 # ── Step 2: Deploy region collectors ──────────────────────────────────────────
 echo ""
-echo "==> Step 2a: Deploy asia-west collector → $MINIPC_HOST"
-bash "$SCRIPTS/install-collector.sh" "$MINIPC_HOST" \
+echo "==> Step 2a: Deploy asia-west collector → $NODE_A_HOST"
+bash "$SCRIPTS/install-collector.sh" "$NODE_A_HOST" \
   --region asia-west --grpc-addr :50051 --http-addr :8081 --grpc-auth disabled --http-auth disabled
 
-if ssh -o ConnectTimeout=5 -o BatchMode=yes -- "$YUKI_HOST" true 2>/dev/null; then
+if ssh -o ConnectTimeout=5 -o BatchMode=yes -- "$NODE_B_HOST" true 2>/dev/null; then
   echo ""
-  echo "==> Step 2b: Deploy asia-east collector → $YUKI_HOST"
-  bash "$SCRIPTS/install-collector.sh" "$YUKI_HOST" \
+  echo "==> Step 2b: Deploy asia-east collector → $NODE_B_HOST"
+  bash "$SCRIPTS/install-collector.sh" "$NODE_B_HOST" \
     --region asia-east --grpc-addr :50052 --http-addr :8082 --grpc-auth disabled --http-auth disabled
 else
-  echo "==> Step 2b: $YUKI_HOST unreachable — skipping asia-east collector"
+  echo "==> Step 2b: $NODE_B_HOST unreachable — skipping asia-east collector"
   EAST_HTTP=""
 fi
 
-# ── Step 3: Deploy aggregator on minipc ───────────────────────────────────────
+# ── Step 3: Deploy aggregator on node-a ───────────────────────────────────────
 echo ""
-echo "==> Step 3: Deploy aggregator → $MINIPC_HOST :8083"
+echo "==> Step 3: Deploy aggregator → $NODE_A_HOST :8083"
 
 # Demo only: upstreams are plaintext http:// on non-loopback hosts, so the
 # aggregator needs --aggregate-allow-insecure-http (#359); use TLS in production.
@@ -92,7 +92,7 @@ fi
 
 # Client-side expansion is intended; every value is validated above.
 # shellcheck disable=SC2087
-ssh -- "$MINIPC_HOST" "sudo tee /etc/systemd/system/sentinel-aggregator.service > /dev/null" <<EOF
+ssh -- "$NODE_A_HOST" "sudo tee /etc/systemd/system/sentinel-aggregator.service > /dev/null" <<EOF
 [Unit]
 Description=SentinelMesh Aggregator
 After=network.target sentinel-collector.service
@@ -106,20 +106,20 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 EOF
-ssh -- "$MINIPC_HOST" "sudo systemctl daemon-reload && sudo systemctl enable --now sentinel-aggregator"
+ssh -- "$NODE_A_HOST" "sudo systemctl daemon-reload && sudo systemctl enable --now sentinel-aggregator"
 
 # ── Step 4: Deploy agents ──────────────────────────────────────────────────────
 echo ""
 echo "==> Step 4: Deploy agents"
 
-echo "--- asia-west agent on $MINIPC_HOST"
+echo "--- asia-west agent on $NODE_A_HOST"
 bash "$SCRIPTS/deploy-agent.sh" $MOCK_FLAG \
-  --collector "$WEST_GRPC" --region asia-west "$MINIPC_HOST"
+  --collector "$WEST_GRPC" --region asia-west "$NODE_A_HOST"
 
 if [[ -n "$EAST_HTTP" ]]; then
-  echo "--- asia-east agent on $YUKI_HOST"
+  echo "--- asia-east agent on $NODE_B_HOST"
   bash "$SCRIPTS/deploy-agent.sh" $MOCK_FLAG \
-    --collector "$EAST_GRPC" --region asia-east "$YUKI_HOST"
+    --collector "$EAST_GRPC" --region asia-east "$NODE_B_HOST"
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
