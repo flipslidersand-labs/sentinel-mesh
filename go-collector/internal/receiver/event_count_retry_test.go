@@ -252,3 +252,57 @@ func TestCountState_EvictsOldestFirst(t *testing.T) {
 		t.Fatal("claim did not mark the event counted")
 	}
 }
+
+// Counted marks must not push uncounted ones out: every saved event adds a
+// counted mark, so under load the shared cap would otherwise forget the
+// uncounted events (failed saves) first (#570). Once the cap is reached the
+// counted marks are dropped first; the uncounted event is still counted exactly
+// once by its duplicate resend.
+func TestCountState_CountedMarksDoNotEvictUncounted(t *testing.T) {
+	s := &server{maxPending: 4}
+	ev := func(id string) model.Event { return model.Event{NodeID: "n", EventID: id} }
+	s.noteSaveFailed(ev("failed"))
+	for i := 0; i < 50; i++ { // far more counted marks than the cap
+		if !s.claimCount(ev(string(rune('A'+i%26))+string(rune('a'+i/26))), false) {
+			t.Fatalf("new event %d was not counted", i)
+		}
+	}
+	if !s.claimCount(ev("failed"), true) {
+		t.Fatal("uncounted mark was evicted by counted marks; the resend is not counted")
+	}
+	if s.claimCount(ev("failed"), true) {
+		t.Fatal("a second resend counted the event again")
+	}
+	if n := len(s.countState); n > 4 {
+		t.Fatalf("countState size = %d, want <= cap 4", n)
+	}
+}
+
+// Concurrent resends of one uncounted event count it exactly once (run with -race).
+func TestClaimCount_ConcurrentResendsCountOnce(t *testing.T) {
+	s := &server{}
+	e := model.Event{NodeID: "n", EventID: "e1"}
+	s.noteSaveFailed(e)
+	const workers = 32
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	counted := 0
+	start := make(chan struct{})
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if s.claimCount(e, true) {
+				mu.Lock()
+				counted++
+				mu.Unlock()
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if counted != 1 {
+		t.Fatalf("event counted %d times by concurrent resends, want 1", counted)
+	}
+}

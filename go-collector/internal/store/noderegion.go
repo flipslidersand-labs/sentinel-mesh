@@ -60,14 +60,14 @@ type nodeRegionMark struct {
 // (the remaining TTL is unknown). It only refreshes a record that exists: a
 // missing one (never saved, or expired) is not created, so a guessed default
 // region is never made permanent (#512); the absence is re-checked after half a
-// retention. It extends the TTL only: the stored region is kept, and region is
-// just required to be non-empty, so a stale stream cannot overwrite the region
-// of a newer Save (#559). Concurrent callers claim the work under a lock, so one due
+// retention. It extends the TTL only: the stored region is kept and the caller
+// passes none, so a stale stream cannot overwrite the region of a newer Save
+// (#559). Concurrent callers claim the work under a lock, so one due
 // refresh is written once; a failed attempt releases the claim so the next call
 // retries. No I/O happens under the lock.
-func (s *Store) TouchNodeRegion(ctx context.Context, nodeID, region string) error {
-	if nodeID == "" || region == "" {
-		return errors.New("node_id and region required")
+func (s *Store) TouchNodeRegion(ctx context.Context, nodeID string) error {
+	if nodeID == "" {
+		return errors.New("node_id required")
 	}
 	now := s.now()
 	s.nodeRegionMu.Lock()
@@ -98,9 +98,9 @@ func (s *Store) TouchNodeRegion(ctx context.Context, nodeID, region string) erro
 // refreshNodeRegion extends the TTL of the stored record and keeps the region
 // that is stored. The read and the rewrite share one transaction, so a Save
 // that lands meanwhile is never overwritten: badger reports a conflict, and the
-// Save has refreshed the TTL itself (#559). The region the caller passed to
-// TouchNodeRegion is deliberately not written: a stream may still carry a
-// region from before the node re-registered elsewhere. A missing record is left
+// Save has refreshed the TTL itself (#559). TouchNodeRegion takes no region on
+// purpose: a stream may still carry a region from before the node re-registered
+// elsewhere, so only the stored one is kept. A missing record is left
 // missing and the node is marked absent instead.
 func (s *Store) refreshNodeRegion(ctx context.Context, nodeID string, now time.Time) error {
 	key := []byte(nodeRegionPrefix + nodeID)
