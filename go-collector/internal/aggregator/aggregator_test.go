@@ -664,7 +664,8 @@ func TestParseUpstreams_DuplicateRegion(t *testing.T) {
 		t.Errorf("error must not include URLs: %v", err)
 	}
 	// Region names are compared case-sensitively (state map keys), so these
-	// are distinct and accepted.
+	// are distinct and accepted (when no per-upstream token env is set, #581).
+	t.Setenv("SENTINEL_UPSTREAM_TOKEN_US_EAST", "")
 	ups, err := ParseUpstreams([]string{"us-east=http://192.0.2.1:8081", "US-East=http://192.0.2.2:8081"}, true)
 	if err != nil || len(ups) != 2 {
 		t.Fatalf("distinct-case regions: ups=%+v err=%v", ups, err)
