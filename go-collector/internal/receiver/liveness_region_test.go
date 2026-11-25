@@ -29,7 +29,7 @@ func waitTouches(t *testing.T, fs *fakeStorage, nodeID string, want int) {
 }
 
 // #537: a node that stays connected but sends no events must still have its
-// region record refreshed, from the liveness loop, with the registry's region.
+// region record refreshed, from the liveness loop.
 func TestLiveness_TouchesNodeRegionWithoutEvents(t *testing.T) {
 	fs := &fakeStorage{}
 	reg := registry.New()
@@ -41,11 +41,6 @@ func TestLiveness_TouchesNodeRegionWithoutEvents(t *testing.T) {
 	defer stop()
 
 	waitTouches(t, fs, "node-1", 2)
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
-	if fs.regions["node-1"] != "eu-west" {
-		t.Fatalf("regions = %v, want node-1 kept in eu-west", fs.regions)
-	}
 }
 
 // A node the registry does not know has no confirmed region: liveness must not

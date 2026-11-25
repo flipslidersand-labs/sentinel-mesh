@@ -42,7 +42,7 @@ type fakeStorage struct {
 }
 
 // TouchNodeRegion records the call; the real store decides whether to write.
-func (f *fakeStorage) TouchNodeRegion(_ context.Context, nodeID, region string) error {
+func (f *fakeStorage) TouchNodeRegion(_ context.Context, nodeID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.touches == nil {
@@ -52,10 +52,6 @@ func (f *fakeStorage) TouchNodeRegion(_ context.Context, nodeID, region string) 
 	if f.touchErr != nil {
 		return f.touchErr
 	}
-	if f.regions == nil {
-		f.regions = map[string]string{}
-	}
-	f.regions[nodeID] = region
 	return nil
 }
 

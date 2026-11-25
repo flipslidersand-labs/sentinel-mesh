@@ -53,7 +53,7 @@ func TestTouchNodeRegion_WritesOnlyWhenTTLBelowHalf(t *testing.T) {
 
 	clk.Advance(49 * time.Hour)
 	for i := 0; i < 5; i++ {
-		if err := st.TouchNodeRegion(ctx, "node-a", "eu-west"); err != nil {
+		if err := st.TouchNodeRegion(ctx, "node-a"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -63,7 +63,7 @@ func TestTouchNodeRegion_WritesOnlyWhenTTLBelowHalf(t *testing.T) {
 
 	clk.Advance(2 * time.Hour) // 51h elapsed: less than half of the TTL remains
 	for i := 0; i < 5; i++ {
-		if err := st.TouchNodeRegion(ctx, "node-a", "eu-west"); err != nil {
+		if err := st.TouchNodeRegion(ctx, "node-a"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -73,7 +73,7 @@ func TestTouchNodeRegion_WritesOnlyWhenTTLBelowHalf(t *testing.T) {
 
 	// The refresh restarts the interval.
 	clk.Advance(49 * time.Hour)
-	if err := st.TouchNodeRegion(ctx, "node-a", "eu-west"); err != nil {
+	if err := st.TouchNodeRegion(ctx, "node-a"); err != nil {
 		t.Fatal(err)
 	}
 	if got := st.nodeRegionWrites.Load() - base; got != 1 {
@@ -114,7 +114,7 @@ func TestTouchNodeRegion_FirstTouchAfterRestartWrites(t *testing.T) {
 	ctx := context.Background()
 	st, clk := reopenWithRecord(t, 100*time.Hour)
 	for i := 0; i < 3; i++ {
-		if err := st.TouchNodeRegion(ctx, "node-a", "eu-west"); err != nil {
+		if err := st.TouchNodeRegion(ctx, "node-a"); err != nil {
 			t.Fatal(err)
 		}
 		clk.Advance(time.Hour)
@@ -130,7 +130,7 @@ func TestTouchNodeRegion_DoesNotCreateMissingRecord(t *testing.T) {
 	ctx := context.Background()
 	st, clk := newTouchStore(t, 100*time.Hour)
 	for i := 0; i < 3; i++ {
-		if err := st.TouchNodeRegion(ctx, "node-a", "default"); err != nil {
+		if err := st.TouchNodeRegion(ctx, "node-a"); err != nil {
 			t.Fatal(err)
 		}
 		clk.Advance(60 * time.Hour) // also past the re-check interval
@@ -146,7 +146,7 @@ func TestTouchNodeRegion_DoesNotCreateMissingRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	clk.Advance(60 * time.Hour)
-	if err := st.TouchNodeRegion(ctx, "node-a", "eu-west"); err != nil {
+	if err := st.TouchNodeRegion(ctx, "node-a"); err != nil {
 		t.Fatal(err)
 	}
 	if got := st.nodeRegionWrites.Load(); got != 2 {
@@ -168,7 +168,7 @@ func TestTouchNodeRegion_ConcurrentTouchesWriteOnce(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = st.TouchNodeRegion(ctx, "node-a", "eu-west")
+			_ = st.TouchNodeRegion(ctx, "node-a")
 		}()
 	}
 	wg.Wait()
@@ -191,7 +191,7 @@ func TestTouchNodeRegion_ExpiredRecordNotRecreated(t *testing.T) {
 	}
 	base := st.nodeRegionWrites.Load()
 	clk.Advance(101 * time.Hour) // node-a's own mark is still in the map
-	if err := st.TouchNodeRegion(ctx, "node-a", "default"); err != nil {
+	if err := st.TouchNodeRegion(ctx, "node-a"); err != nil {
 		t.Fatal(err)
 	}
 	if got := st.nodeRegionWrites.Load() - base; got != 0 {
@@ -207,8 +207,8 @@ func TestTouchNodeRegion_FailedAttemptIsRetried(t *testing.T) {
 	st, _ := reopenWithRecord(t, 100*time.Hour)
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	_ = st.TouchNodeRegion(cancelled, "node-a", "eu-west") // may fail; must not leave a claim behind
-	if err := st.TouchNodeRegion(context.Background(), "node-a", "eu-west"); err != nil {
+	_ = st.TouchNodeRegion(cancelled, "node-a") // may fail; must not leave a claim behind
+	if err := st.TouchNodeRegion(context.Background(), "node-a"); err != nil {
 		t.Fatal(err)
 	}
 	if got := st.nodeRegionWrites.Load(); got != 1 {
@@ -232,7 +232,7 @@ func TestTouchNodeRegion_SurvivesReopenAfterLongConnection(t *testing.T) {
 	}
 	deadline := time.Now().Add(5 * time.Second) // well past one retention
 	for time.Now().Before(deadline) {
-		if err := st.TouchNodeRegion(ctx, "node-a", "eu-west"); err != nil { // event
+		if err := st.TouchNodeRegion(ctx, "node-a"); err != nil { // event
 			t.Fatal(err)
 		}
 		time.Sleep(200 * time.Millisecond)
@@ -265,7 +265,7 @@ func TestTouchNodeRegion_StaleTouchDoesNotOverwriteNewerRegion(t *testing.T) {
 	}
 	clk.Advance(51 * time.Hour) // a refresh is due
 	base := st.nodeRegionWrites.Load()
-	if err := st.TouchNodeRegion(ctx, "node-a", "region-a"); err != nil {
+	if err := st.TouchNodeRegion(ctx, "node-a"); err != nil {
 		t.Fatal(err)
 	}
 	if got := st.nodeRegionWrites.Load() - base; got != 1 {
@@ -280,7 +280,7 @@ func TestTouchNodeRegion_StaleTouchDoesNotOverwriteNewerRegion(t *testing.T) {
 func TestTouchNodeRegion_StaleTouchAfterRestartKeepsStoredRegion(t *testing.T) {
 	ctx := context.Background()
 	st, _ := reopenWithRecord(t, 100*time.Hour) // stored: eu-west
-	if err := st.TouchNodeRegion(ctx, "node-a", "us-east"); err != nil {
+	if err := st.TouchNodeRegion(ctx, "node-a"); err != nil {
 		t.Fatal(err)
 	}
 	if r, ok, err := st.NodeRegion(ctx, "node-a"); err != nil || !ok || r != "eu-west" {
@@ -299,7 +299,7 @@ func TestTouchNodeRegion_SaveDuringRefreshWins(t *testing.T) {
 			t.Error(err)
 		}
 	}
-	if err := st.TouchNodeRegion(ctx, "node-a", "eu-west"); err != nil {
+	if err := st.TouchNodeRegion(ctx, "node-a"); err != nil {
 		t.Fatal(err)
 	}
 	if r, ok, err := st.NodeRegion(ctx, "node-a"); err != nil || !ok || r != "ap-south" {
