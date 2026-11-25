@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **go-collector (#572):** `token revoke <node_id>` now works while `serve` is running: it is delegated over a local Unix socket (`<data-dir>/admin/admin.sock`, `admin/` must be a real directory owned by the user with mode 0700, socket 0600), so streams of the revoked token are closed within `heartbeat-timeout/3`. `token issue`, `token list` and `token revoke --force` still need `serve` stopped.
 - **docs (#420):** README has a Monitoring section describing `sentinel_events_throttled_total` / `sentinel_auth_failures_total` and an example Prometheus alert rule for sustained per-node rate-limit drops (rules themselves are not shipped; evaluate them in your own Prometheus).
 - **go-collector:** `token revoke --force <record key>` deletes a token record that cannot be decoded (and so cannot be revoked by node_id), using the key shown in the `token list` warning. `token list` still exits 0 when it skips such records (#276).
 - **Agent / eBPF:** IPv6 TCP connections and IPv4 connections made through dual-stack

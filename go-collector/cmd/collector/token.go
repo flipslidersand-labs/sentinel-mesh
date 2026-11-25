@@ -16,13 +16,14 @@ import (
 // openTokenStore opens the BadgerDB store at dataDir for the token
 // subcommands. BadgerDB takes an exclusive lock on its directory, so this
 // fails if `sentinel-collector serve` is still running against the same
-// --data-dir — the collector must be stopped first. That's a deliberate
-// tradeoff for this project's scale (#183/#191, per ADR-005): a live admin
-// RPC would need its own bootstrap-auth story, which isn't justified yet.
+// --data-dir. Only a plain `token revoke` works against a running serve (it
+// is delegated to serve's local admin socket, #572, see admin.go); issue,
+// list and revoke --force still need serve stopped, a deliberate tradeoff for
+// this project's scale (#183/#191, per ADR-005).
 func openTokenStore(dataDir string) (*store.Store, error) {
 	st, err := store.New(dataDir)
 	if err != nil {
-		return nil, fmt.Errorf("open store at %s (if sentinel-collector serve is running against this --data-dir, stop it first — BadgerDB requires exclusive access): %w", dataDir, err)
+		return nil, fmt.Errorf("open store at %s (if sentinel-collector serve is running against this --data-dir, only `token revoke <node_id>` works without stopping it; stop it first for issue, list and revoke --force — BadgerDB requires exclusive access): %w", dataDir, err)
 	}
 	return st, nil
 }
@@ -51,7 +52,10 @@ docs/adr/ADR-005-agent-auth-strategy.md).
 Tokens are stored in the same BadgerDB data directory as collector
 events/alerts (--data-dir, shared with "serve"). Because BadgerDB takes an
 exclusive lock on its directory, "sentinel-collector serve" must be stopped
-before running any token subcommand against the same --data-dir.`,
+before running "token issue", "token list" or "token revoke --force" against
+the same --data-dir. A plain "token revoke <node_id>" also works while serve
+is running: it is sent to serve over a local Unix socket
+(<data-dir>/admin/admin.sock, directory mode 0700).`,
 	}
 	cmd.PersistentFlags().String(flagDataDir, "/tmp/sentinel-data", "BadgerDB data directory (must match the collector's --data-dir)")
 	cmd.AddCommand(tokenIssueCmd(), tokenRevokeCmd(), tokenListCmd())
@@ -103,17 +107,23 @@ func tokenRevokeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "revoke <node_id | --force record_key>",
 		Short: "Revoke an agent's token",
-		Long: `revoke marks node_id's current token as revoked. Because "serve" must be
-stopped to run this command, the revoke takes effect when the collector is
-started again: from then on the agent can no longer authenticate. It must
-be issued a new token ("token issue <node_id>") and reconfigured to
-reconnect.
+		Long: `revoke marks node_id's current token as revoked. If "serve" is running
+against the same --data-dir, the revoke is delegated to it over the local
+admin socket (<data-dir>/admin/admin.sock): the agent can no longer
+authenticate, and its already open streams are closed within
+heartbeat-timeout/3. If serve is stopped, the token store is opened directly
+and the revoke takes effect when the collector is started again. Either way
+the agent must be issued a new token ("token issue <node_id>") and
+reconfigured to reconnect.
+
+If the admin socket directory exists but is not a real directory owned by you
+with mode 0700, revoke fails instead of falling back to the direct path.
 
 With --force, the argument is instead the token record key (as printed in
 the "token list" warning for a record that could not be decoded, e.g.
 agenttoken:<node_id>). The record is deleted without being decoded; this is
 the way to remove a damaged record that plain revoke cannot read. It fails if
-the key does not exist.
+the key does not exist. --force is never delegated: it needs serve stopped.
 
 Prompts for confirmation unless --yes is given.`,
 		Args: cobra.ExactArgs(1),
@@ -138,6 +148,20 @@ Prompts for confirmation unless --yes is given.`,
 				line, _ := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
 				if strings.ToLower(strings.TrimSpace(line)) != "y" {
 					fmt.Fprintln(cmd.OutOrStdout(), "aborted")
+					return nil
+				}
+			}
+			if !force {
+				result, delegated, err := revokeViaAdmin(cmd.Context(), dataDir, nodeID)
+				if err != nil {
+					return err
+				}
+				if delegated {
+					// Same silence as the direct path for an unknown or
+					// already revoked node_id.
+					if result == adminResultRevoked {
+						fmt.Fprintln(cmd.OutOrStdout(), "revoked on the running collector; existing streams close within heartbeat-timeout/3")
+					}
 					return nil
 				}
 			}
