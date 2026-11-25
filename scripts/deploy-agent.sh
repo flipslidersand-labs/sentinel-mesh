@@ -189,6 +189,20 @@ make_unit() {
     scheme="https"
   fi
 
+  # ProtectHome=yes hides /home, /root and /run/user. The agent only reads a
+  # --grpc-ca-cert file; if it lives under one of those, fall back to
+  # read-only so the agent can still open it (it never writes there). The path
+  # is a REMOTE path, so it is normalised lexically (-s: no local symlink
+  # lookup; '..' like /etc/../home/x is folded). A symlink on the remote host
+  # pointing into /home cannot be seen from here: pass the real path.
+  local protect_home="yes" ca_norm=""
+  if [[ -n "${GRPC_CA_CERT:-}" ]]; then
+    ca_norm="$(realpath -m -s -- "$GRPC_CA_CERT" 2>/dev/null || printf '%s' "$GRPC_CA_CERT")"
+  fi
+  case "$ca_norm" in
+    /home/*|/root/*|/run/user/*) protect_home="read-only" ;;
+  esac
+
   cat <<UNIT
 [Unit]
 Description=SentinelMesh Agent (${node_id})
@@ -207,6 +221,32 @@ RestartSec=5s
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=sentinel-agent
+# Hardening (#580). The agent runs as root but writes no files (no state, no
+# log files, no bpffs pins; events go over gRPC, logs to the journal), so the
+# whole file system is read-only. /sys (tracefs, /sys/fs/bpf) is an API file
+# system subtree that ProtectSystem=strict leaves as-is, so no ReadWritePaths=
+# is needed.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=${protect_home}
+PrivateTmp=yes
+ProtectControlGroups=yes
+# Capability bound (no AmbientCapabilities: the unit already runs as root).
+# CAP_BPF + CAP_PERFMON: load tracepoint/kprobe programs and attach them via
+# perf_event_open (aya; rust-agent/agent/src/events.rs, ebpf_source); both
+# exist only on kernel >= 5.8. CAP_SYS_ADMIN: Debian/Ubuntu carry an
+# out-of-tree patch that requires it for perf_event_open when
+# kernel.perf_event_paranoid > 2 (their default can be 3 or 4), so
+# CAP_PERFMON alone may not be enough there. CAP_SYS_RESOURCE: raising
+# RLIMIT_MEMLOCK on kernel < 5.11 (BPF memory is counted against it). These
+# two are kept because dropping them is unverified on real hardware; narrow
+# the set once a real host confirms it. CAP_SYS_PTRACE: read /proc/<pid>/cwd of
+# other processes for exec event enrichment (read_proc_exec_info); without it
+# cwd would be empty.
+# Not set on purpose (could break eBPF, unverified on real hardware):
+# ProtectKernelTunables/Modules/Logs, PrivateDevices, MemoryDenyWriteExecute,
+# SystemCallFilter, RestrictAddressFamilies.
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_SYS_ADMIN CAP_SYS_RESOURCE CAP_SYS_PTRACE
 
 [Install]
 WantedBy=multi-user.target
