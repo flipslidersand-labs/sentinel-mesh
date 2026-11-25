@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -42,6 +43,34 @@ const eventLimit = 100
 type Upstream struct {
 	Region string
 	URL    string // base URL, e.g. http://192.0.2.10:8081
+	// Token is the bearer token sent to this upstream only. Empty means "use
+	// the aggregator's shared token" (see New). It is a secret: never log it
+	// or put it in an error message or RegionStatus (#581).
+	Token string
+}
+
+// String renders the upstream without its token, so an accidental %v / %+v
+// in a log line or error cannot leak it.
+func (u Upstream) String() string { return "{Region:" + u.Region + " URL:" + u.URL + "}" }
+
+// upstreamTokenEnvPrefix is the env var prefix for per-upstream bearer tokens.
+const upstreamTokenEnvPrefix = "SENTINEL_UPSTREAM_TOKEN_"
+
+// UpstreamTokenEnv returns the name of the env var that holds the bearer
+// token for region: the prefix plus the region upper-cased with every
+// non-alphanumeric character replaced by '_' (e.g. "us-east" ->
+// SENTINEL_UPSTREAM_TOKEN_US_EAST). Tokens are read from the environment
+// rather than --upstreams so they do not show up in `ps` (#581).
+func UpstreamTokenEnv(region string) string {
+	return upstreamTokenEnvPrefix + strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z':
+			return r - 'a' + 'A'
+		case r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			return r
+		}
+		return '_'
+	}, region)
 }
 
 var regionNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
@@ -54,9 +83,16 @@ var regionNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 // A plaintext http:// upstream sends the bearer token unencrypted, so it is
 // rejected unless the host is loopback (127.0.0.0/8, ::1, localhost) or
 // allowInsecureHTTP is true (#359).
+//
+// Each upstream's Token is read from the UpstreamTokenEnv(region) env var
+// (empty/unset leaves Token empty, which New replaces with the shared
+// token). Two regions that map to the same env var name are rejected when
+// that variable is set, so one region can never silently receive another's
+// token; when it is unset both use the shared token and are accepted (#581).
 func ParseUpstreams(specs []string, allowInsecureHTTP bool) ([]Upstream, error) {
 	out := make([]Upstream, 0, len(specs))
 	seen := make(map[string]struct{}, len(specs))
+	envOwner := make(map[string]string, len(specs)) // token env var -> region
 	// Error messages deliberately never include the spec or URL: the value
 	// may carry credentials in userinfo (#364).
 	for i, spec := range specs {
@@ -90,7 +126,18 @@ func ParseUpstreams(specs []string, allowInsecureHTTP bool) ([]Upstream, error) 
 			return nil, fmt.Errorf("invalid upstream %q: duplicate region", region)
 		}
 		seen[region] = struct{}{}
-		out = append(out, Upstream{Region: region, URL: rawURL})
+		envName := UpstreamTokenEnv(region)
+		token := os.Getenv(envName)
+		if other, clash := envOwner[envName]; clash {
+			// Ambiguous only when the shared env var is actually set; if it
+			// is not, both regions use the shared token and nothing can mix.
+			if token != "" {
+				return nil, fmt.Errorf("invalid upstream %q: region maps to the same token env var %s as %q; rename one of the regions", region, envName, other)
+			}
+		} else {
+			envOwner[envName] = region
+		}
+		out = append(out, Upstream{Region: region, URL: rawURL, Token: token})
 	}
 	return out, nil
 }
@@ -116,7 +163,6 @@ type Aggregator struct {
 	upstreams []Upstream
 	client    *http.Client
 	interval  time.Duration
-	apiToken  string
 	log       *zap.Logger
 
 	mu    sync.RWMutex
@@ -125,7 +171,9 @@ type Aggregator struct {
 
 // New creates an Aggregator. A nil logger is replaced with a no-op logger.
 // apiToken, when non-empty, is sent as an `Authorization: Bearer` header on
-// every request to an upstream region collector's REST API — those
+// every request to an upstream that has no Token of its own; an upstream
+// with a non-empty Token gets that token instead and never sees apiToken
+// (#581). Requests go to an upstream region collector's REST API — those
 // endpoints are gated by the same SENTINEL_API_TOKEN-based bearer auth the
 // aggregator's own REST API uses (see httpauth.BearerAuth), so without this
 // the aggregator gets 401s and marks every region unreachable the moment an
@@ -138,12 +186,16 @@ func New(upstreams []Upstream, interval time.Duration, apiToken string, log *zap
 		interval = 10 * time.Second
 	}
 	state := make(map[string]*regionState, len(upstreams))
-	for _, u := range upstreams {
-		state[u.Region] = &regionState{}
+	// Copy so the caller's slice is not modified when filling in the shared token.
+	upstreams = append([]Upstream(nil), upstreams...)
+	for i := range upstreams {
+		if upstreams[i].Token == "" {
+			upstreams[i].Token = apiToken
+		}
+		state[upstreams[i].Region] = &regionState{}
 	}
 	return &Aggregator{
 		upstreams: upstreams,
-		apiToken:  apiToken,
 		client: &http.Client{
 			Timeout: 5 * time.Second,
 			// Never follow redirects: a compromised/malicious upstream could
@@ -195,22 +247,22 @@ func (a *Aggregator) PollOnce(ctx context.Context) {
 func (a *Aggregator) pollUpstream(ctx context.Context, u Upstream) {
 	st := &regionState{reachable: true}
 
-	if err := a.fetchJSON(ctx, u.URL+api.PathNodes, &st.nodes); err != nil {
+	if err := a.fetchJSON(ctx, u.Token, u.URL+api.PathNodes, &st.nodes); err != nil {
 		a.markUnreachable(u, "nodes", err)
 		return
 	}
-	if err := a.fetchJSON(ctx, fmt.Sprintf("%s%s?limit=%d", u.URL, api.PathEvents, eventLimit), &st.events); err != nil {
+	if err := a.fetchJSON(ctx, u.Token, fmt.Sprintf("%s%s?limit=%d", u.URL, api.PathEvents, eventLimit), &st.events); err != nil {
 		a.markUnreachable(u, "events", err)
 		return
 	}
-	if err := a.fetchJSON(ctx, fmt.Sprintf("%s%s?limit=%d", u.URL, api.PathAlerts, eventLimit), &st.alerts); err != nil {
+	if err := a.fetchJSON(ctx, u.Token, fmt.Sprintf("%s%s?limit=%d", u.URL, api.PathAlerts, eventLimit), &st.alerts); err != nil {
 		a.markUnreachable(u, "alerts", err)
 		return
 	}
 
 	// Best-effort: an upstream without /api/stats (older version) must not be
 	// marked unreachable for it; it just contributes nothing to the totals.
-	if err := a.fetchJSON(ctx, u.URL+"/api/stats", &st.stats); err != nil {
+	if err := a.fetchJSON(ctx, u.Token, u.URL+"/api/stats", &st.stats); err != nil {
 		a.log.Debug("upstream stats unavailable", zap.String("region", u.Region), zap.String("error", classifyErr(err)))
 		st.stats = nil
 	}
@@ -229,13 +281,13 @@ func (a *Aggregator) markUnreachable(u Upstream, path string, err error) {
 	a.mu.Unlock()
 }
 
-func (a *Aggregator) fetchJSON(ctx context.Context, url string, target any) error {
+func (a *Aggregator) fetchJSON(ctx context.Context, token, url string, target any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
-	if a.apiToken != "" {
-		req.Header.Set("Authorization", "Bearer "+a.apiToken)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	resp, err := a.client.Do(req)
 	if err != nil {
@@ -465,7 +517,7 @@ func fetchPerUpstream[T any](ctx context.Context, a *Aggregator, region, node st
 				q.Set("node", node)
 			}
 			var items []T
-			if err := a.fetchJSON(ctx, u.URL+path+"?"+q.Encode(), &items); err != nil {
+			if err := a.fetchJSON(ctx, u.Token, u.URL+path+"?"+q.Encode(), &items); err != nil {
 				a.log.Warn("upstream "+kind+" fetch failed, falling back to cache",
 					zap.String("region", u.Region), zap.String("url", u.URL), zap.Error(err))
 				lists[i] = withRegion(cached(u.Region, node), u.Region)
