@@ -4,7 +4,7 @@
 use aya_ebpf::{
     helpers::{bpf_get_current_comm, bpf_get_current_pid_tgid, bpf_get_current_uid_gid},
     macros::{kprobe, map, tracepoint},
-    maps::{LruHashMap, RingBuf},
+    maps::{LruHashMap, PerCpuArray, RingBuf},
     programs::{ProbeContext, TracePointContext},
 };
 
@@ -51,19 +51,33 @@ pub struct TcpEvent {
 #[map]
 static EVENTS: RingBuf = RingBuf::with_byte_size(512 * 1024, 0);
 
-/// Args saved at sys_enter_openat and consumed at exit (#373, #419).
+/// Args saved at sys_enter_openat and consumed at exit (#373, #419, #578).
+///
+/// `path` holds the filename as read at entry so the event reports the path the
+/// syscall was entered with, not whatever the user buffer holds by exit time
+/// (TOCTOU, #578). `path_ok` is 1 when that read succeeded, 0 when it failed
+/// (exit then falls back to re-reading `filename_ptr`).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct OpenArgs {
     pub filename_ptr: u64,
     pub flags: u64,
+    pub path_ok: u64,
+    pub path: [u8; 256],
 }
 
-/// pid_tgid -> OpenArgs (userspace filename pointer + flags), stored at sys_enter_openat and
+/// pid_tgid -> OpenArgs, stored at sys_enter_openat and
 /// consumed at sys_exit_openat (#373). LRU so entries orphaned by a thread
 /// that dies between enter and exit are evicted instead of filling the map.
 #[map]
 static OPEN_ARGS: LruHashMap<u64, OpenArgs> = LruHashMap::with_max_entries(10240, 0);
+
+/// Per-CPU scratch for building an OpenArgs at entry. The 280-byte value does
+/// not fit comfortably on the 512-byte BPF stack next to the other locals, so
+/// the path is probe-read straight into this map value and then copied into
+/// OPEN_ARGS by the kernel (insert takes a map-value pointer, not a stack copy).
+#[map]
+static OPEN_SCRATCH: PerCpuArray<OpenArgs> = PerCpuArray::with_max_entries(1, 0);
 
 // ─── Exec: sched_process_exec ─────────────────────────────────────────────
 // Attached to sched/sched_process_exec, which fires only after a successful
@@ -115,14 +129,37 @@ pub fn sentinel_openat(ctx: TracePointContext) -> u32 {
 
 #[inline(always)]
 fn try_openat_enter(ctx: TracePointContext) -> Result<(), i64> {
+    use aya_ebpf::helpers::bpf_probe_read_user_str_bytes;
+
     // sys_enter_openat tracepoint args: dfd@16, filename ptr@24, flags@32, mode@40
     // (common fields occupy 0-7, __syscall_nr is padded to 8 bytes at 8-15).
     // Offset 16 is dfd, not the filename pointer (#169).
     let filename_ptr: u64 = unsafe { ctx.read_at(24) }.map_err(|_| 1i64)?;
     let flags: u64 = unsafe { ctx.read_at(32) }.map_err(|_| 1i64)?;
     let pid_tgid = bpf_get_current_pid_tgid();
-    let args = OpenArgs { filename_ptr, flags };
-    OPEN_ARGS.insert(&pid_tgid, &args, 0)?;
+
+    let args = OPEN_SCRATCH.get_ptr_mut(0).ok_or(1i64)?;
+    unsafe {
+        (*args).filename_ptr = filename_ptr;
+        (*args).flags = flags;
+        // Snapshot the path now (#578). Reading it at exit would race with
+        // another thread rewriting the user buffer between enter and exit.
+        // bpf_probe_read_user_str NUL-terminates on success; bytes after the
+        // NUL are stale and never copied out (the exit side copies up to NUL).
+        //
+        // Residual window: at sys_enter the string's page may not be faulted in
+        // yet, so this read can fail (the helper cannot fault pages in). Then
+        // path_ok stays 0 and exit re-reads the pointer as before, which is
+        // still open to the TOCTOU race. This is not closed by this change.
+        (*args).path_ok = match bpf_probe_read_user_str_bytes(
+            filename_ptr as *const u8,
+            &mut (*args).path,
+        ) {
+            Ok(_) => 1,
+            Err(_) => 0,
+        };
+    }
+    OPEN_ARGS.insert(&pid_tgid, unsafe { &*args }, 0)?;
     Ok(())
 }
 
@@ -136,14 +173,25 @@ pub fn sentinel_openat_exit(ctx: TracePointContext) -> u32 {
 
 #[inline(always)]
 fn try_openat_exit(ctx: TracePointContext) -> Result<(), i64> {
-    use aya_ebpf::helpers::bpf_probe_read_user_str_bytes;
-
     let pid_tgid = bpf_get_current_pid_tgid();
-    let (filename_ptr, flags) = match unsafe { OPEN_ARGS.get(&pid_tgid) } {
-        Some(a) => (a.filename_ptr, a.flags),
+    let args = match OPEN_ARGS.get_ptr(&pid_tgid) {
+        Some(a) => a,
         None => return Ok(()),
     };
+    // Emit first, remove after: the entry's path is read from the map value, so
+    // it must not be deleted (and its slot reused) before that copy.
+    let res = emit_open_event(&ctx, pid_tgid, args);
     let _ = OPEN_ARGS.remove(&pid_tgid);
+    res
+}
+
+#[inline(always)]
+fn emit_open_event(
+    ctx: &TracePointContext,
+    pid_tgid: u64,
+    args: *const OpenArgs,
+) -> Result<(), i64> {
+    use aya_ebpf::helpers::{bpf_probe_read_kernel_str_bytes, bpf_probe_read_user_str_bytes};
 
     // sys_exit_openat tracepoint args: __syscall_nr@8 (int), ret@16 (long).
     // Layout per the standard syscalls exit format (common fields 0-7,
@@ -165,13 +213,21 @@ fn try_openat_exit(ctx: TracePointContext) -> Result<(), i64> {
         (*ev).pid = pid;
         (*ev).uid = uid;
         (*ev).ret = if ret < 0 { ret as i32 } else { 0 };
-        (*ev).flags = flags as u32;
+        (*ev).flags = (*args).flags as u32;
         for i in 0..16 {
             (*ev).comm[i] = raw_comm[i] as u8;
         }
-        // The user pointer is still valid at exit time (same syscall).
         let path_slice = &mut (*ev).path;
-        let _ = bpf_probe_read_user_str_bytes(filename_ptr as *const u8, path_slice);
+        if (*args).path_ok == 1 {
+            // Path snapshotted at entry (#578). Copies up to the NUL only, so
+            // the event's zeroed tail stays zero.
+            let _ = bpf_probe_read_kernel_str_bytes((*args).path.as_ptr(), path_slice);
+        } else {
+            // Entry read failed (page not yet faulted in): fall back to the
+            // user pointer, which is still valid at exit (same syscall). This
+            // path remains subject to the TOCTOU race (#578).
+            let _ = bpf_probe_read_user_str_bytes((*args).filename_ptr as *const u8, path_slice);
+        }
     }
     entry.submit(0);
     Ok(())
