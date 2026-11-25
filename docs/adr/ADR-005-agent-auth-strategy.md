@@ -104,3 +104,13 @@ TLS の相互認証で agent の身元を証明する。
 - #183: 本 ADR の決定に従い実装を進める（このまま進行）。
 - #184: 本 ADR によりクローズ（mTLS 見送りの決定が結論）。
 - #193: 本 ADR の「移行手順」決定によりクローズ（無停止移行は見送り）。
+
+## 追記: 稼働中の revoke(#572)
+
+`token revoke` は BadgerDB の排他ロックのため collector 停止中しか実行できず、
+#482 で入れた「受信中のトークン再確認」が本番で一度も発火しなかった。そこで
+`serve` が `<data-dir>/admin/admin.sock`(Unix ドメインソケット、`admin/` は実
+ディレクトリ・自 euid 所有・0700、ソケットは 0600)を開き、`token revoke <node_id>`
+(`--force` 以外)はそこへ委譲する。REST の API トークンは全ルート共有で閲覧用 UI も
+持ち、gRPC は agent 用トークンと混ざるため、どちらにも管理 EP は置かない。
+`issue` / `list` / `--force` は従来どおり停止中のみ(`issue`/`list` の稼働中対応は別 Issue)。

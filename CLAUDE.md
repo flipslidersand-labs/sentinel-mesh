@@ -13,7 +13,7 @@ Rules shared across repositories: see [AGENTS.md](AGENTS.md). Do not copy them h
 
 ## Pitfalls
 
-- `sentinel-collector token issue|revoke|list` must run with the collector stopped: BadgerDB holds an exclusive lock on `--data-dir`.
+- `sentinel-collector token issue|list` and `token revoke --force` must run with the collector stopped: BadgerDB holds an exclusive lock on `--data-dir`. A plain `token revoke <node_id>` also works while `serve` runs (delegated over `<data-dir>/admin/admin.sock`, #572).
 - Collector defaults are `--grpc-auth=required` and `--http-auth=required`; local demos need `--grpc-auth disabled --http-auth disabled`.
 - This is a PUBLIC repo: no real IPs, hostnames, tokens, or personal data in code, docs, tests, or commit messages.
 - Verify "not yet fixed" claims against `git show origin/master:<path>`, not the shared working tree, which may lag behind

@@ -416,10 +416,15 @@ func runNormal(parent context.Context, cfg *serveConfig, logger *zap.Logger) err
 	// REST failures (e.g. port in use) cancel ctx and fail the process;
 	// we wait for REST to finish stopping before the deferred
 	// st.Close() runs (#316, #318).
-	return runRESTAndGRPC(ctx, cancel, func(ctx context.Context) error {
+	//
+	// The admin socket (live `token revoke`, #572) runs inside the REST
+	// closure, on the SAME store as the gRPC receiver, and is stopped
+	// before the closure returns — so it is also gone before st.Close().
+	rest := func(ctx context.Context) error {
 		logger.Info("REST API listening", zap.String("addr", cfg.httpAddr))
 		return runHTTPServerTLSUntilDone(ctx, httpServer, "REST API", cfg.httpTLSCert, cfg.httpTLSKey, logger)
-	}, func(ctx context.Context) error {
+	}
+	return runRESTAndGRPC(ctx, cancel, restWithAdmin(rest, adminSocketPath(cfg.dataDir), st, logger), func(ctx context.Context) error {
 		return receiver.Serve(ctx, receiver.Config{
 			Addr: cfg.grpcAddr, TLSCertFile: grpcTLSCert, TLSKeyFile: grpcTLSKey,
 			AuthEnabled: cfg.grpcAuthEnabled, DefaultRegion: defaultRegion, LivenessInterval: heartbeatTimeout / 3,

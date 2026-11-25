@@ -146,16 +146,19 @@ Options:
 sentinel-collector token <issue|revoke|list> [OPTIONS]
 
 Manages per-agent gRPC authentication tokens (see gRPC TLS & Authentication
-below). Requires the collector to be stopped first — BadgerDB takes an
-exclusive lock on --data-dir, so `token` subcommands can't run alongside
-`serve` against the same directory.
+below). `token revoke <node_id>` also works while the collector is running
+(it is sent to `serve` over a local Unix socket, <data-dir>/admin/admin.sock).
+`token issue`, `token list` and `token revoke --force` require the collector to
+be stopped first — BadgerDB takes an exclusive lock on --data-dir, so they
+can't run alongside `serve` against the same directory.
 
 Options:
   --data-dir <PATH>  BadgerDB data directory (must match the collector's --data-dir)
                      [default: /tmp/sentinel-data]
 
 token issue <node_id>    Issue a new token, printed once (never stored in plaintext)
-token revoke <node_id>   Revoke a token; prompts for confirmation unless --yes
+token revoke <node_id>   Revoke a token (also while serve is running); prompts for
+                         confirmation unless --yes
 token revoke --force <key> Delete a damaged (undecodable) record by the key shown in the
                          `token list` warning (e.g. agenttoken:<node_id>); no decoding
 token list               List every node_id with issued time and active/revoked status
@@ -264,8 +267,9 @@ Unauthenticated gRPC requires the explicit `--grpc-auth=disabled`.
 ```bash
 # Collector: gRPC auth is --grpc-auth=required (the default; independent of the REST token).
 # Issue a token for each agent before it can connect.
-# token issue/revoke/list require the collector to be stopped first — BadgerDB
-# takes an exclusive lock on --data-dir, so they can't run alongside `serve`.
+# token issue/list (and revoke --force) require the collector to be stopped first —
+# BadgerDB takes an exclusive lock on --data-dir, so they can't run alongside `serve`.
+# A plain `token revoke <node_id>` also works while the collector runs (see below).
 export SENTINEL_API_TOKEN="$(openssl rand -hex 32)"  # required by --http-auth=required (default); gates the REST API only, NOT gRPC
 # Run token commands as the service user (`sudo -u sentinel`): as root they would create
 # root-owned files in --data-dir that the unprivileged `sentinel` service cannot open.
@@ -293,6 +297,8 @@ To revoke a compromised or decommissioned agent's access:
 sudo -u sentinel sentinel-collector token revoke web-01 --data-dir /var/lib/sentinel
 sudo -u sentinel sentinel-collector token list --data-dir /var/lib/sentinel   # confirm status
 ```
+
+`token revoke` works whether the collector is stopped or running. While `serve` runs, the command is sent to it over a local Unix socket (`<data-dir>/admin/admin.sock`; the `admin/` directory must be a real directory owned by the serving user with mode 0700, the socket is 0600). If `admin/` is not safe the collector does not open the socket (it logs a warning and keeps running), and the CLI refuses to use it instead of falling back silently. If the socket path is too long for a Unix socket, the collector warns and continues; revoke then needs the collector stopped. `token issue`, `token list` and `token revoke --force` are never sent to a running collector.
 
 With auth enabled, a stream that is already established with a revoked token is closed with `Unauthenticated` at the next liveness tick (within `heartbeat-timeout / 3`). If the token lookup fails transiently, the stream is kept and the check is retried on the next tick.
 
@@ -587,6 +593,9 @@ sentinel-mesh は、カーネルレベルのイベントを eBPF で集める分
 ローカルのデモでは `--grpc-auth disabled --http-auth disabled` を付けます。本番では Agent ごとに
 `sentinel-collector token issue <node_id>` でトークンを発行し、REST には `SENTINEL_API_TOKEN` を設定します
 (詳細は英語の [gRPC TLS & Authentication](#grpc-tls--authentication))。
+`token revoke <node_id>` は Collector の稼働中でも実行できます(ローカルの Unix ソケット `<data-dir>/admin/admin.sock` 経由。
+`admin/` は実ディレクトリ・所有者が自分・0700 でなければなりません)。`token issue` / `token list` / `token revoke --force`
+は従来どおり Collector を停止してから実行します(BadgerDB の排他ロックのため)。
 
 ### ドキュメント
 
