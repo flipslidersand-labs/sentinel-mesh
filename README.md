@@ -538,7 +538,7 @@ The systemd unit it installs runs as root, so no separate `CAP_BPF` grant is nee
 hardened (#580): `NoNewPrivileges`, `ProtectSystem=strict` (the agent writes no files, so no
 `ReadWritePaths`), `ProtectHome=yes` (`read-only` if `--grpc-ca-cert` is under `/home`, `/root` or
 `/run/user`), `PrivateTmp`, `ProtectControlGroups`, and `CapabilityBoundingSet=CAP_BPF CAP_PERFMON
-CAP_SYS_PTRACE` (kernel 5.8+; `CAP_SYS_PTRACE` is for reading other processes' cwd). Directives that
+CAP_SYS_ADMIN CAP_SYS_RESOURCE CAP_SYS_PTRACE` (kernel 5.8+; `CAP_SYS_ADMIN` because Debian/Ubuntu require it for `perf_event_open` when `perf_event_paranoid` > 2; `CAP_SYS_RESOURCE` for the memlock rlimit on kernel < 5.11; `CAP_SYS_PTRACE` for reading other processes' cwd; to be narrowed once verified on a real host). Directives that
 could break eBPF (`ProtectKernel*`, `PrivateDevices`, `MemoryDenyWriteExecute`, `SystemCallFilter`)
 are intentionally not set. Not yet verified on a real eBPF host. To switch an
 already-deployed `--mock` host to real eBPF, redeploy without `--mock` — this overwrites the
@@ -593,8 +593,9 @@ sentinel-mesh は、カーネルレベルのイベントを eBPF で集める分
 
 `scripts/deploy-agent.sh` が生成する unit には `NoNewPrivileges`・`ProtectSystem=strict`・`ProtectHome=yes`
 (`--grpc-ca-cert` が `/home` 等の下ならば `read-only`)・`PrivateTmp`・`ProtectControlGroups` と
-`CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_SYS_PTRACE`(カーネル 5.8 以降。`CAP_SYS_PTRACE` は他プロセスの
-cwd 取得用)が入ります(#580)。Agent はファイルを書かないため `ReadWritePaths` は不要です。eBPF を壊しうる
+`CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_SYS_ADMIN CAP_SYS_RESOURCE CAP_SYS_PTRACE`(カーネル 5.8 以降。
+`CAP_SYS_ADMIN` は Debian/Ubuntu で `perf_event_paranoid` が 2 超のとき `perf_event_open` に必要、`CAP_SYS_RESOURCE` は
+カーネル 5.11 未満の memlock rlimit 用、`CAP_SYS_PTRACE` は他プロセスの cwd 取得用。実機で確認できたら絞ります)が入ります(#580)。Agent はファイルを書かないため `ReadWritePaths` は不要です。eBPF を壊しうる
 `ProtectKernel*`・`PrivateDevices`・`MemoryDenyWriteExecute`・`SystemCallFilter` は意図的に付けていません。
 実機(eBPF)での起動確認は未実施です。
 

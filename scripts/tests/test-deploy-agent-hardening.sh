@@ -39,7 +39,7 @@ has   "ProtectSystem=strict"   "$TMP/unit" "ProtectSystem=strict"
 has   "ProtectHome=yes"        "$TMP/unit" "ProtectHome=yes"
 has   "PrivateTmp"             "$TMP/unit" "PrivateTmp=yes"
 has   "ProtectControlGroups"   "$TMP/unit" "ProtectControlGroups=yes"
-has   "CapabilityBoundingSet"  "$TMP/unit" "CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_SYS_PTRACE"
+has   "CapabilityBoundingSet"  "$TMP/unit" "CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_SYS_ADMIN CAP_SYS_RESOURCE CAP_SYS_PTRACE"
 hasnt "no AmbientCapabilities" "$TMP/unit" '^AmbientCapabilities='
 # Directives that could break eBPF must stay out (see comment in make_unit).
 for d in ProtectKernelTunables ProtectKernelModules ProtectKernelLogs PrivateDevices \
@@ -51,7 +51,7 @@ has   "EnvironmentFile kept"   "$TMP/unit" "EnvironmentFile=-/etc/sentinel-agent
 has   "Restart kept"           "$TMP/unit" "Restart=on-failure"
 
 # CA cert under a home-like dir: ProtectHome=yes would hide it -> read-only.
-for ca in /home/u/ca.pem /root/ca.pem /run/user/1000/ca.pem; do
+for ca in /home/u/ca.pem /root/ca.pem /run/user/1000/ca.pem /etc/../home/u/ca.pem /etc/./../root/ca.pem /srv//../run/user/1/ca.pem; do
   rm -f "$TMP/unit"
   bash "$TMP/scripts/deploy-agent.sh" --collector 192.0.2.10:50051 --grpc-ca-cert "$ca" testhost >/dev/null 2>&1 \
     || { echo "FAIL deploy exited non-zero for $ca"; fail=1; }
@@ -60,6 +60,10 @@ done
 rm -f "$TMP/unit"
 bash "$TMP/scripts/deploy-agent.sh" --collector 192.0.2.10:50051 --grpc-ca-cert /etc/sentinel/ca.pem testhost >/dev/null 2>&1
 has "ProtectHome=yes for /etc CA" "$TMP/unit" "ProtectHome=yes"
+# '..' that stays outside home dirs must not trigger the fallback.
+rm -f "$TMP/unit"
+bash "$TMP/scripts/deploy-agent.sh" --collector 192.0.2.10:50051 --grpc-ca-cert /home/../etc/ca.pem testhost >/dev/null 2>&1
+has "ProtectHome=yes for /home/../etc CA" "$TMP/unit" "ProtectHome=yes"
 
 # Mock mode gets the same hardening.
 rm -f "$TMP/unit"
