@@ -88,8 +88,8 @@ func TestRegister_PersistsNormalisedRegion(t *testing.T) {
 }
 
 // #530: every event of a connected node asks the store to keep the region
-// record fresh (the store throttles the actual writes), with the registry's
-// region, whether or not the node was just re-created.
+// record fresh (the store throttles the actual writes), whether or not the node
+// was just re-created; the record keeps the region Register saved.
 func TestStreamEvents_EventsTouchNodeRegion(t *testing.T) {
 	fs := &fakeStorage{}
 	reg := registry.New()

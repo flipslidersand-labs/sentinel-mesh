@@ -154,7 +154,7 @@ type NodeRegions interface {
 	// TouchNodeRegion keeps the existing record of an active node from expiring
 	// (#530). It is called on every event; the store writes only when half of
 	// the TTL is used, and never creates a missing record.
-	TouchNodeRegion(ctx context.Context, nodeID, region string) error
+	TouchNodeRegion(ctx context.Context, nodeID string) error
 	NodeRegion(ctx context.Context, nodeID string) (region string, ok bool, err error)
 }
 
@@ -192,9 +192,13 @@ type server struct {
 	// seen. A failed resend never downgrades a counted event. A duplicate
 	// resend counts the event only if it is marked uncounted (its timed-out
 	// write landed after all, #325) (#548). Guarded by pendingMu; same cap as
-	// pendingAnomaly, FIFO eviction: an evicted entry is forgotten.
-	countState      map[pendingKey]countStateKind
-	countStateOrder []pendingKey // insertion order, oldest first
+	// pendingAnomaly, FIFO eviction: an evicted entry is forgotten. At the cap
+	// counted entries are dropped before uncounted ones (each saved event adds a
+	// counted entry, so under load they would otherwise push out the entries that
+	// still need a late count, #570); each kind has its own insertion order.
+	countState     map[pendingKey]countStateKind
+	countedOrder   []pendingKey // counted entries, oldest first
+	uncountedOrder []pendingKey // uncounted entries, oldest first
 }
 
 type pendingKey struct{ nodeID, eventID string }
@@ -257,24 +261,54 @@ func (s *server) pendingAnomalyFor(ev model.Event) (model.Alert, bool) {
 	return a, ok
 }
 
-// setCountState records st for ev (caller holds pendingMu), evicting the
-// oldest entry at the cap.
+// setCountState records st for ev (caller holds pendingMu). A new entry at the
+// cap evicts the oldest counted entry, or the oldest uncounted one when there
+// is no counted entry.
 func (s *server) setCountState(k pendingKey, st countStateKind) {
 	if s.countState == nil {
 		s.countState = make(map[pendingKey]countStateKind)
 	}
-	if _, ok := s.countState[k]; !ok {
+	prev, known := s.countState[k]
+	if known && prev == st {
+		return
+	}
+	if known {
+		s.dropFromCountOrder(k, prev)
+	} else {
 		limit := s.maxPending
 		if limit <= 0 {
 			limit = maxPendingAnomaly
 		}
 		if len(s.countState) >= limit {
-			delete(s.countState, s.countStateOrder[0])
-			s.countStateOrder = s.countStateOrder[1:]
+			if len(s.countedOrder) > 0 {
+				delete(s.countState, s.countedOrder[0])
+				s.countedOrder = s.countedOrder[1:]
+			} else {
+				delete(s.countState, s.uncountedOrder[0])
+				s.uncountedOrder = s.uncountedOrder[1:]
+			}
 		}
-		s.countStateOrder = append(s.countStateOrder, k)
+	}
+	if st == countedState {
+		s.countedOrder = append(s.countedOrder, k)
+	} else {
+		s.uncountedOrder = append(s.uncountedOrder, k)
 	}
 	s.countState[k] = st
+}
+
+// dropFromCountOrder removes k from the insertion order of kind st.
+func (s *server) dropFromCountOrder(k pendingKey, st countStateKind) {
+	order := &s.uncountedOrder
+	if st == countedState {
+		order = &s.countedOrder
+	}
+	for i, o := range *order {
+		if o == k {
+			*order = append((*order)[:i], (*order)[i+1:]...)
+			return
+		}
+	}
 }
 
 // noteSaveFailed records that ev's save failed. An event not counted before is
@@ -934,20 +968,20 @@ func (s *server) touchNode(ctx context.Context, nodeID string) (region string, r
 		}
 	}
 	region = s.reg.HeartbeatOrRegister(nodeID, peerIP(ctx), fallback)
-	s.touchStoredRegion(ctx, nodeID, region)
+	s.touchStoredRegion(ctx, nodeID)
 	return region, true
 }
 
 // refreshNodeRegion keeps the durable region record of a connected node from
-// expiring when it sends no events (#537). The region comes from the registry
-// (read under its lock, released before any I/O); a node the registry does not
-// know has no confirmed region, so nothing is touched and no default is guessed.
+// expiring when it sends no events (#537). A node the registry does not know has
+// no confirmed region, so nothing is touched (the registry is read under its
+// lock, released before any I/O).
 func (s *server) refreshNodeRegion(ctx context.Context, nodeID string) {
 	if s.st == nil {
 		return
 	}
-	if region, ok := s.reg.Region(nodeID); ok {
-		s.touchStoredRegion(ctx, nodeID, region)
+	if _, ok := s.reg.Region(nodeID); ok {
+		s.touchStoredRegion(ctx, nodeID)
 	}
 }
 
@@ -956,10 +990,10 @@ func (s *server) refreshNodeRegion(ctx context.Context, nodeID string) {
 // (and on the first touch after a collector restart), so this is cheap per call.
 // It runs outside the registry lock; a failure (including a busy or closed
 // store) is logged only and never fails the event or stops liveness.
-func (s *server) touchStoredRegion(ctx context.Context, nodeID, region string) {
+func (s *server) touchStoredRegion(ctx context.Context, nodeID string) {
 	touchCtx, cancel := context.WithTimeout(ctx, storeOpTimeout)
 	defer cancel()
-	if err := s.st.TouchNodeRegion(touchCtx, nodeID, region); err != nil && ctx.Err() == nil {
+	if err := s.st.TouchNodeRegion(touchCtx, nodeID); err != nil && ctx.Err() == nil {
 		s.log.Warn("refresh node region failed", zap.String("node_id", safeLogNodeID(nodeID, nodeID)), zap.Error(err))
 	}
 }
