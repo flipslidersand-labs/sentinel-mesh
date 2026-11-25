@@ -2,14 +2,22 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/flipslidersand/sentinel-mesh/internal/store"
 )
@@ -18,13 +26,19 @@ import (
 // and serves the admin socket on it until the test ends.
 func startAdmin(t *testing.T, dataDir string) *store.Store {
 	t.Helper()
+	return startAdminLogged(t, dataDir, zap.NewNop())
+}
+
+// startAdminLogged is startAdmin with the serve-side logger of the test's choice.
+func startAdminLogged(t *testing.T, dataDir string, logger *zap.Logger) *store.Store {
+	t.Helper()
 	st, err := store.New(dataDir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { defer close(done); serveAdmin(ctx, adminSocketPath(dataDir), st, zap.NewNop()) }()
+	go func() { defer close(done); serveAdmin(ctx, adminSocketPath(dataDir), st, logger) }()
 	t.Cleanup(func() { cancel(); <-done; st.Close() }) //nolint:errcheck
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -316,13 +330,253 @@ func TestTokenRevokeForce_NotDelegated(t *testing.T) {
 	}
 }
 
-// issue and list are not delegated either.
-func TestTokenIssueList_NotDelegated(t *testing.T) {
+var tokenLine = regexp.MustCompile(`^[0-9a-f]{64}\n$`)
+
+// Delegated issue must print the same shape and fail the same way as the
+// direct path (the token itself is random, so compare format, not value).
+func TestTokenIssue_DelegatedMatchesDirect(t *testing.T) {
+	direct := shortTempDir(t)
+	dOut, dErr := runTokenCmd(t, direct, "", "issue", "n1")
+	_, dDupErr := runTokenCmd(t, direct, "", "issue", "n1")
+	_, dBadErr := runTokenCmd(t, direct, "", "issue", "bad\x01id")
+	_, dEmptyErr := runTokenCmd(t, direct, "", "issue", "  ")
+
+	live := shortTempDir(t)
+	st := startAdmin(t, live)
+	lOut, lErr := runTokenCmd(t, live, "", "issue", "n1")
+	_, lDupErr := runTokenCmd(t, live, "", "issue", "n1")
+	_, lBadErr := runTokenCmd(t, live, "", "issue", "bad\x01id")
+	_, lEmptyErr := runTokenCmd(t, live, "", "issue", "  ")
+
+	if dErr != nil || lErr != nil || !tokenLine.MatchString(dOut) || !tokenLine.MatchString(lOut) {
+		t.Fatalf("direct (%q, %v) vs delegated (%q, %v)", dOut, dErr, lOut, lErr)
+	}
+	for name, pair := range map[string][2]error{
+		"duplicate": {dDupErr, lDupErr}, "invalid": {dBadErr, lBadErr}, "empty": {dEmptyErr, lEmptyErr},
+	} {
+		if pair[0] == nil || pair[1] == nil || pair[0].Error() != pair[1].Error() {
+			t.Errorf("%s: direct err %v != delegated err %v", name, pair[0], pair[1])
+		}
+	}
+	if !errors.Is(lDupErr, store.ErrTokenExists) {
+		t.Errorf("delegated duplicate err = %v, want ErrTokenExists", lDupErr)
+	}
+	// The token printed by the CLI is live in the serving store's index.
+	if id, ok, err := st.LookupNodeID(context.Background(), strings.TrimSpace(lOut)); err != nil || !ok || id != "n1" {
+		t.Fatalf("issued token not usable on the serving store: %q %v %v", id, ok, err)
+	}
+}
+
+// Rotation without stopping the collector: issue, revoke, issue again.
+func TestTokenIssue_RotationWhileRunning(t *testing.T) {
 	dir := shortTempDir(t)
-	startAdmin(t, dir)
+	st := startAdmin(t, dir)
+	first, err := runTokenCmd(t, dir, "", "issue", "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runTokenCmd(t, dir, "", "revoke", "--yes", "n1"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := runTokenCmd(t, dir, "", "issue", "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, ok, _ := st.LookupNodeID(ctx, strings.TrimSpace(first)); ok {
+		t.Error("revoked token still authenticates")
+	}
+	if id, ok, _ := st.LookupNodeID(ctx, strings.TrimSpace(second)); !ok || id != "n1" {
+		t.Error("reissued token does not authenticate")
+	}
+}
+
+// Delegated list must print byte-for-byte what the direct path prints for the
+// same data-dir.
+func TestTokenList_DelegatedMatchesDirect(t *testing.T) {
+	for name, prep := range map[string]func(dir string){
+		"empty": func(string) {},
+		"mixed": func(dir string) {
+			for _, a := range [][]string{{"issue", "b"}, {"issue", "a"}, {"issue", "c"}, {"revoke", "--yes", "b"}} {
+				if _, err := runTokenCmd(t, dir, "", a...); err != nil {
+					t.Fatal(err)
+				}
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := shortTempDir(t)
+			prep(dir)
+			dOut, dErr := runTokenCmd(t, dir, "", "list")
+			startAdmin(t, dir)
+			lOut, lErr := runTokenCmd(t, dir, "", "list")
+			if dErr != nil || lErr != nil || dOut != lOut {
+				t.Fatalf("direct (%q, %v) != delegated (%q, %v)", dOut, dErr, lOut, lErr)
+			}
+			if !strings.HasPrefix(lOut, "NODE_ID") {
+				t.Fatalf("unexpected output %q", lOut)
+			}
+		})
+	}
+}
+
+func TestTokenIssueList_NoSocketUsesDirectPath(t *testing.T) {
+	dir := shortTempDir(t)
+	if err := os.Mkdir(adminDir(dir), 0o700); err != nil { // dir, no socket
+		t.Fatal(err)
+	}
+	if _, err := runTokenCmd(t, dir, "", "issue", "n1"); err != nil {
+		t.Fatalf("issue, empty admin dir: %v", err)
+	}
+	ln, err := net.Listen("unix", adminSocketPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln.(*net.UnixListener).SetUnlinkOnClose(false)
+	ln.Close()
+	if out, err := runTokenCmd(t, dir, "", "list"); err != nil || !strings.Contains(out, "n1") {
+		t.Fatalf("list, stale socket: %q, %v", out, err)
+	}
+}
+
+func TestTokenIssueList_UnsafeAdminDirIsError(t *testing.T) {
+	dir := shortTempDir(t)
+	if err := os.Mkdir(adminDir(dir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(adminDir(dir), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	for _, args := range [][]string{{"issue", "n1"}, {"list"}} {
-		if _, err := runTokenCmd(t, dir, "", args...); err == nil || !strings.Contains(err.Error(), "open store") {
-			t.Fatalf("%v: err = %v, want the store-lock error", args, err)
+		if _, err := runTokenCmd(t, dir, "", args...); err == nil || !strings.Contains(err.Error(), "unsafe") {
+			t.Fatalf("%v: err = %v, want an unsafe-directory error", args, err)
+		}
+	}
+	// And nothing was issued behind the refusal.
+	if err := os.Chmod(adminDir(dir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := runTokenCmd(t, dir, "", "list"); err != nil || strings.Count(out, "\n") != 1 {
+		t.Fatalf("a token was issued despite the unsafe dir: %q, %v", out, err)
+	}
+}
+
+// --force is never delegated: against a running serve it stays a lock error.
+// A plain issue/list against a serve without the admin socket gets the lock
+// error too (covered by TestOpenTokenStore_LockedErrorMentionsForceOnly).
+
+// rawAdmin sends a request straight to the admin socket.
+func rawAdmin(t *testing.T, dataDir, method, path, body string) (int, string, http.Header) {
+	t.Helper()
+	sock := adminSocketPath(dataDir)
+	c := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, "unix", sock)
+	}}}
+	req, err := http.NewRequest(method, "http://admin"+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(b), resp.Header
+}
+
+func TestAdminHandlers_MethodAndBodyLimits(t *testing.T) {
+	dir := shortTempDir(t)
+	st := startAdmin(t, dir)
+	for _, c := range []struct{ method, path string }{
+		{"GET", adminIssuePath}, {"PUT", adminIssuePath}, {"DELETE", adminIssuePath},
+		{"POST", adminListPath}, {"PUT", adminListPath}, {"GET", adminRevokePath},
+	} {
+		if code, _, h := rawAdmin(t, dir, c.method, c.path, `{"node_id":"n1"}`); code != http.StatusMethodNotAllowed || h.Get("Allow") == "" {
+			t.Errorf("%s %s = %d (Allow %q), want 405", c.method, c.path, code, h.Get("Allow"))
+		}
+	}
+	for _, path := range []string{adminIssuePath, adminRevokePath} {
+		big := `{"node_id":"` + strings.Repeat("x", 5000) + `"}`
+		if code, _, _ := rawAdmin(t, dir, "POST", path, big); code != http.StatusBadRequest {
+			t.Errorf("%s oversized body = %d, want 400", path, code)
+		}
+		if code, _, _ := rawAdmin(t, dir, "POST", path, `not json`); code != http.StatusBadRequest {
+			t.Errorf("%s bad json = %d, want 400", path, code)
+		}
+	}
+	// Server-side node_id validation (not only the CLI's).
+	if code, _, _ := rawAdmin(t, dir, "POST", adminIssuePath, `{"node_id":"bad\u0001id"}`); code != http.StatusBadRequest {
+		t.Errorf("invalid node_id = %d, want 400", code)
+	}
+	if toks, _ := st.ListTokens(context.Background()); len(toks) != 0 {
+		t.Fatalf("rejected requests created tokens: %+v", toks)
+	}
+	// Issue responses must not be cacheable.
+	if _, _, h := rawAdmin(t, dir, "POST", adminIssuePath, `{"node_id":"n1"}`); h.Get("Cache-Control") != "no-store" {
+		t.Errorf("Cache-Control = %q", h.Get("Cache-Control"))
+	}
+}
+
+// The plaintext token must not reach serve's log on success or on any error
+// path; the audit line carries only action and node_id.
+func TestAdmin_IssueNeverLogsToken(t *testing.T) {
+	core, logs := observer.New(zapcore.DebugLevel)
+	dir := shortTempDir(t)
+	startAdminLogged(t, dir, zap.New(core))
+
+	out, err := runTokenCmd(t, dir, "", "issue", "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := strings.TrimSpace(out)
+	_, _ = runTokenCmd(t, dir, "", "issue", "n1")                   // duplicate
+	rawAdmin(t, dir, "POST", adminIssuePath, `{"junk":"`+token+`"`) // token inside a malformed body
+	rawAdmin(t, dir, "GET", adminIssuePath, "")
+	if _, err := runTokenCmd(t, dir, "", "list"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runTokenCmd(t, dir, "", "revoke", "--yes", "n1"); err != nil {
+		t.Fatal(err)
+	}
+
+	var audits []map[string]any
+	for _, e := range logs.All() {
+		blob := e.Message
+		for k, v := range e.ContextMap() {
+			blob += k + fmt.Sprint(v)
+		}
+		if strings.Contains(blob, token) {
+			t.Fatalf("log entry leaks the token: %q", e.Message)
+		}
+		if e.Message == "admin action" {
+			audits = append(audits, e.ContextMap())
+		}
+	}
+	want := []map[string]any{
+		{"action": "issue", "node_id": "n1"},
+		{"action": "revoke", "node_id": "n1"},
+	}
+	if !reflect.DeepEqual(audits, want) {
+		t.Fatalf("audit lines = %v, want %v", audits, want)
+	}
+}
+
+// A data-dir whose parent path runs through a regular file (ENOTDIR on the
+// admin dir) means no serve can be listening: fall back to the direct path,
+// which then reports the store-open error, not an "unsafe" admin dir error.
+func TestTokenIssueListRevoke_ENOTDIRUsesDirectPath(t *testing.T) {
+	base := shortTempDir(t)
+	file := filepath.Join(base, "afile")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dataDir := filepath.Join(file, "data")
+	for _, args := range [][]string{{"issue", "n1"}, {"list"}, {"revoke", "--yes", "n1"}} {
+		_, err := runTokenCmd(t, dataDir, "", args...)
+		if err == nil || !strings.Contains(err.Error(), "open store") || strings.Contains(err.Error(), "unsafe") {
+			t.Fatalf("%v: err = %v, want the direct-path store-open error", args, err)
 		}
 	}
 }

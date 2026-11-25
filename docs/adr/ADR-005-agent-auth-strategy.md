@@ -113,4 +113,15 @@ TLS の相互認証で agent の身元を証明する。
 ディレクトリ・自 euid 所有・0700、ソケットは 0600)を開き、`token revoke <node_id>`
 (`--force` 以外)はそこへ委譲する。REST の API トークンは全ルート共有で閲覧用 UI も
 持ち、gRPC は agent 用トークンと混ざるため、どちらにも管理 EP は置かない。
-`issue` / `list` / `--force` は従来どおり停止中のみ(`issue`/`list` の稼働中対応は別 Issue)。
+`--force` は従来どおり停止中のみ。
+
+## 追記: 稼働中の issue / list(#574)
+
+同じ admin ソケットに `POST /tokens/issue`・`GET /tokens` を足し、`token issue` /
+`token list` も revoke と同じ条件(ソケットが無い・接続拒否なら直接経路、admin dir が
+安全でなければエラー)で委譲する。直接経路に落ちるのは、ソケット無し・ECONNREFUSED・ENOTDIR(data-dir の途中がファイル)の場合。これで revoke → issue のローテーションが collector
+停止なしでできる。`IssueToken` は serve と同じ Store 内で索引も更新するため、発行した
+トークンは直ちに gRPC 認証を通る。平文トークンは応答本文にだけ載り、serve のログには
+出さない(ログは issue/revoke 実行時の action と node_id の 1 行のみ)。委譲時の
+標準出力・エラー文言・終了コードは直接経路と同じ。`list` が読み飛ばす壊れたレコードの
+警告は、委譲時は CLI ではなく collector 側のログに出る。

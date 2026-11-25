@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -16,14 +17,14 @@ import (
 // openTokenStore opens the BadgerDB store at dataDir for the token
 // subcommands. BadgerDB takes an exclusive lock on its directory, so this
 // fails if `sentinel-collector serve` is still running against the same
-// --data-dir. Only a plain `token revoke` works against a running serve (it
-// is delegated to serve's local admin socket, #572, see admin.go); issue,
-// list and revoke --force still need serve stopped, a deliberate tradeoff for
-// this project's scale (#183/#191, per ADR-005).
+// --data-dir. issue, list and a plain `token revoke` are delegated to serve's
+// local admin socket first (#572, #574, see admin.go) and only reach this when
+// no serve is listening; revoke --force still needs serve stopped, a
+// deliberate tradeoff for this project's scale (#183/#191, per ADR-005).
 func openTokenStore(dataDir string) (*store.Store, error) {
 	st, err := store.New(dataDir)
 	if err != nil {
-		return nil, fmt.Errorf("open store at %s (if sentinel-collector serve is running against this --data-dir, only `token revoke <node_id>` works without stopping it; stop it first for issue, list and revoke --force — BadgerDB requires exclusive access): %w", dataDir, err)
+		return nil, fmt.Errorf("open store at %s (if sentinel-collector serve is running against this --data-dir, `token issue`, `token list` and `token revoke <node_id>` work without stopping it unless its admin socket could not be opened; stop it first for revoke --force — BadgerDB requires exclusive access): %w", dataDir, err)
 	}
 	return st, nil
 }
@@ -52,10 +53,11 @@ docs/adr/ADR-005-agent-auth-strategy.md).
 Tokens are stored in the same BadgerDB data directory as collector
 events/alerts (--data-dir, shared with "serve"). Because BadgerDB takes an
 exclusive lock on its directory, "sentinel-collector serve" must be stopped
-before running "token issue", "token list" or "token revoke --force" against
-the same --data-dir. A plain "token revoke <node_id>" also works while serve
-is running: it is sent to serve over a local Unix socket
-(<data-dir>/admin/admin.sock, directory mode 0700).`,
+before running "token revoke --force" against the same --data-dir. "token
+issue", "token list" and a plain "token revoke <node_id>" also work while
+serve is running: they are sent to serve over a local Unix socket
+(<data-dir>/admin/admin.sock, directory mode 0700). If serve could not open
+that socket (it logs a warning), stop serve for these too.`,
 	}
 	cmd.PersistentFlags().String(flagDataDir, "/tmp/sentinel-data", "BadgerDB data directory (must match the collector's --data-dir)")
 	cmd.AddCommand(tokenIssueCmd(), tokenRevokeCmd(), tokenListCmd())
@@ -72,6 +74,12 @@ The token is never stored in plaintext — only its hash is persisted — so
 this is the only time it's retrievable. Copy it into the agent's config
 immediately (see scripts/deploy-agent.sh).
 
+If "serve" is running against the same --data-dir, the token is issued by it
+over the local admin socket (<data-dir>/admin/admin.sock) and is usable by the
+agent at once; the plaintext travels only over that socket and is not logged.
+If the admin socket directory exists but is not a real directory owned by you
+with mode 0700, issue fails instead of falling back to the direct path.
+
 Fails if node_id already has an active (non-revoked) token; run
 "token revoke <node_id>" first to reissue.`,
 		Args: cobra.ExactArgs(1),
@@ -87,15 +95,21 @@ Fails if node_id already has an active (non-revoked) token; run
 			if err != nil {
 				return err
 			}
-			st, err := openTokenStore(dataDir)
+			token, delegated, err := issueViaAdmin(cmd.Context(), dataDir, nodeID)
 			if err != nil {
 				return err
 			}
-			defer st.Close() //nolint:errcheck
+			if !delegated {
+				st, err := openTokenStore(dataDir)
+				if err != nil {
+					return err
+				}
+				defer st.Close() //nolint:errcheck
 
-			token, err := st.IssueToken(cmd.Context(), nodeID)
-			if err != nil {
-				return err
+				token, err = st.IssueToken(cmd.Context(), nodeID)
+				if err != nil {
+					return err
+				}
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), token)
 			return nil
@@ -186,33 +200,48 @@ func tokenListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List all issued tokens",
-		Args:  cobra.NoArgs,
+		Long: `list prints every token record (revoked and active). If "serve" is running
+against the same --data-dir, the list is read from it over the local admin
+socket (<data-dir>/admin/admin.sock); the output is the same either way. A record
+that cannot be decoded is skipped with a warning, which is written to the
+collector's log (not the CLI's stderr) when the list is delegated.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dataDir, err := tokenDataDir(cmd)
 			if err != nil {
 				return err
 			}
-			st, err := openTokenStore(dataDir)
+			tokens, delegated, err := listViaAdmin(cmd.Context(), dataDir)
 			if err != nil {
 				return err
 			}
-			defer st.Close() //nolint:errcheck
-
-			tokens, err := st.ListTokens(cmd.Context())
-			if err != nil {
-				return err
-			}
-
-			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
-			fmt.Fprintln(w, "NODE_ID\tISSUED_AT\tSTATUS")
-			for _, tok := range tokens {
-				status := "active"
-				if tok.RevokedAt != nil {
-					status = "revoked"
+			if !delegated {
+				st, err := openTokenStore(dataDir)
+				if err != nil {
+					return err
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\n", tok.NodeID, tok.IssuedAt.Format(time.RFC3339), status)
+				defer st.Close() //nolint:errcheck
+
+				tokens, err = st.ListTokens(cmd.Context())
+				if err != nil {
+					return err
+				}
 			}
-			return w.Flush()
+			return printTokenList(cmd.OutOrStdout(), tokens)
 		},
 	}
+}
+
+// printTokenList renders the table shared by the direct and delegated paths.
+func printTokenList(out io.Writer, tokens []store.AgentToken) error {
+	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "NODE_ID\tISSUED_AT\tSTATUS")
+	for _, tok := range tokens {
+		status := "active"
+		if tok.RevokedAt != nil {
+			status = "revoked"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\n", tok.NodeID, tok.IssuedAt.Format(time.RFC3339), status)
+	}
+	return w.Flush()
 }
