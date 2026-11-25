@@ -534,7 +534,13 @@ bash scripts/deploy-agent.sh --mock --node-id web-01 --collector 192.0.2.10:5005
 ### Switching to real eBPF mode
 
 Real eBPF mode is `deploy-agent.sh`'s default (`--mock` opts *into* mock mode, not out of it).
-The systemd unit it installs runs as root, so no separate `CAP_BPF` grant is needed. To switch an
+The systemd unit it installs runs as root, so no separate `CAP_BPF` grant is needed. The unit is
+hardened (#580): `NoNewPrivileges`, `ProtectSystem=strict` (the agent writes no files, so no
+`ReadWritePaths`), `ProtectHome=yes` (`read-only` if `--grpc-ca-cert` is under `/home`, `/root` or
+`/run/user`), `PrivateTmp`, `ProtectControlGroups`, and `CapabilityBoundingSet=CAP_BPF CAP_PERFMON
+CAP_SYS_PTRACE` (kernel 5.8+; `CAP_SYS_PTRACE` is for reading other processes' cwd). Directives that
+could break eBPF (`ProtectKernel*`, `PrivateDevices`, `MemoryDenyWriteExecute`, `SystemCallFilter`)
+are intentionally not set. Not yet verified on a real eBPF host. To switch an
 already-deployed `--mock` host to real eBPF, redeploy without `--mock` — this overwrites the
 `sentinel-agent.service` unit and restarts it:
 
@@ -582,6 +588,15 @@ sentinel-mesh は、カーネルレベルのイベントを eBPF で集める分
 | `web/` | Web UI(React + TypeScript + Vite) |
 | `proto/` | gRPC の定義(`sentinel.proto`) |
 | `scripts/` | ビルド・Collector の導入・Agent の配備・デモ用スクリプト |
+
+### Agent の systemd unit のハードニング
+
+`scripts/deploy-agent.sh` が生成する unit には `NoNewPrivileges`・`ProtectSystem=strict`・`ProtectHome=yes`
+(`--grpc-ca-cert` が `/home` 等の下ならば `read-only`)・`PrivateTmp`・`ProtectControlGroups` と
+`CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_SYS_PTRACE`(カーネル 5.8 以降。`CAP_SYS_PTRACE` は他プロセスの
+cwd 取得用)が入ります(#580)。Agent はファイルを書かないため `ReadWritePaths` は不要です。eBPF を壊しうる
+`ProtectKernel*`・`PrivateDevices`・`MemoryDenyWriteExecute`・`SystemCallFilter` は意図的に付けていません。
+実機(eBPF)での起動確認は未実施です。
 
 ### セットアップと動かし方
 

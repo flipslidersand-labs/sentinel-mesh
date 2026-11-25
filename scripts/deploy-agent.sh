@@ -189,6 +189,14 @@ make_unit() {
     scheme="https"
   fi
 
+  # ProtectHome=yes hides /home, /root and /run/user. The agent only reads a
+  # --grpc-ca-cert file; if it lives under one of those, fall back to
+  # read-only so the agent can still open it (it never writes there).
+  local protect_home="yes"
+  case "${GRPC_CA_CERT:-}" in
+    /home/*|/root/*|/run/user/*) protect_home="read-only" ;;
+  esac
+
   cat <<UNIT
 [Unit]
 Description=SentinelMesh Agent (${node_id})
@@ -207,6 +215,26 @@ RestartSec=5s
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=sentinel-agent
+# Hardening (#580). The agent runs as root but writes no files (no state, no
+# log files, no bpffs pins; events go over gRPC, logs to the journal), so the
+# whole file system is read-only. /sys (tracefs, /sys/fs/bpf) is an API file
+# system subtree that ProtectSystem=strict leaves as-is, so no ReadWritePaths=
+# is needed.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=${protect_home}
+PrivateTmp=yes
+ProtectControlGroups=yes
+# Capability bound (no AmbientCapabilities: the unit already runs as root).
+# CAP_BPF + CAP_PERFMON: load tracepoint/kprobe programs and attach them via
+# perf_event_open (aya; rust-agent/agent/src/events.rs, ebpf_source). Both
+# exist only on kernel >= 5.8, which real eBPF mode already requires
+# (CAP_BPF). CAP_SYS_PTRACE: read /proc/<pid>/cwd of other processes for
+# exec event enrichment (read_proc_exec_info); without it cwd would be empty.
+# Not set on purpose (could break eBPF, unverified on real hardware):
+# ProtectKernelTunables/Modules/Logs, PrivateDevices, MemoryDenyWriteExecute,
+# SystemCallFilter, RestrictAddressFamilies.
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_SYS_PTRACE
 
 [Install]
 WantedBy=multi-user.target
