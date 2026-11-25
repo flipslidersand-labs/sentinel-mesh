@@ -128,6 +128,9 @@ Options:
   # Aggregate mode (cross-region, read-only — no gRPC)
   --aggregate                Run as a cross-region aggregator
   --upstreams <region=url>   Region collectors to poll (repeatable)
+                             Per-upstream bearer token: env SENTINEL_UPSTREAM_TOKEN_<REGION>
+                             (region upper-cased, non-alphanumerics -> '_'); falls back to
+                             SENTINEL_API_TOKEN. See "Multi-Region Aggregation".
   --poll-interval <DUR>      How often to poll upstreams [default: 10s]
                              (--upstreams/--poll-interval require --aggregate)
   --aggregate-allow-insecure-http
@@ -185,6 +188,16 @@ For geographically distributed deployments, run one collector per region (each w
 curl http://localhost:8080/api/regions
 # → [{"region":"eu-west","node_count":3,"active_count":3,"reachable":true},
 #    {"region":"us-east","node_count":5,"active_count":4,"reachable":true}]
+```
+
+**Per-upstream tokens.** By default the aggregator sends its own `SENTINEL_API_TOKEN` to every upstream, so a compromised upstream could replay it against the others. To give an upstream its own token, set `SENTINEL_UPSTREAM_TOKEN_<REGION>` in the aggregator's environment, where `<REGION>` is the `--upstreams` region key upper-cased with every character other than `A-Z`/`0-9` replaced by `_` (`us-east` → `SENTINEL_UPSTREAM_TOKEN_US_EAST`). An unset or empty variable falls back to `SENTINEL_API_TOKEN`, so existing setups behave as before. Tokens are taken from the environment, not from flags, so they do not appear in `ps`. Two regions that map to the same variable name (e.g. `us-east` and `us.east`) are rejected at startup.
+
+```bash
+SENTINEL_API_TOKEN=<token> \
+SENTINEL_UPSTREAM_TOKEN_US_EAST=<token-us-east> \
+SENTINEL_UPSTREAM_TOKEN_EU_WEST=<token-eu-west> \
+./collector serve --aggregate \
+  --upstreams us-east=https://10.0.1.10:8081 --upstreams eu-west=https://10.0.2.10:8081
 ```
 
 A region whose collector is unreachable is **isolated**: it is reported with `"reachable": false` and an `error`, while other regions continue to serve. The aggregator exposes `/api/nodes` (with `?region=`), `/api/events`, `/api/alerts`, and `/api/regions`.
@@ -572,6 +585,10 @@ sentinel-mesh は、カーネルレベルのイベントを eBPF で集める分
 ハートビートが途絶えた Agent は自動で inactive になります(StreamEvents の接続中はイベントが無くても `heartbeat-timeout / 3` ごとに記録するため active のまま)。アラートルール(`rules.yaml`)、
 スライディング窓による異常検知、Slack / メール通知、OpenTelemetry のメトリクス・トレース、
 複数リージョンの集約(`--aggregate`)に対応しています。
+集約モードでは、上流(`--upstreams`)ごとに別の API トークンを使えます。環境変数
+`SENTINEL_UPSTREAM_TOKEN_<REGION>`(`<REGION>` は region 名を大文字にし、英数字以外を `_` にしたもの。
+例: `us-east` → `SENTINEL_UPSTREAM_TOKEN_US_EAST`)で渡します(CLI 引数に載せないので `ps` に見えません)。
+未設定・空なら従来どおり `SENTINEL_API_TOKEN` を使います。変換後に同名になる region が 2 つあると起動時エラーです。
 
 ### 構成
 

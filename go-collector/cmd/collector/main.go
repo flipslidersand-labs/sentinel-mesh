@@ -166,7 +166,17 @@ API, including the bearer token, is served in plaintext).
 
 In aggregate mode, http:// upstreams are only accepted for loopback hosts
 (127.0.0.0/8, ::1, localhost) unless --aggregate-allow-insecure-http is set,
-because the bearer token would otherwise cross the network in plaintext.`,
+because the bearer token would otherwise cross the network in plaintext.
+
+By default the aggregator sends its own SENTINEL_API_TOKEN to every upstream.
+To give an upstream its own token (so a compromised upstream cannot learn the
+others'), set SENTINEL_UPSTREAM_TOKEN_<REGION> in the environment, where
+<REGION> is the --upstreams region key upper-cased with every character other
+than A-Z and 0-9 replaced by '_' (us-east -> SENTINEL_UPSTREAM_TOKEN_US_EAST).
+An unset or empty variable falls back to SENTINEL_API_TOKEN. Tokens are read
+from the environment, never from flags (they would show in ps). Two regions
+that map to the same variable name (e.g. us-east and us.east) are rejected at
+startup.`,
 		Example: `  # Normal mode: gRPC + REST API on default addresses (REST auth is required
   # by default, so SENTINEL_API_TOKEN must be set, at least 32 bytes, e.g.
   # $(openssl rand -hex 32); gRPC needs per-agent tokens)
@@ -183,6 +193,13 @@ because the bearer token would otherwise cross the network in plaintext.`,
 
   # Aggregate mode: merge two region collectors into one read-only view
   SENTINEL_API_TOKEN=<token> sentinel-collector serve --aggregate \
+    --upstreams=us-east=https://collector-us-east:8081 \
+    --upstreams=eu-west=https://collector-eu-west:8081
+
+  # Aggregate mode with a separate token per upstream (SENTINEL_API_TOKEN
+  # remains the fallback for regions without their own variable)
+  SENTINEL_API_TOKEN=<token> SENTINEL_UPSTREAM_TOKEN_US_EAST=<token-us-east> \
+    SENTINEL_UPSTREAM_TOKEN_EU_WEST=<token-eu-west> sentinel-collector serve --aggregate \
     --upstreams=us-east=https://collector-us-east:8081 \
     --upstreams=eu-west=https://collector-eu-west:8081
 

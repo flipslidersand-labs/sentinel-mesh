@@ -663,10 +663,9 @@ func TestParseUpstreams_DuplicateRegion(t *testing.T) {
 	if strings.Contains(err.Error(), "192.0.2.") {
 		t.Errorf("error must not include URLs: %v", err)
 	}
-	// Region names are compared case-sensitively (state map keys), so these
-	// are distinct and accepted.
-	ups, err := ParseUpstreams([]string{"us-east=http://192.0.2.1:8081", "US-East=http://192.0.2.2:8081"}, true)
-	if err != nil || len(ups) != 2 {
-		t.Fatalf("distinct-case regions: ups=%+v err=%v", ups, err)
+	// Region names are case-sensitive state keys, but they map to the same
+	// per-upstream token env var, so case-variants are rejected (#581).
+	if _, err := ParseUpstreams([]string{"us-east=http://192.0.2.1:8081", "US-East=http://192.0.2.2:8081"}, true); err == nil {
+		t.Fatal("case-variant regions share a token env var and must be rejected")
 	}
 }
