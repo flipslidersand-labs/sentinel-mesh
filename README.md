@@ -148,9 +148,9 @@ sentinel-collector token <issue|revoke|list> [OPTIONS]
 Manages per-agent gRPC authentication tokens (see gRPC TLS & Authentication
 below). `token revoke <node_id>` also works while the collector is running
 (it is sent to `serve` over a local Unix socket, <data-dir>/admin/admin.sock).
-`token issue`, `token list` and `token revoke --force` require the collector to
-be stopped first — BadgerDB takes an exclusive lock on --data-dir, so they
-can't run alongside `serve` against the same directory.
+`token issue` and `token list` work the same way. Only `token revoke --force`
+requires the collector to be stopped first — BadgerDB takes an exclusive lock
+on --data-dir, so it can't run alongside `serve` against the same directory.
 
 Options:
   --data-dir <PATH>  BadgerDB data directory (must match the collector's --data-dir)
@@ -267,9 +267,9 @@ Unauthenticated gRPC requires the explicit `--grpc-auth=disabled`.
 ```bash
 # Collector: gRPC auth is --grpc-auth=required (the default; independent of the REST token).
 # Issue a token for each agent before it can connect.
-# token issue/list (and revoke --force) require the collector to be stopped first —
-# BadgerDB takes an exclusive lock on --data-dir, so they can't run alongside `serve`.
-# A plain `token revoke <node_id>` also works while the collector runs (see below).
+# token issue/list and a plain `token revoke <node_id>` also work while the collector runs
+# (see below). Only `token revoke --force` requires the collector to be stopped first —
+# BadgerDB takes an exclusive lock on --data-dir, so it can't run alongside `serve`.
 export SENTINEL_API_TOKEN="$(openssl rand -hex 32)"  # required by --http-auth=required (default); gates the REST API only, NOT gRPC
 # Run token commands as the service user (`sudo -u sentinel`): as root they would create
 # root-owned files in --data-dir that the unprivileged `sentinel` service cannot open.
@@ -298,7 +298,7 @@ sudo -u sentinel sentinel-collector token revoke web-01 --data-dir /var/lib/sent
 sudo -u sentinel sentinel-collector token list --data-dir /var/lib/sentinel   # confirm status
 ```
 
-`token revoke` works whether the collector is stopped or running. While `serve` runs, the command is sent to it over a local Unix socket (`<data-dir>/admin/admin.sock`; the `admin/` directory must be a real directory owned by the serving user with mode 0700, the socket is 0600). If `admin/` is not safe the collector does not open the socket (it logs a warning and keeps running), and the CLI refuses to use it instead of falling back silently. If the socket path is too long for a Unix socket, the collector warns and continues; revoke then needs the collector stopped. `token issue`, `token list` and `token revoke --force` are never sent to a running collector.
+`token issue`, `token list` and `token revoke` work whether the collector is stopped or running, so a token can be rotated (revoke, then issue) without a restart; a token issued this way authenticates immediately. While `serve` runs, the command is sent to it over a local Unix socket (`<data-dir>/admin/admin.sock`; the `admin/` directory must be a real directory owned by the serving user with mode 0700, the socket is 0600). If `admin/` is not safe the collector does not open the socket (it logs a warning and keeps running), and the CLI refuses to use it instead of falling back silently. If the socket path is too long for a Unix socket, the collector warns and continues; issue, list and revoke then need the collector stopped. `token revoke --force` is never sent to a running collector. The issued plaintext token travels only over the socket and is never logged; the collector logs one line per issue/revoke with the action and `node_id` only. When `token list` is served by the running collector, the warning about undecodable records goes to the collector's log, not to the CLI's stderr.
 
 With auth enabled, a stream that is already established with a revoked token is closed with `Unauthenticated` at the next liveness tick (within `heartbeat-timeout / 3`). If the token lookup fails transiently, the stream is kept and the check is retried on the next tick.
 
@@ -593,9 +593,11 @@ sentinel-mesh は、カーネルレベルのイベントを eBPF で集める分
 ローカルのデモでは `--grpc-auth disabled --http-auth disabled` を付けます。本番では Agent ごとに
 `sentinel-collector token issue <node_id>` でトークンを発行し、REST には `SENTINEL_API_TOKEN` を設定します
 (詳細は英語の [gRPC TLS & Authentication](#grpc-tls--authentication))。
-`token revoke <node_id>` は Collector の稼働中でも実行できます(ローカルの Unix ソケット `<data-dir>/admin/admin.sock` 経由。
-`admin/` は実ディレクトリ・所有者が自分・0700 でなければなりません)。`token issue` / `token list` / `token revoke --force`
-は従来どおり Collector を停止してから実行します(BadgerDB の排他ロックのため)。
+`token issue` / `token list` / `token revoke <node_id>` は Collector の稼働中でも実行できます(ローカルの Unix ソケット
+`<data-dir>/admin/admin.sock` 経由。`admin/` は実ディレクトリ・所有者が自分・0700 でなければなりません)。停止せずに
+トークンをローテーション(revoke → issue)でき、発行したトークンは直ちに認証に使えます。平文トークンはソケット上だけを通り、
+ログには出ません(Collector のログには action と `node_id` の 1 行だけ)。`token revoke --force` は従来どおり Collector を
+停止してから実行します(BadgerDB の排他ロックのため)。
 
 ### ドキュメント
 
