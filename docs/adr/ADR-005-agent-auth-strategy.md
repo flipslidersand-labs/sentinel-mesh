@@ -119,7 +119,7 @@ TLS の相互認証で agent の身元を証明する。
 
 同じ admin ソケットに `POST /tokens/issue`・`GET /tokens` を足し、`token issue` /
 `token list` も revoke と同じ条件(ソケットが無い・接続拒否なら直接経路、admin dir が
-安全でなければエラー)で委譲する。これで revoke → issue のローテーションが collector
+安全でなければエラー)で委譲する。直接経路に落ちるのは、ソケット無し・ECONNREFUSED・ENOTDIR(data-dir の途中がファイル)の場合。これで revoke → issue のローテーションが collector
 停止なしでできる。`IssueToken` は serve と同じ Store 内で索引も更新するため、発行した
 トークンは直ちに gRPC 認証を通る。平文トークンは応答本文にだけ載り、serve のログには
 出さない(ログは issue/revoke 実行時の action と node_id の 1 行のみ)。委譲時の

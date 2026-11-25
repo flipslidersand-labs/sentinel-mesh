@@ -80,12 +80,6 @@ agent at once; the plaintext travels only over that socket and is not logged.
 If the admin socket directory exists but is not a real directory owned by you
 with mode 0700, issue fails instead of falling back to the direct path.
 
-If "serve" is running against the same --data-dir, the token is issued by it
-over the local admin socket (<data-dir>/admin/admin.sock) and is usable by the
-agent at once; the plaintext travels only over that socket and is not logged.
-If the admin socket directory exists but is not a real directory owned by you
-with mode 0700, issue fails instead of falling back to the direct path.
-
 Fails if node_id already has an active (non-revoked) token; run
 "token revoke <node_id>" first to reissue.`,
 		Args: cobra.ExactArgs(1),

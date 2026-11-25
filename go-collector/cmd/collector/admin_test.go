@@ -562,3 +562,21 @@ func TestAdmin_IssueNeverLogsToken(t *testing.T) {
 		t.Fatalf("audit lines = %v, want %v", audits, want)
 	}
 }
+
+// A data-dir whose parent path runs through a regular file (ENOTDIR on the
+// admin dir) means no serve can be listening: fall back to the direct path,
+// which then reports the store-open error, not an "unsafe" admin dir error.
+func TestTokenIssueListRevoke_ENOTDIRUsesDirectPath(t *testing.T) {
+	base := shortTempDir(t)
+	file := filepath.Join(base, "afile")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dataDir := filepath.Join(file, "data")
+	for _, args := range [][]string{{"issue", "n1"}, {"list"}, {"revoke", "--yes", "n1"}} {
+		_, err := runTokenCmd(t, dataDir, "", args...)
+		if err == nil || !strings.Contains(err.Error(), "open store") || strings.Contains(err.Error(), "unsafe") {
+			t.Fatalf("%v: err = %v, want the direct-path store-open error", args, err)
+		}
+	}
+}

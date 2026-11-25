@@ -39,8 +39,9 @@ const (
 	adminIssuePath  = "/tokens/issue"
 	adminListPath   = "/tokens"
 
-	// The list response grows with the number of tokens; the other responses
-	// are tiny.
+	// Request bodies are capped at adminReqLimit. The list response grows with
+	// the number of tokens; the other responses are tiny.
+	adminReqLimit       = 4096
 	adminSmallRespLimit = 4096
 	adminListRespLimit  = 64 << 20
 
@@ -237,7 +238,7 @@ func requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {
 // trimmed node_id, or writes a 400 and returns false.
 func decodeNodeID(w http.ResponseWriter, r *http.Request) (string, bool) {
 	var req adminNodeRequest
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, adminSmallRespLimit))
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, adminReqLimit))
 	if err := dec.Decode(&req); err != nil {
 		writeAdminJSON(w, http.StatusBadRequest, adminResponse{Error: "invalid request body"})
 		return "", false
