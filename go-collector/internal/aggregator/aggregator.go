@@ -86,8 +86,9 @@ var regionNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 //
 // Each upstream's Token is read from the UpstreamTokenEnv(region) env var
 // (empty/unset leaves Token empty, which New replaces with the shared
-// token). Two regions that map to the same env var name are rejected, so one
-// region can never silently receive another's token (#581).
+// token). Two regions that map to the same env var name are rejected when
+// that variable is set, so one region can never silently receive another's
+// token; when it is unset both use the shared token and are accepted (#581).
 func ParseUpstreams(specs []string, allowInsecureHTTP bool) ([]Upstream, error) {
 	out := make([]Upstream, 0, len(specs))
 	seen := make(map[string]struct{}, len(specs))
@@ -126,11 +127,17 @@ func ParseUpstreams(specs []string, allowInsecureHTTP bool) ([]Upstream, error) 
 		}
 		seen[region] = struct{}{}
 		envName := UpstreamTokenEnv(region)
+		token := os.Getenv(envName)
 		if other, clash := envOwner[envName]; clash {
-			return nil, fmt.Errorf("invalid upstream %q: region maps to the same token env var %s as %q; rename one of the regions", region, envName, other)
+			// Ambiguous only when the shared env var is actually set; if it
+			// is not, both regions use the shared token and nothing can mix.
+			if token != "" {
+				return nil, fmt.Errorf("invalid upstream %q: region maps to the same token env var %s as %q; rename one of the regions", region, envName, other)
+			}
+		} else {
+			envOwner[envName] = region
 		}
-		envOwner[envName] = region
-		out = append(out, Upstream{Region: region, URL: rawURL, Token: os.Getenv(envName)})
+		out = append(out, Upstream{Region: region, URL: rawURL, Token: token})
 	}
 	return out, nil
 }

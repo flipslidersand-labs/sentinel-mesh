@@ -63,6 +63,8 @@ func assertAll(t *testing.T, name string, got []string, want string) {
 // Per-region env tokens are picked up by ParseUpstreams and each upstream
 // receives only its own token; a region without one gets the shared token.
 func TestAggregator_PerUpstreamTokens(t *testing.T) {
+	// Clear first so a developer's own environment cannot influence the test.
+	t.Setenv("SENTINEL_UPSTREAM_TOKEN_CA_CENTRAL", "")
 	t.Setenv("SENTINEL_UPSTREAM_TOKEN_US_EAST", "tok-east")
 	t.Setenv("SENTINEL_UPSTREAM_TOKEN_EU_WEST", "tok-west")
 	t.Setenv("SENTINEL_UPSTREAM_TOKEN_AP_SOUTH", "") // unset-equivalent
@@ -89,6 +91,7 @@ func TestAggregator_PerUpstreamTokens(t *testing.T) {
 
 // The per-upstream token is also used by the on-demand events/alerts fetch.
 func TestAggregator_PerUpstreamTokenOnDemandFetch(t *testing.T) {
+	t.Setenv("SENTINEL_UPSTREAM_TOKEN_R1", "")
 	srv, seen := authRecorder(t)
 	agg := New([]Upstream{{Region: "r1", URL: srv.URL, Token: "tok-r1"}}, 0, "shared", nil)
 	agg.FetchEvents(context.Background(), "", "", 10)
@@ -98,6 +101,8 @@ func TestAggregator_PerUpstreamTokenOnDemandFetch(t *testing.T) {
 // With no env vars and no shared token, no Authorization header is sent
 // (unchanged behaviour), and the caller's slice is not mutated.
 func TestAggregator_NoTokenNoHeaderAndNoMutation(t *testing.T) {
+	t.Setenv("SENTINEL_UPSTREAM_TOKEN_R1", "")
+	t.Setenv("SENTINEL_UPSTREAM_TOKEN_R2", "")
 	srv, seen := authRecorder(t)
 	ups := []Upstream{{Region: "r1", URL: srv.URL}}
 	agg := New(ups, 0, "", nil)
@@ -113,11 +118,14 @@ func TestAggregator_NoTokenNoHeaderAndNoMutation(t *testing.T) {
 }
 
 func TestParseUpstreams_TokenEnvCollision(t *testing.T) {
-	for _, specs := range [][]string{
+	colliding := [][]string{
 		{"us-east=http://192.0.2.1:8081", "us.east=http://192.0.2.2:8081"},
 		{"us-east=http://192.0.2.1:8081", "us_east=http://192.0.2.2:8081"},
 		{"us-east=http://192.0.2.1:8081", "US-EAST=http://192.0.2.2:8081"},
-	} {
+	}
+	// Env set: ambiguous, so rejected.
+	t.Setenv("SENTINEL_UPSTREAM_TOKEN_US_EAST", "tok")
+	for _, specs := range colliding {
 		_, err := ParseUpstreams(specs, true)
 		if err == nil {
 			t.Fatalf("specs %v: expected collision error", specs)
@@ -125,8 +133,16 @@ func TestParseUpstreams_TokenEnvCollision(t *testing.T) {
 		if !strings.Contains(err.Error(), "SENTINEL_UPSTREAM_TOKEN_US_EAST") {
 			t.Errorf("error should name the env var: %v", err)
 		}
-		if strings.Contains(err.Error(), "192.0.2.") {
-			t.Errorf("error must not include URLs: %v", err)
+		if strings.Contains(err.Error(), "192.0.2.") || strings.Contains(err.Error(), "tok\"") {
+			t.Errorf("error must not include URLs or token: %v", err)
+		}
+	}
+	// Env unset (or empty): both use the shared token, so they are accepted.
+	t.Setenv("SENTINEL_UPSTREAM_TOKEN_US_EAST", "")
+	for _, specs := range colliding {
+		ups, err := ParseUpstreams(specs, true)
+		if err != nil || len(ups) != 2 || ups[0].Token != "" || ups[1].Token != "" {
+			t.Fatalf("specs %v without env: ups=%+v err=%v", specs, ups, err)
 		}
 	}
 	// Distinct after normalisation: fine.

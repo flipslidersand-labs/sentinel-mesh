@@ -190,7 +190,7 @@ curl http://localhost:8080/api/regions
 #    {"region":"us-east","node_count":5,"active_count":4,"reachable":true}]
 ```
 
-**Per-upstream tokens.** By default the aggregator sends its own `SENTINEL_API_TOKEN` to every upstream, so a compromised upstream could replay it against the others. To give an upstream its own token, set `SENTINEL_UPSTREAM_TOKEN_<REGION>` in the aggregator's environment, where `<REGION>` is the `--upstreams` region key upper-cased with every character other than `A-Z`/`0-9` replaced by `_` (`us-east` → `SENTINEL_UPSTREAM_TOKEN_US_EAST`). An unset or empty variable falls back to `SENTINEL_API_TOKEN`, so existing setups behave as before. Tokens are taken from the environment, not from flags, so they do not appear in `ps`. Two regions that map to the same variable name (e.g. `us-east` and `us.east`) are rejected at startup.
+**Per-upstream tokens.** By default the aggregator sends its own `SENTINEL_API_TOKEN` to every upstream, so a compromised upstream could replay it against the others. To give an upstream its own token, set `SENTINEL_UPSTREAM_TOKEN_<REGION>` in the aggregator's environment, where `<REGION>` is the `--upstreams` region key upper-cased with every character other than `A-Z`/`0-9` replaced by `_` (`us-east` → `SENTINEL_UPSTREAM_TOKEN_US_EAST`). An unset or empty variable falls back to `SENTINEL_API_TOKEN`, so existing setups behave as before. Tokens are taken from the environment, not from flags, so they do not appear in `ps`. Two regions that map to the same variable name (e.g. `us-east` and `us.east`) are rejected at startup if that variable is set (without it both use `SENTINEL_API_TOKEN`).
 
 ```bash
 SENTINEL_API_TOKEN=<token> \
@@ -588,7 +588,7 @@ sentinel-mesh は、カーネルレベルのイベントを eBPF で集める分
 集約モードでは、上流(`--upstreams`)ごとに別の API トークンを使えます。環境変数
 `SENTINEL_UPSTREAM_TOKEN_<REGION>`(`<REGION>` は region 名を大文字にし、英数字以外を `_` にしたもの。
 例: `us-east` → `SENTINEL_UPSTREAM_TOKEN_US_EAST`)で渡します(CLI 引数に載せないので `ps` に見えません)。
-未設定・空なら従来どおり `SENTINEL_API_TOKEN` を使います。変換後に同名になる region が 2 つあると起動時エラーです。
+未設定・空なら従来どおり `SENTINEL_API_TOKEN` を使います。変換後に同名になる region が 2 つあり、かつその環境変数が設定されている場合は起動時エラーです(未設定なら従来どおり共通トークンで起動します)。
 
 ### 構成
 

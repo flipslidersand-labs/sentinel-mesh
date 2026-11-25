@@ -176,7 +176,7 @@ than A-Z and 0-9 replaced by '_' (us-east -> SENTINEL_UPSTREAM_TOKEN_US_EAST).
 An unset or empty variable falls back to SENTINEL_API_TOKEN. Tokens are read
 from the environment, never from flags (they would show in ps). Two regions
 that map to the same variable name (e.g. us-east and us.east) are rejected at
-startup.`,
+startup if that variable is set.`,
 		Example: `  # Normal mode: gRPC + REST API on default addresses (REST auth is required
   # by default, so SENTINEL_API_TOKEN must be set, at least 32 bytes, e.g.
   # $(openssl rand -hex 32); gRPC needs per-agent tokens)
